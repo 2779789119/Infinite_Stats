@@ -7,7 +7,7 @@ issueTrackerURL = "https://github.com/example/infinitestats/issues"
     modId = "infinitestats"
     version = "1.2.0"
     displayName = "infinite_stats-无限加点"
-    authors = "etbw2"
+    authors = "佚名既无名"
     description = '''
     A Terraria-like infinite stat leveling system for Minecraft.
     - 56 unique stats across 5 categories: Attack, Defense, Mobility, Utility, Magic
