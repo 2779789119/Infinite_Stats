@@ -1,0 +1,32 @@
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "MIT"
+issueTrackerURL = "https://github.com/example/infinitestats/issues"
+
+[[mods]]
+    modId = "infinitestats"
+    version = "1.2.0"
+    displayName = "infinite_stats-无限加点"
+    authors = "etbw2"
+    description = '''
+    A Terraria-like infinite stat leveling system for Minecraft.
+    - 56 unique stats across 5 categories: Attack, Defense, Mobility, Utility, Magic
+    - Level up by gaining XP from killing mobs and passive time
+    - Allocate points to customize your build
+    - Includes toggle abilities like Flight, Night Vision, Vein Miner, Auto Smelt
+    - Full multiplayer support with server sync
+    '''
+
+[[dependencies.infinitestats]]
+    modId = "forge"
+    mandatory = true
+    versionRange = "[47,)"
+    ordering = "NONE"
+    side = "BOTH"
+
+[[dependencies.infinitestats]]
+    modId = "minecraft"
+    mandatory = true
+    versionRange = "[1.20.1,1.21)"
+    ordering = "NONE"
+    side = "BOTH"

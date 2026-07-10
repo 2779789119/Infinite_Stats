@@ -1,0 +1,201 @@
+package com.etbw2.infinitestats.handler;
+
+import com.etbw2.infinitestats.Config;
+import com.etbw2.infinitestats.stats.PlayerStats;
+import com.etbw2.infinitestats.stats.StatCategory;
+import com.etbw2.infinitestats.stats.StatType;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.DamageTypeTags;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.LivingEntity;
+
+/**
+ * 防御类属性处理器
+ * 处理：免疫、格挡、伤害减免、护盾、闪避、复活、反射
+ */
+public class DefenseHandler implements StatEffectHandler {
+
+    @Override
+    public String getId() {
+        return "defense";
+    }
+
+    @Override
+    public StatType[] getSupportedStats() {
+        return StatType.getByCategory(StatCategory.DEFENSE);
+    }
+
+    @Override
+    public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
+        // 每5秒处理生命恢复
+        if (tickCount % 100 == 0) {
+            applyHealthRegen(player, stats);
+        }
+
+        // 每2秒处理吸收护盾
+        if (tickCount % 40 == 0) {
+            applyAbsorptionShield(player, stats);
+        }
+    }
+
+    @Override
+    public void onLogin(ServerPlayer player, PlayerStats stats) {
+        applyAbsorptionShield(player, stats);
+    }
+
+    @Override
+    public void onRespawn(ServerPlayer player, PlayerStats stats) {
+        applyAbsorptionShield(player, stats);
+    }
+
+    @Override
+    public void onDimensionChange(ServerPlayer player, PlayerStats stats) {
+        applyAbsorptionShield(player, stats);
+    }
+
+    @Override
+    public boolean isEnabled() {
+        return true;
+    }
+
+    /**
+     * 应用生命恢复
+     */
+    private void applyHealthRegen(ServerPlayer player, PlayerStats stats) {
+        float regen = stats.getStatValue(StatType.fromId("health_regen"));
+        if (regen > 0 && player.getHealth() < player.getMaxHealth() && player.getHealth() > 0) {
+            player.heal(regen);
+        }
+    }
+
+    /**
+     * 应用吸收护盾
+     * shield > 0 → 始终确保吸收生效；shield == 0 → 仅当由本模组提供时才移除
+     */
+    private void applyAbsorptionShield(ServerPlayer player, PlayerStats stats) {
+        float shield = stats.getStatValue(StatType.fromId("absorption_shield"));
+        boolean weProvided = stats.isProviding("absorption_shield");
+
+        if (shield > 0) {
+            player.addEffect(new MobEffectInstance(MobEffects.ABSORPTION,
+                    100, (int) Math.min(shield / 4, 4), false, false, true));
+            stats.setProviding("absorption_shield", true);
+        } else if (weProvided) {
+            player.removeEffect(MobEffects.ABSORPTION);
+            stats.setProviding("absorption_shield", false);
+        }
+    }
+
+    /**
+     * 处理复活逻辑
+     * @return true表示复活成功，取消死亡
+     */
+    public static boolean handleAutoRevive(ServerPlayer player, PlayerStats stats) {
+        if (!stats.isToggleActive("auto_revive")) return false;
+
+        long gameTick = player.level().getGameTime();
+        long cooldownTicks = Config.AUTO_REVIVE_COOLDOWN.get() * 20L;
+
+        if (gameTick - stats.getLastReviveTime() >= cooldownTicks) {
+            player.setHealth(player.getMaxHealth() * Config.AUTO_REVIVE_HEALTH_PERCENT.get().floatValue());
+            player.setAirSupply(player.getMaxAirSupply());
+            player.removeAllEffects();
+            stats.setLastReviveTime(gameTick);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 处理格挡逻辑
+     * @return true表示格挡成功，取消伤害
+     */
+    public static boolean handleBlock(ServerPlayer player, PlayerStats stats) {
+        float blockChance = stats.getStatValue(StatType.fromId("block_chance"));
+        if (blockChance > 0 && player.getRandom().nextFloat() < blockChance) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 处理闪避逻辑
+     * @return true表示闪避成功，取消伤害
+     */
+    public static boolean handleDodge(ServerPlayer player, PlayerStats stats) {
+        float dodgeChance = stats.getStatValue(StatType.fromId("dodge_chance"));
+        if (dodgeChance > 0 && player.getRandom().nextFloat() < dodgeChance) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 计算伤害减免后的伤害值
+     */
+    public static float applyDamageReduction(PlayerStats stats, float amount) {
+        float reduction = stats.getStatValue(StatType.fromId("damage_reduction"));
+        if (reduction > 0) {
+            return amount * Math.max(0.1f, 1.0f - reduction);
+        }
+        return amount;
+    }
+
+    /**
+     * 处理摔落伤害减免
+     */
+    public static float applyFallDamageReduction(PlayerStats stats, float amount, boolean isFall) {
+        if (!isFall) return amount;
+
+        float fallResist = stats.getStatValue(StatType.fromId("fall_resist"));
+        if (fallResist > 0) {
+            amount *= Math.max(0.1f, 1.0f - fallResist);
+        }
+
+        // 免疫摔落开关
+        if (stats.isToggleActive("no_fall_damage")) {
+            return 0;
+        }
+        return amount;
+    }
+
+    /**
+     * 检查免疫类型
+     */
+    public static boolean isImmune(PlayerStats stats, net.minecraft.world.damagesource.DamageSource source) {
+        // 火焰免疫
+        if (stats.isToggleActive("fire_immunity") && source.is(DamageTypeTags.IS_FIRE)) {
+            return true;
+        }
+        // 弹射物免疫
+        if (stats.isToggleActive("projectile_immunity") && source.is(DamageTypeTags.IS_PROJECTILE)) {
+            return true;
+        }
+        // 爆炸免疫
+        if (stats.isToggleActive("explosion_immunity") && source.is(DamageTypeTags.IS_EXPLOSION)) {
+            return true;
+        }
+        // 窒息免疫
+        if (stats.isToggleActive("suffocation_immunity") &&
+                source.getEntity() != null &&
+                source == source.getEntity().level().damageSources().inWall()) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 处理伤害反射
+     */
+    public static void applyDamageReflection(ServerPlayer player, PlayerStats stats, 
+            float amount, LivingEntity attacker) {
+        float reflection = stats.getStatValue(StatType.fromId("damage_reflection"));
+        if (reflection > 0 && attacker != null && attacker != player) {
+            float reflectDmg = amount * reflection;
+            if (reflectDmg > 0) {
+                attacker.hurt(player.level().damageSources().thorns(player), reflectDmg);
+            }
+        }
+    }
+}
