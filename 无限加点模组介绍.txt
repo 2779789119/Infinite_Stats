@@ -1,0 +1,210 @@
+================================================================================
+          Infinite Stats（无限加点）v2.0.0 — 模组介绍
+================================================================================
+
+📌 概述
+-------
+Infinite Stats 是一个类似泰拉瑞亚的无限属性加点系统模组。
+通过击杀怪物和挂机获取经验值升级，获得属性点数，自由分配点数来
+强化角色的各项能力。
+
+适用于 Minecraft 1.20.1 Forge，支持多人游戏，客户端-服务端自动同步。
+
+
+📌 核心机制
+-----------
+
+【经验获取】
+  · 击杀怪物：基础经验 = 可配置基数 + 怪物最大生命值 × 系数
+  · 被动挂机：每 4 秒自动获取经验（数值可配置）
+
+【升级系统】
+  · 升级所需经验随等级递增（可配置基础值和增量）
+  · 每次升级获得属性点数（默认 3 点，可配置）
+  · 无等级上限，可无限升级
+
+【属性点分配】
+  · 打开属性面板（默认 P 键）进行加点
+  · 5 大分类 + 外部属性自动发现
+  · 叠加型属性无上限，开关型属性到达阈值即激活
+
+
+📌 五大属性分类
+================
+
+🟥 一、攻击（Attack）—— 11 个属性
+---------------------------------
+  attack_damage         攻击伤害       每点 +0.05   直接叠加到原版攻击伤害属性
+  attack_speed          攻击速度       每点 +0.005  叠加到原版攻击速度属性
+  crit_chance           暴击率         每点 +0.5%   暴击造成额外伤害
+  crit_damage           暴击伤害       每点 +2.0%   暴击伤害倍率加成
+  armor_penetration     护甲穿透       每点 +1.0%   无视目标护甲百分比
+  knockback_power       击退力         每点 +2.0%   叠加到原版击退属性
+  projectile_damage     弹射物伤害     每点 +3.0%   弓箭/三叉戟等弹射物增伤
+  life_steal            生命偷取       每点 +1.0%   造成伤害时回复造成伤害百分比的血量
+  life_steal_aoe        范围吸血       每点 +1.0%   击杀时回复周围实体血量
+  damage_reflection     伤害反射       每点 +1.0%   反弹受到伤害的百分比给攻击者
+  execute               处决           每点 +2.0%   目标生命低于30%时造成额外伤害
+
+
+🟦 二、防御（Defense）—— 17 个属性
+----------------------------------
+  max_health            最大生命值     每点 +2.0    直接叠加到原版血量属性
+  armor                 护甲值         每点 +0.5    叠加到原版护甲属性
+  armor_toughness       盔甲韧性       每点 +0.25   叠加到原版韧性属性
+  health_regen          生命恢复       每点 +0.05   每 5 秒自动回复的血量
+  damage_reduction      伤害减免       每点 +0.2%   所有来源伤害百分比减免
+  knockback_resist      击退抗性       每点 +1.0%   叠加到原版击退抗性属性
+  fall_resist           摔落抗性       每点 +1.0%   摔落伤害百分比减免（最低保留10%）
+  fire_immunity         火焰免疫       3级开关      免疫火焰类伤害（着火/岩浆/火焰附加等）
+  projectile_immunity   弹射物免疫     5级开关      免疫所有弹射物伤害
+  explosion_immunity    爆炸免疫       5级开关      免疫所有爆炸伤害
+  suffocation_immunity  窒息免疫       2级开关      免疫方块窒息伤害
+  block_chance          格挡率         每点 +1.0%   概率完全抵消一次伤害
+  absorption_shield     吸收护盾       每点 +1.0    每 4 点提供 1 级吸收效果（黄心）
+  dodge_chance          闪避率         每点 +0.8%   概率完全闪避一次攻击
+  debuff_immunity       负面免疫       4级开关      免疫所有负面药水效果（中毒/凋零/虚弱等）
+                                                      🆕 支持自定义黑白名单过滤
+  invincibility         无敌           1级开关      免疫一切伤害并保持满生命值
+  auto_revive           自动复活       8级开关      死亡时自动复活（冷却可配置，默认5分钟）
+
+
+🟩 三、机动（Mobility）—— 12 个属性
+-----------------------------------
+  movement_speed        移动速度       每点 +0.001 叠加到原版移动速度属性
+  swim_speed            游泳速度       每点 +0.3%   水中水平移速加成
+  jump_height           跳跃高度       每点 +0.5%   跳跃垂直速度加成
+  step_height           跨越高度       每点 +0.6%   自动上坡/上楼的高度加成
+  fly_speed             飞行速度       每点 +0.2%   叠加到原版飞行速度属性
+  fly                   飞行           8级开关      获得创造飞行能力（非创造/旁观模式）
+  no_fall_damage        免疫摔落伤害   2级开关      完全免疫摔落伤害
+  auto_step             自动跨越       2级开关      自动跨越1格高方块（无需跳跃）
+  follow_range          跟踪范围       每点 +0.5    叠加到原版生物跟踪距离属性
+
+
+
+🟨 四、功能（Utility）—— 18 个属性
+----------------------------------
+  luck                  幸运           每点 +0.1    叠加到原版幸运属性（影响钓鱼/战利品等）
+  mining_speed          挖掘速度       每点 +1.0%   所有方块挖掘速度加成
+  reach                 触及距离       每点 +0.04   叠加到 Forge 方块触及距离属性
+  entity_reach          实体触及距离   每点 +0.04   叠加到 Forge 实体触及距离属性
+  xp_gain               经验加成       每点 +2.0%   击杀/被动获取经验倍率加成
+  loot_luck             掉落幸运       每点 +1.0%   转化为幸运药水效果等级（每100%+1级）
+  night_vision          夜视           2级开关      永久夜视效果
+  water_breathing       水下呼吸       2级开关      在水下氧气值永不下降
+  no_hunger             免饥饿         3级开关      饱食度永远满值，无需进食
+  item_magnet           物品磁铁       2级开关      自动吸引附近8格内的掉落物
+  xp_magnet             经验磁铁       2级开关      自动吸引附近10格内的经验球
+  invisibility          隐身           3级开关      永久隐身（实体标志，非药水效果）
+  vein_miner            连锁挖掘       3级开关      挖掘时自动连锁挖掘相邻同种方块
+  auto_smelt            自动冶炼       2级开关      挖矿时将掉落物自动替换为冶炼产物
+  no_invincibility_frames 取消无敌帧   5级开关      取消受伤后的无敌时间，允许连续攻击
+  double_loot           双倍掉落       每点 +0.5%   击杀生物时概率获得双份掉落物
+  teleport_distance     传送距离       每点 +5.0    传送/TP类能力的基础距离（影响传送石等）
+  crafting_bonus        额外合成       每点 +0.5%   合成物品时概率额外获得一份产物
+  bow_draw_speed        拉弓加速       每点 +3.0%   弓/弩/三叉戟蓄力速度加成
+  use_speed             使用速度       每点 +2.0%   加速吃东西/喝药水/用盾牌等物品使用速度
+  auto_repair           自动修理       2级开关      每秒自动修复背包和装备栏中所有可损坏物品
+  repair_amount         修理量         每点 +1      每次修理恢复的耐久值
+
+
+🟪 五、魔法（Magic）—— 8 个属性
+--------------------------------
+  max_mana              最大法力值     每点 +10.0   增加最大法力值上限
+  mana_regen            法力恢复       每点 +0.5    加快法力值恢复速度
+  magic_damage          魔法伤害       每点 +3.0%   所有魔法/法术伤害加成
+  cooldown_reduction    冷却缩减       每点 +0.3%   减少法术/技能冷却时间
+  mana_shield           法力护盾       每点 +1.0%   受到伤害时消耗法力抵消伤害百分比
+  mana_steal            法力窃取       每点 +1.0%   造成伤害时吸取目标法力
+  spell_power           法术强度       每点 +2.5%   全面提升所有法术效果
+  mana_on_kill          击杀回蓝       每点 +2.0    击杀生物时回复法力值
+
+🟪 六、外部属性（External）—— 自动发现
+--------------------------------------
+  开启 enableAttributeDiscovery（默认开启）后，模组会自动扫描所有其他模组
+  注册的属性（Attribute），并将其加入到 GUI 的「外部属性」分类中。
+  每个外部属性的每点默认值根据属性名自动推测（如 speed→0.001，damage→0.05）。
+  可在 config/infinitestats/external_translations.json 自定义翻译。
+
+
+📌 伤害处理链（优先级从高到低）
+================================
+  玩家受到伤害时按以下顺序判定：
+
+  1. 免疫判定（火焰/弹射物/爆炸/窒息免疫）
+  2. 自动复活（死亡时触发）
+  3. 闪避（dodge_chance）
+  4. 格挡（block_chance）
+  5. 法力护盾（mana_shield）
+  6. 伤害减免（damage_reduction）
+  7. 摔落减免（fall_resist / no_fall_damage）
+  8. 伤害反射（damage_reflection）
+
+
+📌 负面免疫过滤系统（🆕 v2.0.0）
+==================================
+  debuff_immunity 激活后，可在属性面板的防御分类中点击「Debuff 过滤」按钮
+  打开过滤器编辑界面，自定义哪些负面效果需要拦截：
+
+  · 黑名单模式：打勾的效果 = 拦截，其余放行
+  · 白名单模式：打勾的效果 = 绝对不拦截（保护），其余不管
+
+  支持搜索、滚动、实时同步到服务端，无需重启。
+
+
+📌 键位与操作
+==============
+  P 键    打开属性面板（可配置修改）
+  鼠标左键 属性条目上单击 = 分配点数
+  鼠标右键 属性条目上单击 = 撤回点数
+  Shift+左键 分配 10 点
+  Shift+右键 撤回 10 点
+  重置分类/全部按钮 = 返还已分配点数
+
+
+📌 配置说明（config/infinitestats-common.toml）
+================================================
+
+  [GUI]
+    showHiddenStats = false         是否显示隐藏属性（如 invincibility 无敌）
+                                    修改后重新打开面板即可生效
+
+  [Experience]
+    xpPerKillBase = 20           击杀基础经验值
+    xpPerKillHealthFactor = 3.0  按怪物血量加成的经验系数
+    passiveXpAmount = 2          被动挂机每轮经验值
+    passiveXpInterval = 80       被动经验间隔（tick，20=1秒）
+
+  [Leveling]
+    baseXpPerLevel = 60          升2级所需经验
+    xpPerLevelIncrement = 30     每级递增经验值
+    pointsPerLevel = 3           每次升级获得的点数
+
+  [AutoRevive]
+    autoReviveCooldown = 300     自动复活冷却（秒）
+    autoReviveHealthPercent = 0.3 复活后血量百分比
+
+  [PassiveEffects]
+    healthRegenInterval = 100    生命恢复间隔（tick）
+    manaRegenInterval = 40       法力恢复间隔（tick）
+    magnetRange = 10             物品磁铁吸引范围
+    veinMinerMaxBlocks = 64      连锁挖掘最大方块数
+
+  [Compatibility]
+    enableAttributeDiscovery = true  自动发现第三方模组属性
+
+
+📌 兼容性
+==========
+  · 纯服务端模组，客户端可选安装（推荐安装，安装后才可使用 P 键 GUI）
+  · 独立运行，无前置依赖（仅需 Forge 47+ 和 MC 1.20.1）
+  · 自动兼容所有模组的 Attribute 属性
+  · 支持 Curios API 饰品槽
+  · 支持 FTB Teams 团队经验共享
+  · 与 Apotheosis / Iron's Spells / Ars Nouveau / Goety 等模组良好共存
+
+
+📌 许可证
+==========
+  MIT 协议，自由使用和修改。

@@ -5,7 +5,7 @@ issueTrackerURL = "https://github.com/example/infinitestats/issues"
 
 [[mods]]
     modId = "infinitestats"
-    version = "1.2.0"
+    version = "${mod_version}"
     displayName = "infinite_stats-无限加点"
     authors = "${mod_authors}"
     description = '''

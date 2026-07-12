@@ -13,7 +13,7 @@ apply plugin: 'eclipse'
 apply plugin: 'maven-publish'
 
 version = "${mod_version}"
-group = 'com.etbw2.infinitestats'
+group = 'com.infinitestats'
 archivesBaseName = "infinite_stats-无限加点-${minecraft_version}"
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)
