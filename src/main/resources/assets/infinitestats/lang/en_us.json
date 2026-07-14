@@ -1744,5 +1744,19 @@
   "screen.infinitestats.item_editor.edit_enchant": "Edit Enchantment",
   "screen.infinitestats.item_editor.extra_nbt_hint": "Extra NBT (optional, JSON)",
   "screen.infinitestats.item_editor.level_nbt_hint": "Level + Extra NBT (optional)",
-  "screen.infinitestats.item_editor.invalid_extra_nbt": "Invalid extra NBT"
+  "screen.infinitestats.item_editor.invalid_extra_nbt": "Invalid extra NBT",
+
+  "key.infinitestats.emc": "Open EMC Table",
+  "screen.infinitestats.emc": "EMC Transmutation Table",
+  "screen.infinitestats.emc.search": "Search...",
+  "screen.infinitestats.emc.no_selection": "Select a learned item to extract",
+  "screen.infinitestats.emc.hint": "Drag items from inventory to the learn slot",
+  "screen.infinitestats.emc.hint2": "Items will be consumed and converted to EMC",
+  "screen.infinitestats.emc.learn_slot_hint": "Place items here to learn & convert to EMC",
+  "message.infinitestats.emc.no_emc_value": "This item has no EMC value",
+  "message.infinitestats.emc.learned": "Learned: %s (+%s EMC)",
+  "message.infinitestats.emc.converted": "Converted: %s (+%s EMC)",
+  "message.infinitestats.emc.extracted": "Extracted: %s x%d (%s EMC)",
+  "config.infinitestats.emc.rate": "EMC Conversion Loss Rate",
+  "config.infinitestats.emc.rate.tooltip": "EMC loss ratio when learning items (0=no loss, 1=all lost)"
 }

@@ -1,5 +1,6 @@
 package com.infinitestats;
 
+import com.infinitestats.emc.ModMenuTypes;
 import com.infinitestats.handler.HandlerRegistry;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.StatType;
@@ -33,6 +34,9 @@ public final class InfiniteStats {
 
         // 注册网络通道
         NetworkHandler.register();
+
+        // 注册 EMC 菜单类型
+        ModMenuTypes.MENU_TYPES.register(modEventBus);
 
         // 模组信息日志
         System.out.println("[InfiniteStats] Version " + VERSION + " loaded successfully");

@@ -1,9 +1,13 @@
 package com.infinitestats.client;
 
 import com.infinitestats.InfiniteStats;
+import com.infinitestats.emc.EmcMenu;
+import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.MenuScreens;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.CrossbowItem;
@@ -88,6 +92,12 @@ public final class ClientEventHandler {
             if (mc.screen != null) break;
             mc.setScreen(new ItemEditorScreen());
         }
+
+        // 打开 EMC 转化桌
+        while (ClientSetup.OPEN_EMC_KEY.consumeClick()) {
+            if (mc.screen != null) break;
+            NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket());
+        }
     }
 
     /**
@@ -100,6 +110,10 @@ public final class ClientEventHandler {
         public static void onClientSetup(FMLClientSetupEvent event) {
             // 游戏启动时加载保存的 HUD 位置
             ClientSettings.load();
+
+            // 注册 EMC 转化桌屏幕（客户端侧 MenuType → Screen 映射）
+            event.enqueueWork(() ->
+                    MenuScreens.register(ModMenuTypes.EMC_MENU.get(), EmcScreen::new));
         }
 
         @SubscribeEvent

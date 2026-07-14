@@ -748,26 +748,30 @@ public final class StatType {
     }
 
     /**
-     * 是否激活（用于开关型属性）
+     * 是否激活（用于开关型属性，负数不算激活）
      */
     public boolean isActive(long points) {
-        return behavior == StatBehavior.TOGGLE ? points >= maxLevel : calculateValue(points) > 0;
+        if (behavior == StatBehavior.TOGGLE) {
+            return points >= maxLevel;
+        }
+        // 非开关型属性：值非零即为"激活"（支持负值效果）
+        return calculateValue(points) != 0;
     }
 
     /**
-     * 格式化显示值
+     * 格式化显示值（适配负数）
      */
     public String formatValue(float value) {
         if (isToggle()) {
             return value >= 1 ? "开启" : "关闭";
         }
         if (isPercentage()) {
-            return String.format("%.1f%%", value * 100);
+            return String.format("%+.1f%%", value * 100);
         }
         if (Math.abs(value) < 1) {
-            return String.format("%.2f", value);
+            return String.format("%+.2f", value);
         }
-        return String.format("%.1f", value);
+        return String.format("%+.1f", value);
     }
 
     /**

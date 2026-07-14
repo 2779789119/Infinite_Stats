@@ -45,6 +45,11 @@ public final class Config {
 
     public static ForgeConfigSpec.BooleanValue ENABLE_ATTRIBUTE_DISCOVERY;
 
+    // ========== EMC 等价交换设置 ==========
+
+    public static ForgeConfigSpec.DoubleValue EMC_LOSS_RATE;
+    public static ForgeConfigSpec.BooleanValue EMC_ENABLED;
+
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
 
@@ -120,6 +125,19 @@ public final class Config {
                          "如果遇到兼容性问题，可以关闭此选项。",
                          "注意：此选项需要重启游戏才能生效。")
                 .define("enableAttributeDiscovery", true);
+        builder.pop();
+
+        // EMC 等价交换设置
+        builder.push("EMC");
+        EMC_ENABLED = builder
+                .comment("是否启用内置等价交换 (EMC) 系统。",
+                         "关闭后 EMC 转化桌 GUI 和命令将不可用。")
+                .define("emcEnabled", true);
+        EMC_LOSS_RATE = builder
+                .comment("EMC 转换损耗率 (0.0 = 无损耗，1.0 = 100%损耗)。",
+                         "学习物品时实际获得的 EMC = 物品EMC值 × (1 - lossRate)。",
+                         "例如 lossRate=0.2 时学习一个 100 EMC 的物品获得 80 EMC。")
+                .defineInRange("emcLossRate", 0.0, 0.0, 1.0);
         builder.pop();
 
         SPEC = builder.build();

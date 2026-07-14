@@ -1751,5 +1751,19 @@
   "screen.infinitestats.item_editor.edit_enchant": "编辑附魔",
   "screen.infinitestats.item_editor.extra_nbt_hint": "扩展NBT(可选,JSON)",
   "screen.infinitestats.item_editor.level_nbt_hint": "等级 + 扩展NBT(可选)",
-  "screen.infinitestats.item_editor.invalid_extra_nbt": "扩展NBT格式无效"
+  "screen.infinitestats.item_editor.invalid_extra_nbt": "扩展NBT格式无效",
+
+  "key.infinitestats.emc": "打开EMC转化桌",
+  "screen.infinitestats.emc": "EMC 转化桌",
+  "screen.infinitestats.emc.search": "搜索...",
+  "screen.infinitestats.emc.no_selection": "选择一个已学物品来提取",
+  "screen.infinitestats.emc.hint": "将物品从背包拖入右侧学习槽",
+  "screen.infinitestats.emc.hint2": "物品将被消耗并转换为 EMC",
+  "screen.infinitestats.emc.learn_slot_hint": "放入物品来学习并转换为 EMC",
+  "message.infinitestats.emc.no_emc_value": "该物品没有 EMC 值",
+  "message.infinitestats.emc.learned": "已学习: %s (+%s EMC)",
+  "message.infinitestats.emc.converted": "已转换: %s (+%s EMC)",
+  "message.infinitestats.emc.extracted": "提取: %s x%d (%s EMC)",
+  "config.infinitestats.emc.rate": "EMC转换损耗率",
+  "config.infinitestats.emc.rate.tooltip": "学习物品时 EMC 损耗比例 (0=无损耗, 1=全部损耗)"
 }

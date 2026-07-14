@@ -75,9 +75,11 @@ public class StatsScreen extends Screen {
     private static final int TEXT_SECONDARY = 0xFF94A3B8;
     private static final int TEXT_GOLD = 0xFFFFD166;
     private static final int TEXT_ACTIVE = 0xFF4ADE80;
+    private static final int TEXT_NEGATIVE = 0xFFF87171; // 负属性值红色警示
     private static final int TEXT_LEVEL = 0xFF60A5FA;
     private static final int TEXT_POINTS = 0xFFFFD166;
     private static final int TEXT_POINTS_ZERO = 0xFF64748B;
+    private static final int TEXT_POINTS_NEGATIVE = 0xFFF87171; // 可用点数为负也红色
     private static final int TEXT_MANA = 0xFFA78BFA;
     private static final int TEXT_BUTTON = 0xFFFFFFFF;
     private static final int TEXT_HINT = 0xFF64748B;
@@ -593,10 +595,16 @@ public class StatsScreen extends Screen {
     private long getBatchAmount(StatType stat, boolean isAdd) {
         if (batchMode == 3) { // MAX
             if (cachedStats == null) return 1L;
+            long level = cachedStats.getStatLevel(stat);
+            long available = cachedStats.getAvailablePoints();
             if (isAdd) {
-                return Math.max(1L, cachedStats.getAvailablePoints());
+                // "+"：负值区回到0（返还点数因此无限额），正值区消耗所有可用
+                if (level < 0) return -level;
+                return available > 0 ? available : 1L;
             } else {
-                return Math.max(1L, cachedStats.getStatLevel(stat));
+                // "-"：正值区回到0，负值区/零消耗所有可用往负走
+                if (level > 0) return level;
+                return Math.max(available, 1L);
             }
         }
         return BATCH_VALUES[batchMode];
@@ -604,14 +612,19 @@ public class StatsScreen extends Screen {
 
     /**
      * 快捷加点逻辑（= 键调用，共用）
+     * 支持负可用点数时仍可加上（借用未来点数）
      */
     private void handleQuickAdd(StatType stat) {
         if (cachedStats == null) return;
-        long amount = (batchMode == 3) ? 1L : BATCH_VALUES[batchMode];
-        long toAdd = (batchMode == 3) ? Math.max(1L, cachedStats.getAvailablePoints()) : amount;
-        long actuallyAdd = Math.min(toAdd, cachedStats.getAvailablePoints());
-        if (actuallyAdd > 0) {
-            modifyPoints(stat, actuallyAdd);
+        long count = batchMode == 3
+                ? Math.max(1L, cachedStats.getAvailablePoints())
+                : BATCH_VALUES[batchMode];
+        // 确定加点量与当前点数和最大等级的空间
+        long current = cachedStats.getStatLevel(stat);
+        long space = stat.getMaxLevel() - current;
+        long toAdd = Math.min(count, Math.max(1, space));
+        if (toAdd > 0) {
+            modifyPoints(stat, toAdd);
             playClickSound();
         }
     }
@@ -844,9 +857,9 @@ public class StatsScreen extends Screen {
         String xpText = xp + " / " + xpNeeded + " XP";
         g.drawCenteredString(font, xpText, barX + barW / 2, barY + 2, TEXT_PRIMARY);
 
-        // 可用点数（右对齐）
+        // 可用点数（右对齐，正=金色，零=灰色，负=红色）
         String pointsStr = Component.translatable("screen.infinitestats.points_available", points).getString();
-        int pointsColor = points > 0 ? TEXT_POINTS : TEXT_POINTS_ZERO;
+        int pointsColor = points > 0 ? TEXT_POINTS : points < 0 ? TEXT_POINTS_NEGATIVE : TEXT_POINTS_ZERO;
         g.drawString(font, pointsStr, l + GUI_WIDTH - 14 - font.width(pointsStr), t + 28, pointsColor);
 
         if (maxMana > 0) {
@@ -1005,8 +1018,9 @@ public class StatsScreen extends Screen {
 
             g.drawString(font, levelTag, rightEdge - BTN_W * 2 - 8 - valueW - levelW - 8,
                     y + (CARD_H - font.lineHeight) / 2 + 1, TEXT_SECONDARY);
+            int valColor = value > 0 ? TEXT_ACTIVE : value < 0 ? TEXT_NEGATIVE : TEXT_SECONDARY;
             g.drawString(font, valueStr, rightEdge - BTN_W * 2 - 8 - valueW,
-                    y + (CARD_H - font.lineHeight) / 2 + 1, value > 0 ? TEXT_ACTIVE : TEXT_SECONDARY);
+                    y + (CARD_H - font.lineHeight) / 2 + 1, valColor);
         }
     }
 
@@ -1125,18 +1139,20 @@ public class StatsScreen extends Screen {
             String label = batchMode == 3 ? "MAX" : String.valueOf(amount);
             if (hoveredBtnType == 2) {
                 tooltipLines.add(Component.translatable("screen.infinitestats.tooltip_add", label).getString());
-                // 预览加点后
-                if (cachedStats != null && cachedStats.getAvailablePoints() >= amount && !stat.isToggle()) {
-                    float nextValue = stat.calculateValue(level + amount);
+                // "+" 统一语义：值往正向走，负值区返还点数
+                if (cachedStats != null && !stat.isToggle()) {
+                    long nextLevel = level + amount;
+                    float nextValue = stat.calculateValue(nextLevel);
                     String preview = Component.translatable("screen.infinitestats.tooltip_preview",
                             stat.formatValue(value), stat.formatValue(nextValue)).getString();
                     tooltipLines.add(preview);
                 }
             } else {
                 tooltipLines.add(Component.translatable("screen.infinitestats.tooltip_remove", label).getString());
-                // 预览减点后
-                if (level >= amount && !stat.isToggle()) {
-                    float prevValue = stat.calculateValue(level - amount);
+                // "-" 统一语义：值往负向走，负值区消耗点数
+                if (!stat.isToggle()) {
+                    long prevLevel = level - amount;
+                    float prevValue = stat.calculateValue(prevLevel);
                     String preview = Component.translatable("screen.infinitestats.tooltip_preview",
                             stat.formatValue(value), stat.formatValue(prevValue)).getString();
                     tooltipLines.add(preview);
@@ -1514,16 +1530,17 @@ public class StatsScreen extends Screen {
             String label = getMessage().getString();
             int labelW = mc.font.width(label);
 
-            // 如果有点数统计，紧凑排布
-            if (allocatedPoints > 0) {
+            // 如果有点数统计（含负数），紧凑排布
+            if (allocatedPoints != 0) {
                 String ptsStr = "(" + allocatedPoints + ")";
                 int ptsW = mc.font.width(ptsStr);
                 int totalW = labelW + ptsW + 4;
                 int startX = getX() + (width - totalW) / 2;
                 int textY = getY() + (height - mc.font.lineHeight) / 2 + 1;
+                int ptsColor = allocatedPoints > 0 ? TEXT_POINTS : TEXT_POINTS_NEGATIVE;
 
                 g.drawString(mc.font, label, startX, textY, textColor);
-                g.drawString(mc.font, ptsStr, startX + labelW + 4, textY, TEXT_POINTS);
+                g.drawString(mc.font, ptsStr, startX + labelW + 4, textY, ptsColor);
             } else {
                 g.drawCenteredString(mc.font, label, getX() + width / 2,
                         getY() + (height - mc.font.lineHeight) / 2 + 1, textColor);

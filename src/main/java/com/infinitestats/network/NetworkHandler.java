@@ -1,22 +1,30 @@
 package com.infinitestats.network;
 
 import com.infinitestats.InfiniteStats;
+import com.infinitestats.emc.EmcDatabase;
+import com.infinitestats.emc.EmcMenu;
+import com.infinitestats.emc.EmcPlayerData;
+import com.infinitestats.emc.EmcPlayerDataProvider;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import com.infinitestats.handler.AttributeHandler;
 import com.infinitestats.handler.HandlerRegistry;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.network.NetworkEvent;
+import net.minecraftforge.network.NetworkHooks;
 import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.network.simple.SimpleChannel;
 
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.*;
 import java.util.function.Supplier;
 
 /**
@@ -80,6 +88,32 @@ public final class NetworkHandler {
                 EditItemMetaPacket::encode,
                 EditItemMetaPacket::decode,
                 EditItemMetaPacket::handle);
+
+        // ========== EMC 数据包 ==========
+
+        // EMC 同步数据包（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, EmcSyncPacket.class,
+                EmcSyncPacket::encode,
+                EmcSyncPacket::decode,
+                EmcSyncPacket::handle);
+
+        // 物品学习数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EmcLearnPacket.class,
+                EmcLearnPacket::encode,
+                EmcLearnPacket::decode,
+                EmcLearnPacket::handle);
+
+        // 物品提取数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EmcExtractPacket.class,
+                EmcExtractPacket::encode,
+                EmcExtractPacket::decode,
+                EmcExtractPacket::handle);
+
+        // EMC 菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EmcOpenPacket.class,
+                EmcOpenPacket::encode,
+                EmcOpenPacket::decode,
+                EmcOpenPacket::handle);
     }
 
     // ========== 数据包类 ==========
@@ -272,5 +306,196 @@ public final class NetworkHandler {
     public static void broadcastToAll(PlayerStats stats) {
         // 通常只在调试时使用
         // CHANNEL.send(PacketDistributor.ALL.noArg(), new SyncStatsPacket(stats.createSnapshot()));
+    }
+
+    // ========== EMC 数据包类 ==========
+
+    /**
+     * EMC 同步数据包（服务器 → 客户端）
+     */
+    public static final class EmcSyncPacket {
+        private final EmcPlayerData.EmcSnapshot snapshot;
+
+        public EmcSyncPacket(EmcPlayerData.EmcSnapshot snapshot) {
+            this.snapshot = snapshot;
+        }
+
+        public static void encode(EmcSyncPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarLong(msg.snapshot.emcBalance);
+            buf.writeVarInt(msg.snapshot.learnedItems.size());
+            for (ResourceLocation id : msg.snapshot.learnedItems) {
+                buf.writeUtf(id.toString());
+            }
+        }
+
+        public static EmcSyncPacket decode(FriendlyByteBuf buf) {
+            long balance = buf.readVarLong();
+            int count = buf.readVarInt();
+            List<ResourceLocation> items = new ArrayList<>();
+            for (int i = 0; i < count; i++) {
+                ResourceLocation rl = ResourceLocation.tryParse(buf.readUtf());
+                if (rl != null) items.add(rl);
+            }
+            return new EmcSyncPacket(new EmcPlayerData.EmcSnapshot(balance, items));
+        }
+
+        public static void handle(EmcSyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                var player = net.minecraft.client.Minecraft.getInstance().player;
+                if (player != null) {
+                    player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+                        data.restoreFromSnapshot(msg.snapshot);
+                    });
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 物品学习数据包（客户端 → 服务器）
+     */
+    public static final class EmcLearnPacket {
+        private final String itemId;
+
+        public EmcLearnPacket(String itemId) {
+            this.itemId = itemId;
+        }
+
+        public static void encode(EmcLearnPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.itemId);
+        }
+
+        public static EmcLearnPacket decode(FriendlyByteBuf buf) {
+            return new EmcLearnPacket(buf.readUtf());
+        }
+
+        public static void handle(EmcLearnPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
+                if (itemId == null) return;
+
+                Item item = BuiltInRegistries.ITEM.get(itemId);
+                long emcValue = EmcDatabase.getEmc(new ItemStack(item));
+                if (emcValue <= 0) return;
+
+                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+                    // 查找玩家背包中是否有此物品
+                    for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+                        ItemStack slotStack = player.getInventory().getItem(i);
+                        if (!slotStack.isEmpty() && BuiltInRegistries.ITEM.getKey(slotStack.getItem()).equals(itemId)) {
+                            // 消耗1个物品，返还EMC
+                            slotStack.shrink(1);
+                            data.learnAndConvert(itemId, emcValue);
+                            syncEmcToClient(player);
+                            break;
+                        }
+                    }
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 物品提取数据包（客户端 → 服务器）
+     */
+    public static final class EmcExtractPacket {
+        private final String itemId;
+        private final int count;
+
+        public EmcExtractPacket(String itemId, int count) {
+            this.itemId = itemId;
+            this.count = count;
+        }
+
+        public static void encode(EmcExtractPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.itemId);
+            buf.writeVarInt(msg.count);
+        }
+
+        public static EmcExtractPacket decode(FriendlyByteBuf buf) {
+            return new EmcExtractPacket(buf.readUtf(), buf.readVarInt());
+        }
+
+        public static void handle(EmcExtractPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
+                if (itemId == null) return;
+
+                Item item = BuiltInRegistries.ITEM.get(itemId);
+                if (item == null) return;
+
+                long emcPerItem = EmcDatabase.getEmc(new ItemStack(item));
+                if (emcPerItem <= 0) return;
+
+                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+                    if (!data.hasLearned(itemId)) return;
+
+                    int maxGive = Math.min(msg.count, 64);
+                    long totalCost = emcPerItem * maxGive;
+                    if (!data.consumeEmc(totalCost)) {
+                        // 余额不足，给尽可能多的
+                        long affordable = data.getEmcBalance() / emcPerItem;
+                        if (affordable <= 0) return;
+                        maxGive = (int) Math.min(affordable, 64);
+                        totalCost = emcPerItem * maxGive;
+                        data.consumeEmc(totalCost);
+                    }
+
+                    ItemStack result = new ItemStack(item, maxGive);
+                    if (!player.getInventory().add(result)) {
+                        player.drop(result, false);
+                    }
+                    syncEmcToClient(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * EMC 菜单打开数据包（客户端 → 服务器）
+     */
+    public static final class EmcOpenPacket {
+        public EmcOpenPacket() {}
+
+        public static void encode(EmcOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static EmcOpenPacket decode(FriendlyByteBuf buf) {
+            return new EmcOpenPacket();
+        }
+
+        public static void handle(EmcOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                NetworkHooks.openScreen(player,
+                        new SimpleMenuProvider(
+                                (id, inv, p) -> new EmcMenu(id, inv),
+                                Component.translatable("screen.infinitestats.emc")));
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    // ========== EMC 同步方法 ==========
+
+    /**
+     * 同步 EMC 数据到客户端
+     */
+    public static void syncEmcToClient(ServerPlayer player) {
+        player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+            CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                    new EmcSyncPacket(data.createSnapshot()));
+        });
     }
 }

@@ -67,12 +67,20 @@ public class DefenseHandler implements StatEffectHandler {
     }
 
     /**
-     * 应用生命恢复
+     * 应用生命恢复（正=回血，负=扣血）
      */
     private void applyHealthRegen(ServerPlayer player, PlayerStats stats) {
         float regen = stats.getStatValue(StatType.fromId("health_regen"));
-        if (regen > 0 && player.getHealth() < player.getMaxHealth() && player.getHealth() > 0) {
-            player.heal(regen);
+        if (regen != 0 && player.getHealth() > 0) {
+            if (regen > 0 && player.getHealth() < player.getMaxHealth()) {
+                player.heal(regen);
+            } else if (regen < 0) {
+                // 负回血 = 生命流失（不能通过回血类型伤害触发，直接扣血）
+                float damage = Math.min(-regen, player.getHealth() - 0.5f);
+                if (damage > 0) {
+                    player.hurt(player.level().damageSources().magic(), damage);
+                }
+            }
         }
     }
 
@@ -179,30 +187,32 @@ public class DefenseHandler implements StatEffectHandler {
     }
 
     /**
-     * 计算伤害减免后的伤害值
+     * 计算伤害减免后的伤害值（正=减伤，负=增伤）
      */
     public static float applyDamageReduction(PlayerStats stats, float amount) {
         float reduction = stats.getStatValue(StatType.fromId("damage_reduction"));
-        if (reduction > 0) {
+        if (reduction != 0) {
             float factor = 1.0f - reduction;
-            if (factor <= 0) return 0;
+            if (factor <= 0) return 0; // 减免≥100% → 免疫
             return amount * factor;
         }
         return amount;
     }
 
     /**
-     * 处理摔落伤害减免
+     * 处理摔落伤害减免（正=减免，负=增伤）
      */
     public static float applyFallDamageReduction(PlayerStats stats, float amount, boolean isFall) {
         if (!isFall) return amount;
 
         float fallResist = stats.getStatValue(StatType.fromId("fall_resist"));
-        if (fallResist > 0) {
-            amount *= Math.max(0.1f, 1.0f - fallResist);
+        if (fallResist != 0) {
+            float factor = 1.0f - fallResist;
+            // 减免≥100% → 仍有至少10%伤害残留，避免完全免疫（no_fall_damage开关才是完全免疫）
+            amount *= Math.max(0.1f, factor);
         }
 
-        // 免疫摔落开关
+        // 免疫摔落开关（优先于任何计算）
         if (stats.isToggleActive("no_fall_damage")) {
             return 0;
         }

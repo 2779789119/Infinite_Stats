@@ -92,12 +92,13 @@ public class PlayerStats {
     }
 
     /**
-     * 根据等级和已分配点数重新计算可用点数，防止负数或不同步
+     * 根据等级和已分配点数重新计算可用点数
+     * 允许负值——支持属性扣到负数（借用未来点数）
      */
     public void recalculateAvailablePoints() {
         long totalEarned = (level - 1) * (long) Config.POINTS_PER_LEVEL.get();
         long totalAllocated = allocatedPoints.values().stream().mapToLong(Long::longValue).sum();
-        this.availablePoints = Math.max(0, totalEarned - totalAllocated);
+        this.availablePoints = totalEarned - totalAllocated;
     }
 
     // ========== 复活 ==========
@@ -288,10 +289,12 @@ public class PlayerStats {
     }
 
     /**
-     * 批量添加属性点
+     * 批量添加属性点（允许可用点数为负——借用未来点数）
+     * "+" 统一语义：值往正向走（current += count）
+     *   current >= 0 → 消耗点数；current < 0 → 返还点数（因为绝对值变小）
      */
     public boolean addPoints(StatType stat, long count) {
-        if (count <= 0 || availablePoints <= 0) return false;
+        if (count <= 0) return false;
 
         long current = allocatedPoints.getOrDefault(stat.getId(), 0L);
 
@@ -300,22 +303,36 @@ public class PlayerStats {
             count = stat.getMaxLevel() - current;
         }
 
-        long max = stat.getMaxLevel();
-        long space = max - current;
-        long toAdd = Math.min(Math.min(count, space), availablePoints);
+        if (current >= 0) {
+            // 正值方向：往上加（最多到 maxLevel），消耗点数
+            long max = stat.getMaxLevel();
+            long space = max - current;
+            long toAdd = Math.min(count, space);
+            if (toAdd <= 0) return false;
+            allocatedPoints.put(stat.getId(), current + toAdd);
+            availablePoints -= toAdd;
+        } else {
+            // 负值方向：靠近 0，返还点数（绝对值变小）
+            long newVal = Math.min(0, current + count);
+            long moved = newVal - current; // 正值，如 -10→-3 则 moved=7
+            if (moved <= 0) return false;
+            if (newVal == 0) {
+                allocatedPoints.remove(stat.getId());
+            } else {
+                allocatedPoints.put(stat.getId(), newVal);
+            }
+            availablePoints += moved; // 返还点数
+        }
 
-        if (toAdd <= 0) return false;
-
-        allocatedPoints.put(stat.getId(), current + toAdd);
-        availablePoints -= toAdd;
-        availablePoints = Math.max(0, availablePoints);
         invalidateCache();
-
         return true;
     }
 
     /**
-     * 移除属性点（返还）
+     * 移除属性点（允许降入负数）
+     * "-" 统一语义：值往负向走（current -= count）
+     *   current > 0：正向部分返还点数，越过 0 后的负向部分消耗点数
+     *   current <= 0：继续往负走，消耗点数
      */
     public boolean removePoints(StatType stat, long count) {
         if (count <= 0) return false;
@@ -327,20 +344,29 @@ public class PlayerStats {
             count = current;
         }
 
-        long toRemove = Math.min(count, current);
+        if (count <= 0) return false;
 
-        if (toRemove <= 0) return false;
+        long newVal = current - count;
 
-        long newVal = current - toRemove;
-        if (newVal <= 0) {
+        if (newVal == 0) {
             allocatedPoints.remove(stat.getId());
         } else {
             allocatedPoints.put(stat.getId(), newVal);
         }
-        availablePoints += toRemove;
-        availablePoints = Math.max(0, availablePoints);
-        invalidateCache();
 
+        // 点数核算
+        if (current > 0) {
+            // 从正值往负走：正向部分 (min(current, count)) 返还点数
+            // 若跨过 0 进入负数，超出部分 (count - min(current, count)) 消耗点数
+            long returned = Math.min(current, count);
+            availablePoints += returned;
+            availablePoints -= (count - returned);
+        } else {
+            // 从 0 或负数继续往负走：消耗点数
+            availablePoints -= count;
+        }
+
+        invalidateCache();
         return true;
     }
 
@@ -356,12 +382,12 @@ public class PlayerStats {
     }
 
     /**
-     * 重置单个属性
+     * 重置单个属性（清零，返还所有已分配点数，含负数）
      */
     public void resetStat(StatType stat) {
         long points = allocatedPoints.getOrDefault(stat.getId(), 0L);
-        if (points > 0) {
-            availablePoints += points;
+        if (points != 0) {
+            availablePoints += points; // 负数时 also adjusts availablePoints
             allocatedPoints.remove(stat.getId());
             if (stat.isToggle()) {
                 providedAbilities.remove(stat.getId());
@@ -436,10 +462,10 @@ public class PlayerStats {
         tag.putLong("lastReviveTime", lastReviveTime);
         tag.putFloat("currentMana", currentMana);
 
-        // 使用 ID 格式存储属性点数（向后兼容旧格式）
+        // 使用 ID 格式存储属性点数（支持负值）
         ListTag pointsList = new ListTag();
         for (Map.Entry<String, Long> entry : allocatedPoints.entrySet()) {
-            if (entry.getValue() > 0) {
+            if (entry.getValue() != 0) {
                 CompoundTag entryTag = new CompoundTag();
                 entryTag.putString("id", entry.getKey());
                 entryTag.putLong("points", entry.getValue());
@@ -499,9 +525,6 @@ public class PlayerStats {
                 providedAbilities.add(aTag.getString("id"));
             }
         }
-
-        // 反序列化后重新计算可用点数，修复旧数据可能为负的问题
-        recalculateAvailablePoints();
         debuffUseBlacklist = tag.contains("debuffUseBlacklist") ? tag.getBoolean("debuffUseBlacklist") : true;
         debuffFilterList.clear();
         if (tag.contains("debuffFilterList")) {
