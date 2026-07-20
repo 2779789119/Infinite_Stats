@@ -23,6 +23,7 @@ public final class HandlerRegistry {
         register(new MobilityHandler());
         register(new UtilityHandler());
         register(new MagicHandler());
+        register(new TimeAccelHandler());
 
         initialized = true;
     }

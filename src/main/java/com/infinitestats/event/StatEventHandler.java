@@ -54,6 +54,9 @@ public final class StatEventHandler {
                             net.minecraft.network.chat.Component.translatable("message.infinitestats.auto_revive"),
                             true
                     );
+                    // 自动复活的 removeAllEffects() 会清除所有效果（包括夜视/隐身等），
+                    // 必须立即重新施加被清除的 Utility 效果，否则要等最多 2 秒才会在 tick 中恢复
+                    HandlerRegistry.loginAll(player, stats);
                     NetworkHandler.syncToClient(player);
                     return;
                 }
@@ -278,13 +281,15 @@ public final class StatEventHandler {
     // ========== 负面效果拦截 ==========
 
     /**
-     * 在负面效果施加前直接拦截（debuff_immunity 开关）
-     * 支持玩家自定义过滤列表（黑名单/白名单模式）
+     * 在药水效果施加前直接拦截（debuff_immunity 开关）
+     * 支持玩家自定义过滤列表（黑名单/白名单模式），可选择过滤所有效果（包括正面buff和负面debuff）
+     * <p>
+     * 注意：绝不拦截本模组自己的 Utility 效果（夜视、隐身等），
+     * 否则 UtilityHandler 施加的效果会被这里反向拦截，导致 toggle 功能失效。
      */
     @SubscribeEvent
     public static void onMobEffectApplicable(MobEffectEvent.Applicable event) {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
-        if (event.getEffectInstance().getEffect().isBeneficial()) return;
 
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             if (!stats.isToggleActive("debuff_immunity")) return;
@@ -292,10 +297,26 @@ public final class StatEventHandler {
             String effectId = net.minecraftforge.registries.ForgeRegistries.MOB_EFFECTS
                     .getKey(event.getEffectInstance().getEffect()).toString();
 
+            // 绝不拦截本模组自己施加的效果（夜视/隐身/幸运等 Utility toggle）
+            if (isOwnUtilityEffect(stats, effectId)) return;
+
             if (stats.shouldBlockEffect(effectId)) {
                 event.setResult(net.minecraftforge.eventbus.api.Event.Result.DENY);
             }
         });
+    }
+
+    /**
+     * 检查某个药水效果是否来自本模组的 Utility 系统
+     * 如果对应的 toggle 已激活，说明该效果由我们自己施加，不应被 debuff_immunity 拦截
+     */
+    private static boolean isOwnUtilityEffect(PlayerStats stats, String effectId) {
+        return switch (effectId) {
+            case "minecraft:night_vision" -> stats.isToggleActive("night_vision");
+            case "minecraft:invisibility" -> stats.isToggleActive("invisibility");
+            case "minecraft:luck" -> stats.getStatValue("loot_luck") > 0;
+            default -> false;
+        };
     }
 
     // ========== 玩家Tick事件 ==========
@@ -416,10 +437,12 @@ public final class StatEventHandler {
 
     // ========== 玩家克隆 ==========
 
+    /**
+     * 玩家实体克隆时保留所有数据（死亡重生、末地传送门返回等场景均会触发 Clone 事件）
+     * 不区分死亡/非死亡克隆，与 EMC 系统保持一致的处理方式
+     */
     @SubscribeEvent
     public static void onPlayerClone(PlayerEvent.Clone event) {
-        if (!event.isWasDeath()) return;
-
         event.getOriginal().reviveCaps();
         event.getOriginal().getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(oldStats -> {
             event.getEntity().getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(newStats -> {

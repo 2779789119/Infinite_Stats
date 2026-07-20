@@ -50,6 +50,11 @@ public final class Config {
     public static ForgeConfigSpec.DoubleValue EMC_LOSS_RATE;
     public static ForgeConfigSpec.BooleanValue EMC_ENABLED;
 
+    // ========== 时间加速设置（加速属性） ==========
+
+    // 基础半径：即使玩家未加「加速半径」点数也生效的最小半径
+    public static ForgeConfigSpec.IntValue TIME_ACCEL_RADIUS;
+
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
 
@@ -138,6 +143,14 @@ public final class Config {
                          "学习物品时实际获得的 EMC = 物品EMC值 × (1 - lossRate)。",
                          "例如 lossRate=0.2 时学习一个 100 EMC 的物品获得 80 EMC。")
                 .defineInRange("emcLossRate", 0.0, 0.0, 1.0);
+        builder.pop();
+
+        // 时间加速设置
+        builder.push("TimeAccel");
+        TIME_ACCEL_RADIUS = builder
+                .comment("「加速」的基础影响半径（方块）。以玩家为中心，水平与垂直方向同半径。",
+                         "这是未加「加速半径」点数时的最小半径；玩家可通过「加速半径」属性自行扩大。")
+                .defineInRange("timeAccelRadius", 4, 1, 64);
         builder.pop();
 
         SPEC = builder.build();

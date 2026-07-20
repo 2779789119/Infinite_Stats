@@ -25,8 +25,8 @@ public final class SyncStatsPacket {
     private long lastReviveTime;
     private float currentMana;
     private Map<String, Long> allocatedPoints;
-    private boolean debuffUseBlacklist;
-    private Set<String> debuffFilterList;
+    private boolean buffUseBlacklist;
+    private Set<String> buffFilterList;
 
     /**
      * 从快照创建
@@ -38,8 +38,8 @@ public final class SyncStatsPacket {
         this.lastReviveTime = snapshot.lastReviveTime;
         this.currentMana = snapshot.currentMana;
         this.allocatedPoints = snapshot.allocatedPoints;
-        this.debuffUseBlacklist = snapshot.debuffUseBlacklist;
-        this.debuffFilterList = snapshot.debuffFilterList;
+        this.buffUseBlacklist = snapshot.buffUseBlacklist;
+        this.buffFilterList = snapshot.buffFilterList;
     }
 
     /**
@@ -62,12 +62,12 @@ public final class SyncStatsPacket {
             allocatedPoints.put(statId, points);
         }
 
-        // 读取 debuff 过滤列表
-        this.debuffUseBlacklist = buf.readBoolean();
+        // 读取 buff 过滤列表
+        this.buffUseBlacklist = buf.readBoolean();
         int filterCount = buf.readVarInt();
-        this.debuffFilterList = new HashSet<>();
+        this.buffFilterList = new HashSet<>();
         for (int i = 0; i < filterCount; i++) {
-            debuffFilterList.add(buf.readUtf());
+            buffFilterList.add(buf.readUtf());
         }
     }
 
@@ -90,10 +90,10 @@ public final class SyncStatsPacket {
             buf.writeVarLong(entry.getValue());
         }
 
-        // 写入 debuff 过滤列表
-        buf.writeBoolean(msg.debuffUseBlacklist);
-        buf.writeVarInt(msg.debuffFilterList.size());
-        for (String effectId : msg.debuffFilterList) {
+        // 写入 buff 过滤列表
+        buf.writeBoolean(msg.buffUseBlacklist);
+        buf.writeVarInt(msg.buffFilterList.size());
+        for (String effectId : msg.buffFilterList) {
             buf.writeUtf(effectId);
         }
     }
@@ -122,8 +122,8 @@ public final class SyncStatsPacket {
                         msg.currentMana,
                         -1,
                         msg.allocatedPoints,
-                        msg.debuffUseBlacklist,
-                        msg.debuffFilterList
+                        msg.buffUseBlacklist,
+                        msg.buffFilterList
                 );
                 stats.restoreFromSnapshot(snapshot);
             });
@@ -140,8 +140,8 @@ public final class SyncStatsPacket {
                 lastReviveTime, currentMana,
                 -1,
                 allocatedPoints,
-                debuffUseBlacklist,
-                debuffFilterList
+                buffUseBlacklist,
+                buffFilterList
         );
     }
 }

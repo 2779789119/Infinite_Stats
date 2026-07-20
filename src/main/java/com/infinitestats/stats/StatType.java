@@ -638,6 +638,16 @@ public final class StatType {
                 .perPointValue(1.0f)
                 .build(),
 
+            create("time_accel").category(StatCategory.UTILITY)
+                .perPointValue(0.05f)
+                .description("加速玩家周围的时间流速：作物生长、熔炉冶炼、刷怪笼等更快")
+                .build(),
+
+            create("time_accel_radius").category(StatCategory.UTILITY)
+                .perPointValue(1.0f)
+                .description("扩大「加速」的影响半径（每点 +1 格），玩家可自行加点扩展范围")
+                .build(),
+
             // ===== 魔法属性 =====
             create("max_mana").category(StatCategory.MAGIC)
                 .perPointValue(10f)

@@ -67,6 +67,9 @@ public final class ClientCommands {
                         .executes(ctx -> toggleEditHud(ctx.getSource()))
                     )
                 )
+                .then(Commands.literal("achievements")
+                    .executes(ctx -> openAchievementManager(ctx.getSource()))
+                )
         );
     }
 
@@ -159,6 +162,12 @@ public final class ClientCommands {
             // 打开编辑界面
             mc.setScreen(new HudEditScreen());
         }
+        return 1;
+    }
+
+    private static int openAchievementManager(CommandSourceStack source) {
+        Minecraft mc = Minecraft.getInstance();
+        mc.setScreen(new AchievementManagerScreen());
         return 1;
     }
 }

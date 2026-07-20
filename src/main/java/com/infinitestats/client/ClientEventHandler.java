@@ -98,6 +98,12 @@ public final class ClientEventHandler {
             if (mc.screen != null) break;
             NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket());
         }
+
+        // 打开成就管理器
+        while (ClientSetup.OPEN_ACHIEVEMENTS_KEY.consumeClick()) {
+            if (mc.screen != null) break;
+            mc.setScreen(new AchievementManagerScreen());
+        }
     }
 
     /**

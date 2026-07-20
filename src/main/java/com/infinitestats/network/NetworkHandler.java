@@ -10,10 +10,12 @@ import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import com.infinitestats.handler.AttributeHandler;
 import com.infinitestats.handler.HandlerRegistry;
+import net.minecraft.advancements.Advancement;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.item.Item;
@@ -43,6 +45,9 @@ public final class NetworkHandler {
 
     private static int packetId = 0;
 
+    /** 待处理的成就同步数据（由 SyncAdvancementsPacket 写入，AchievementManagerScreen 读取） */
+    public static List<AchievementInfo> pendingAdvancements = null;
+
     /**
      * 注册所有数据包
      */
@@ -71,11 +76,11 @@ public final class NetworkHandler {
                 ResetAllPacket::decode,
                 ResetAllPacket::handle);
 
-        // Debuff 过滤列表更新数据包（客户端 → 服务器）
-        CHANNEL.registerMessage(packetId++, UpdateDebuffFilterPacket.class,
-                UpdateDebuffFilterPacket::encode,
-                UpdateDebuffFilterPacket::decode,
-                UpdateDebuffFilterPacket::handle);
+        // Buff 过滤列表更新数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, UpdateBuffFilterPacket.class,
+                UpdateBuffFilterPacket::encode,
+                UpdateBuffFilterPacket::decode,
+                UpdateBuffFilterPacket::handle);
 
         // 物品编辑器数据包（客户端 → 服务器）
         CHANNEL.registerMessage(packetId++, EditItemPacket.class,
@@ -114,6 +119,26 @@ public final class NetworkHandler {
                 EmcOpenPacket::encode,
                 EmcOpenPacket::decode,
                 EmcOpenPacket::handle);
+
+        // ========== 成就管理数据包 ==========
+
+        // 请求成就列表（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, RequestAdvancementsPacket.class,
+                RequestAdvancementsPacket::encode,
+                RequestAdvancementsPacket::decode,
+                RequestAdvancementsPacket::handle);
+
+        // 同步成就列表（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, SyncAdvancementsPacket.class,
+                SyncAdvancementsPacket::encode,
+                SyncAdvancementsPacket::decode,
+                SyncAdvancementsPacket::handle);
+
+        // 切换成就状态（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, ToggleAdvancementPacket.class,
+                ToggleAdvancementPacket::encode,
+                ToggleAdvancementPacket::decode,
+                ToggleAdvancementPacket::handle);
     }
 
     // ========== 数据包类 ==========
@@ -234,18 +259,18 @@ public final class NetworkHandler {
     }
 
     /**
-     * Debuff 过滤列表更新数据包
+     * Buff 过滤列表更新数据包
      */
-    public static final class UpdateDebuffFilterPacket {
+    public static final class UpdateBuffFilterPacket {
         private final boolean useBlacklist;
         private final Set<String> effectIds;
 
-        public UpdateDebuffFilterPacket(boolean useBlacklist, Set<String> effectIds) {
+        public UpdateBuffFilterPacket(boolean useBlacklist, Set<String> effectIds) {
             this.useBlacklist = useBlacklist;
             this.effectIds = effectIds;
         }
 
-        public static void encode(UpdateDebuffFilterPacket msg, FriendlyByteBuf buf) {
+        public static void encode(UpdateBuffFilterPacket msg, FriendlyByteBuf buf) {
             buf.writeBoolean(msg.useBlacklist);
             buf.writeVarInt(msg.effectIds.size());
             for (String id : msg.effectIds) {
@@ -253,23 +278,23 @@ public final class NetworkHandler {
             }
         }
 
-        public static UpdateDebuffFilterPacket decode(FriendlyByteBuf buf) {
+        public static UpdateBuffFilterPacket decode(FriendlyByteBuf buf) {
             boolean useBlacklist = buf.readBoolean();
             int count = buf.readVarInt();
             Set<String> ids = new HashSet<>();
             for (int i = 0; i < count; i++) {
                 ids.add(buf.readUtf());
             }
-            return new UpdateDebuffFilterPacket(useBlacklist, ids);
+            return new UpdateBuffFilterPacket(useBlacklist, ids);
         }
 
-        public static void handle(UpdateDebuffFilterPacket msg, Supplier<NetworkEvent.Context> ctx) {
+        public static void handle(UpdateBuffFilterPacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
                 ServerPlayer player = ctx.get().getSender();
                 if (player == null) return;
 
                 player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                    stats.setDebuffFilterList(new HashSet<>(msg.effectIds), msg.useBlacklist);
+                    stats.setBuffFilterList(new HashSet<>(msg.effectIds), msg.useBlacklist);
                     // 同步回客户端
                     syncToClient(player);
                 });
@@ -487,6 +512,155 @@ public final class NetworkHandler {
         }
     }
 
+    // ========== 成就管理数据包类 ==========
+
+    /**
+     * 单条成就信息（用于网络传输）
+     */
+    public static final class AchievementInfo {
+        public final String id;
+        public final String displayName;
+        public final String description;
+        public final String iconItemId;
+        public final boolean completed;
+
+        public AchievementInfo(String id, String displayName, String description,
+                                String iconItemId, boolean completed) {
+            this.id = id;
+            this.displayName = displayName;
+            this.description = description;
+            this.iconItemId = iconItemId;
+            this.completed = completed;
+        }
+
+        public static void encode(AchievementInfo info, FriendlyByteBuf buf) {
+            buf.writeUtf(info.id);
+            buf.writeUtf(info.displayName);
+            buf.writeUtf(info.description);
+            buf.writeUtf(info.iconItemId);
+            buf.writeBoolean(info.completed);
+        }
+
+        public static AchievementInfo decode(FriendlyByteBuf buf) {
+            return new AchievementInfo(
+                    buf.readUtf(), buf.readUtf(), buf.readUtf(),
+                    buf.readUtf(), buf.readBoolean());
+        }
+    }
+
+    /**
+     * 请求成就列表数据包（客户端 → 服务器）
+     */
+    public static final class RequestAdvancementsPacket {
+        public RequestAdvancementsPacket() {}
+
+        public static void encode(RequestAdvancementsPacket msg, FriendlyByteBuf buf) {}
+
+        public static RequestAdvancementsPacket decode(FriendlyByteBuf buf) {
+            return new RequestAdvancementsPacket();
+        }
+
+        public static void handle(RequestAdvancementsPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                syncAdvancementsToClient(player);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 同步成就列表数据包（服务器 → 客户端）
+     */
+    public static final class SyncAdvancementsPacket {
+        private final List<AchievementInfo> achievements;
+
+        public SyncAdvancementsPacket(List<AchievementInfo> achievements) {
+            this.achievements = achievements;
+        }
+
+        public static void encode(SyncAdvancementsPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.achievements.size());
+            for (AchievementInfo info : msg.achievements) {
+                AchievementInfo.encode(info, buf);
+            }
+        }
+
+        public static SyncAdvancementsPacket decode(FriendlyByteBuf buf) {
+            int count = buf.readVarInt();
+            List<AchievementInfo> list = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                list.add(AchievementInfo.decode(buf));
+            }
+            return new SyncAdvancementsPacket(list);
+        }
+
+        public static void handle(SyncAdvancementsPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                // 存储到静态字段，由 AchievementManagerScreen 轮询读取
+                pendingAdvancements = msg.achievements;
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 切换成就状态数据包（客户端 → 服务器）
+     */
+    public static final class ToggleAdvancementPacket {
+        private final String advancementId;
+        private final boolean grant; // true=授予, false=撤销
+
+        public ToggleAdvancementPacket(String advancementId, boolean grant) {
+            this.advancementId = advancementId;
+            this.grant = grant;
+        }
+
+        public static void encode(ToggleAdvancementPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.advancementId);
+            buf.writeBoolean(msg.grant);
+        }
+
+        public static ToggleAdvancementPacket decode(FriendlyByteBuf buf) {
+            return new ToggleAdvancementPacket(buf.readUtf(), buf.readBoolean());
+        }
+
+        public static void handle(ToggleAdvancementPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                MinecraftServer server = player.getServer();
+                if (server == null) return;
+
+                ResourceLocation advId = ResourceLocation.tryParse(msg.advancementId);
+                if (advId == null) return;
+
+                Advancement advancement = server.getAdvancements().getAdvancement(advId);
+                if (advancement == null) return;
+
+                var playerAdvancements = player.getAdvancements();
+
+                if (msg.grant) {
+                    // 授予所有条件 → 完成成就
+                    for (String criterion : advancement.getCriteria().keySet()) {
+                        playerAdvancements.award(advancement, criterion);
+                    }
+                } else {
+                    // 撤销所有条件 → 取消成就
+                    for (String criterion : advancement.getCriteria().keySet()) {
+                        playerAdvancements.revoke(advancement, criterion);
+                    }
+                }
+
+                // 同步更新后的成就列表返回客户端
+                syncAdvancementsToClient(player);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
     // ========== EMC 同步方法 ==========
 
     /**
@@ -497,5 +671,32 @@ public final class NetworkHandler {
             CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                     new EmcSyncPacket(data.createSnapshot()));
         });
+    }
+
+    // ========== 成就管理同步方法 ==========
+
+    /**
+     * 构建成就信息列表并同步到客户端
+     */
+    public static void syncAdvancementsToClient(ServerPlayer player) {
+        MinecraftServer server = player.getServer();
+        if (server == null) return;
+
+        List<AchievementInfo> list = new ArrayList<>();
+        for (Advancement adv : server.getAdvancements().getAllAdvancements()) {
+            var display = adv.getDisplay();
+            if (display == null) continue; // 跳过隐藏成就
+
+            String id = adv.getId().toString();
+            String name = display.getTitle().getString();
+            String desc = display.getDescription().getString();
+            String iconId = BuiltInRegistries.ITEM.getKey(display.getIcon().getItem()).toString();
+            boolean completed = player.getAdvancements().getOrStartProgress(adv).isDone();
+
+            list.add(new AchievementInfo(id, name, desc, iconId, completed));
+        }
+
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new SyncAdvancementsPacket(list));
     }
 }

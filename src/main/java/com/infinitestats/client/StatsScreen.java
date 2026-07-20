@@ -550,14 +550,23 @@ public class StatsScreen extends Screen {
 
     private void toggleStat(StatType stat) {
         if (cachedStats == null) return;
-        playClickSound();
         long current = cachedStats.getStatLevel(stat);
         if (current >= stat.getMaxLevel()) {
             // 已激活 → 移除
+            playClickSound();
             modifyPoints(stat, -stat.getMaxLevel());
         } else {
-            // 未激活 → 激活
+            // 未激活 → 激活：开关型不允许透支点数
             long needed = stat.getMaxLevel() - current;
+            if (cachedStats.getAvailablePoints() < needed) {
+                if (minecraft.player != null) {
+                    minecraft.player.displayClientMessage(
+                            net.minecraft.network.chat.Component.translatable("message.infinitestats.not_enough_points"),
+                            true);
+                }
+                return;
+            }
+            playClickSound();
             modifyPoints(stat, needed);
         }
     }
@@ -582,49 +591,105 @@ public class StatsScreen extends Screen {
     }
 
     private void modifyPoints(StatType stat, long amount) {
-        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.ModifyStatPacket(stat.getId(), amount));
-        if (cachedStats != null) {
-            if (amount > 0) {
-                cachedStats.addPoints(stat, amount);
-            } else {
-                cachedStats.removePoints(stat, -amount);
-            }
+        if (cachedStats == null || amount == 0) return;
+
+        // 先用本地副本校验：成功才发送网络包，避免服务器收到无效请求
+        boolean success = amount > 0
+                ? cachedStats.addPoints(stat, amount)
+                : cachedStats.removePoints(stat, -amount);
+
+        if (success) {
+            NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.ModifyStatPacket(stat.getId(), amount));
+        } else {
+            showNotEnoughPoints();
         }
     }
 
     private long getBatchAmount(StatType stat, boolean isAdd) {
         if (batchMode == 3) { // MAX
-            if (cachedStats == null) return 1L;
+            if (cachedStats == null) return 0L;
             long level = cachedStats.getStatLevel(stat);
             long available = cachedStats.getAvailablePoints();
             if (isAdd) {
-                // "+"：负值区回到0（返还点数因此无限额），正值区消耗所有可用
-                if (level < 0) return -level;
-                return available > 0 ? available : 1L;
+                if (level >= 0) {
+                    // 正值加正：消耗点数，受可用点数和上限约束
+                    long space = (long) stat.getMaxLevel() - level;
+                    return Math.max(0, Math.min(available, space));
+                } else {
+                    // 负值加正：往 0 靠近，返还点数，只需 -level 即可归零
+                    return -level;
+                }
             } else {
-                // "-"：正值区回到0，负值区/零消耗所有可用往负走
-                if (level > 0) return level;
-                return Math.max(available, 1L);
+                if (level > 0) {
+                    // 正值减：往 0 靠近，返还点数，最多减到 0
+                    return level;
+                } else {
+                    // 负值减：远离零点，消耗点数，受可用点数和下限约束
+                    long minLevel = -(long) stat.getMaxLevel();
+                    long space = level - minLevel; // 还能降多少
+                    return Math.max(0, Math.min(available, space));
+                }
             }
         }
-        return BATCH_VALUES[batchMode];
+        // 非 MAX 模式：如果是消耗操作，受可用点数限制
+        long base = BATCH_VALUES[batchMode];
+        if (cachedStats != null) {
+            long level = cachedStats.getStatLevel(stat);
+            long available = cachedStats.getAvailablePoints();
+            if (isAdd && level >= 0) {
+                // 正值加正：消耗点数，不得超过可用点数和上限
+                long space = (long) stat.getMaxLevel() - level;
+                return Math.min(base, Math.min(available, space));
+            } else if (!isAdd && level <= 0) {
+                // 负值减：消耗点数，不得超过可用点数和下限
+                long minLevel = -(long) stat.getMaxLevel();
+                long space = level - minLevel;
+                return Math.min(base, Math.min(available, space));
+            }
+        }
+        return base;
+    }
+
+    private void showNotEnoughPoints() {
+        if (minecraft != null && minecraft.player != null) {
+            minecraft.player.displayClientMessage(
+                    Component.translatable("message.infinitestats.not_enough_points"), true);
+        }
     }
 
     /**
      * 快捷加点逻辑（= 键调用，共用）
-     * 支持负可用点数时仍可加上（借用未来点数）
+     * current >= 0 时消耗点数，current < 0 时返还点数
      */
     private void handleQuickAdd(StatType stat) {
         if (cachedStats == null) return;
-        long count = batchMode == 3
-                ? Math.max(1L, cachedStats.getAvailablePoints())
-                : BATCH_VALUES[batchMode];
-        // 确定加点量与当前点数和最大等级的空间
         long current = cachedStats.getStatLevel(stat);
-        long space = stat.getMaxLevel() - current;
-        long toAdd = Math.min(count, Math.max(1, space));
-        if (toAdd > 0) {
-            modifyPoints(stat, toAdd);
+        long available = cachedStats.getAvailablePoints();
+        if (current >= 0 && available <= 0) {
+            showNotEnoughPoints();
+            return;
+        }
+        long count;
+        if (batchMode == 3) {
+            if (current < 0) {
+                // 负值加正：往 0 靠近，返还点数，最多加 -current
+                count = -current;
+            } else {
+                // 正值加正：消耗点数，受可用点数和上限约束
+                long space = (long) stat.getMaxLevel() - current;
+                count = Math.min(available, space);
+            }
+        } else {
+            count = BATCH_VALUES[batchMode];
+            if (current >= 0) {
+                // 消耗操作：不得超过可用点数和上限
+                long space = (long) stat.getMaxLevel() - current;
+                count = Math.min(count, Math.min(available, space));
+            }
+        }
+        count = Math.max(count, 0L);
+        if (count > 0) {
+            modifyPoints(stat, count);
             playClickSound();
         }
     }

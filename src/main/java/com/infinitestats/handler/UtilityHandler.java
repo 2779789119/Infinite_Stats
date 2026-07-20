@@ -98,14 +98,19 @@ public class UtilityHandler implements StatEffectHandler {
     /**
      * 应用夜视效果
      * toggle ON → 始终确保夜视生效；toggle OFF → 仅当由本模组提供时才移除
+     * 优化：只在玩家没有夜视效果时才施加，避免反复刷新
      */
     private void applyNightVision(ServerPlayer player, PlayerStats stats) {
         boolean nightVision = stats.isToggleActive("night_vision");
         boolean weProvided = stats.isProviding("night_vision");
 
         if (nightVision) {
-            player.addEffect(new MobEffectInstance(MobEffects.NIGHT_VISION,
-                    MobEffectInstance.INFINITE_DURATION, 0, false, false, true));
+            // visible=true：必须有 HUD 图标，否则玩家无法确认效果是否生效
+            // 某些客户端渲染环境下 visible=false 可能导致 shader 不激活
+            if (!player.hasEffect(MobEffects.NIGHT_VISION)) {
+                player.addEffect(new MobEffectInstance(MobEffects.NIGHT_VISION,
+                        MobEffectInstance.INFINITE_DURATION, 0, false, true, true));
+            }
             stats.setProviding("night_vision", true);
         } else if (weProvided) {
             player.removeEffect(MobEffects.NIGHT_VISION);
@@ -139,18 +144,42 @@ public class UtilityHandler implements StatEffectHandler {
 
     /**
      * 应用隐身
-     * 使用实体标志 setInvisible 而非药水效果，避免与 removeEffect 冲突导致闪烁
-     * toggle ON → 始终确保隐身生效；toggle OFF → 仅当由本模组提供时才取消
+     * 使用原版隐身药水效果，同时 setInvisible 作为备用视觉机制。
+     * 原因：药水效果负责怪物 AI（降低检测范围）和渲染（含盔甲/手持物品），
+     *       setInvisible 作为视觉备份，防止其他模组清除药水效果时导致模型闪现。
+     * 优化：只在玩家没有隐身效果时才重新施加，避免每 5 tick 无意义刷新触发 mod 冲突。
+     * 保护：关闭时只移除"自己的"隐身效果（特征：无限时长+等级0），避免误删其他模组的隐身。
+     * toggle ON → 始终确保隐身生效；toggle OFF → 仅当效果属于本模组时才移除
      */
     private void applyInvisibility(ServerPlayer player, PlayerStats stats) {
         boolean invis = stats.isToggleActive("invisibility");
         boolean weProvided = stats.isProviding("invisibility");
 
         if (invis) {
+            // 只在玩家没有隐身药水效果时才施加（避免反复刷新触发其他模组的 effect remove）
+            if (!player.hasEffect(MobEffects.INVISIBILITY)) {
+                player.addEffect(new MobEffectInstance(MobEffects.INVISIBILITY,
+                        MobEffectInstance.INFINITE_DURATION, 0, false, false, true));
+            }
+            // setInvisible 作为备用视觉机制：即使药水效果被其他模组清除，玩家模型仍不可见
             player.setInvisible(true);
             stats.setProviding("invisibility", true);
         } else if (weProvided) {
-            player.setInvisible(false);
+            // 关键：只移除"我们自己的"隐身效果
+            // 通过检查当前效果的参数（无限时长、等级0）来判断是否由本模组施加
+            // 如果参数不匹配，说明隐身已被其他模组重新施加，绝不应移除
+            MobEffectInstance currentEffect = player.getEffect(MobEffects.INVISIBILITY);
+            boolean isOurEffect = currentEffect != null
+                    && currentEffect.isInfiniteDuration()
+                    && currentEffect.getAmplifier() == 0;
+
+            if (isOurEffect) {
+                player.removeEffect(MobEffects.INVISIBILITY);
+            }
+            // 只有在确实没有隐身效果（来自任何模组）时才关闭 setInvisible 标志
+            if (!player.hasEffect(MobEffects.INVISIBILITY)) {
+                player.setInvisible(false);
+            }
             stats.setProviding("invisibility", false);
         }
     }

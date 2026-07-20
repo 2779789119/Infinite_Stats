@@ -19,12 +19,12 @@ import org.lwjgl.glfw.GLFW;
 import java.util.*;
 
 /**
- * Debuff 免疫过滤器 GUI
+ * 效果过滤器 GUI（原 Debuff 免疫过滤器）
  * <p>
- * 玩家可以选择哪些负面效果被拦截、哪些放行。
+ * 玩家可以选择哪些效果被拦截、哪些放行，支持所有正面和负面效果。
  * 支持两种模式：
- * - 黑名单模式（默认）：列表中的效果不拦截，其他全部拦截
- * - 白名单模式：只拦截列表中的效果，其他全部放行
+ * - 黑名单模式（默认）：列表中的效果被拦截，其他全部放行
+ * - 白名单模式：列表中的效果绝对不拦截，其他不管
  */
 public class DebuffFilterScreen extends Screen {
 
@@ -76,8 +76,8 @@ public class DebuffFilterScreen extends Screen {
     /** 记录用户手动输入的 ID（不在注册表中的自定义效果） */
     private final Set<String> customIds = new HashSet<>();
 
-    /** 所有可用的负面效果列表（缓存） */
-    private List<MobEffect> allDebuffs = new ArrayList<>();
+    /** 所有可用的效果列表（缓存） */
+    private List<MobEffect> allEffects = new ArrayList<>();
     /** 过滤后的统一列表 */
     private List<FilterEntry> displayedEntries = new ArrayList<>();
     /** 上次播放音效的 tick */
@@ -99,9 +99,9 @@ public class DebuffFilterScreen extends Screen {
         var player = Minecraft.getInstance().player;
         if (player != null) {
             player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                useBlacklist = stats.isDebuffUseBlacklist();
+                useBlacklist = stats.isBuffUseBlacklist();
                 filteredEffects.clear();
-                filteredEffects.addAll(stats.getDebuffFilterList());
+                filteredEffects.addAll(stats.getBuffFilterList());
                 // 重建 customIds：找出 filteredEffects 中不在注册表里的 ID
                 for (String id : filteredEffects) {
                     if (ForgeRegistries.MOB_EFFECTS.getValue(new net.minecraft.resources.ResourceLocation(id)) == null) {
@@ -111,8 +111,8 @@ public class DebuffFilterScreen extends Screen {
             });
         }
 
-        // 收集所有负面效果
-        buildAllDebuffsList();
+        // 收集所有效果
+        buildAllEffectsList();
         applySearchFilter();
 
         // 搜索框
@@ -144,15 +144,13 @@ public class DebuffFilterScreen extends Screen {
         rebuildFilterWidgets();
     }
 
-    private void buildAllDebuffsList() {
-        allDebuffs.clear();
+    private void buildAllEffectsList() {
+        allEffects.clear();
         for (MobEffect effect : ForgeRegistries.MOB_EFFECTS) {
-            if (!effect.isBeneficial()) {
-                allDebuffs.add(effect);
-            }
+            allEffects.add(effect);
         }
         // 按显示名称排序
-        allDebuffs.sort(Comparator.comparing(e ->
+        allEffects.sort(Comparator.comparing(e ->
                 e.getDisplayName().getString().toLowerCase()));
     }
 
@@ -160,8 +158,8 @@ public class DebuffFilterScreen extends Screen {
         displayedEntries.clear();
         String query = searchText.toLowerCase().trim();
 
-        // 先添加注册表中的负面效果
-        for (MobEffect effect : allDebuffs) {
+        // 先添加注册表中的效果
+        for (MobEffect effect : allEffects) {
             String id = ForgeRegistries.MOB_EFFECTS.getKey(effect).toString();
             if (query.isEmpty() ||
                     effect.getDisplayName().getString().toLowerCase().contains(query) ||
@@ -174,7 +172,7 @@ public class DebuffFilterScreen extends Screen {
         for (String customId : customIds) {
             if (query.isEmpty() || customId.toLowerCase().contains(query)) {
                 // 检查是否已在注册表条目中
-                boolean alreadyListed = allDebuffs.stream().anyMatch(e ->
+                boolean alreadyListed = allEffects.stream().anyMatch(e ->
                         ForgeRegistries.MOB_EFFECTS.getKey(e).toString().equals(customId));
                 if (!alreadyListed) {
                     displayedEntries.add(new FilterEntry(customId, customId, true));
@@ -301,13 +299,13 @@ public class DebuffFilterScreen extends Screen {
 
     private void sendFilterUpdate() {
         NetworkHandler.CHANNEL.sendToServer(
-                new NetworkHandler.UpdateDebuffFilterPacket(useBlacklist, new HashSet<>(filteredEffects)));
+                new NetworkHandler.UpdateBuffFilterPacket(useBlacklist, new HashSet<>(filteredEffects)));
 
         // 同步更新客户端缓存
         var player = Minecraft.getInstance().player;
         if (player != null) {
             player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                stats.setDebuffFilterList(new HashSet<>(filteredEffects), useBlacklist);
+                stats.setBuffFilterList(new HashSet<>(filteredEffects), useBlacklist);
             });
         }
     }

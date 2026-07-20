@@ -59,6 +59,15 @@ public final class ClientSetup {
             "key.categories.infinitestats"
     );
 
+    /**
+     * 打开成就管理器按键（默认 U）
+     */
+    public static final KeyMapping OPEN_ACHIEVEMENTS_KEY = new KeyMapping(
+            "key.infinitestats.achievements",
+            GLFW.GLFW_KEY_U,
+            "key.categories.infinitestats"
+    );
+
     @SubscribeEvent
     public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(OPEN_STATS_KEY);
@@ -66,5 +75,6 @@ public final class ClientSetup {
         event.register(HUD_TOGGLE_KEY);
         event.register(OPEN_ITEM_EDITOR_KEY);
         event.register(OPEN_EMC_KEY);
+        event.register(OPEN_ACHIEVEMENTS_KEY);
     }
 }

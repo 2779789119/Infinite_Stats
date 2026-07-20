@@ -36,13 +36,16 @@ public class PlayerStats {
     // 每个玩家独立的被动经验tick计数器
     private int passiveTickCounter = 0;
 
+    // 时间加速（加速属性）的小数累加器，避免点数较小时完全不生效
+    private double timeAccelAccum = 0;
+
     // 记录本模组当前正在提供的能力（用于区分本模组 vs 其他模组给予的效果）
     private final Set<String> providedAbilities = new HashSet<>();
 
-    // debuff_immunity 过滤模式：true = 黑名单（列表中的拦截），false = 白名单（列表中的绝对不拦截，其他不管）
-    private boolean debuffUseBlacklist = true;
-    // debuff 效果 ID 列表（如 "minecraft:poison"）
-    private final Set<String> debuffFilterList = new HashSet<>();
+    // buff 过滤模式：true = 黑名单（列表中的拦截），false = 白名单（列表中的绝对不拦截，其他不管）
+    private boolean buffUseBlacklist = true;
+    // 效果 ID 过滤列表（如 "minecraft:poison"，包含正面和负面效果）
+    private final Set<String> buffFilterList = new HashSet<>();
 
     // ========== 构造器 ==========
 
@@ -93,7 +96,7 @@ public class PlayerStats {
 
     /**
      * 根据等级和已分配点数重新计算可用点数
-     * 允许负值——支持属性扣到负数（借用未来点数）
+     * 正常游戏过程中不会为负，因为 addPoints / removePoints 都已禁止透支
      */
     public void recalculateAvailablePoints() {
         long totalEarned = (level - 1) * (long) Config.POINTS_PER_LEVEL.get();
@@ -143,6 +146,16 @@ public class PlayerStats {
         this.passiveTickCounter = 0;
     }
 
+    // ========== 时间加速累加器 ==========
+
+    public double getTimeAccelAccum() {
+        return timeAccelAccum;
+    }
+
+    public void setTimeAccelAccum(double value) {
+        this.timeAccelAccum = value;
+    }
+
     // ========== 能力提供追踪 ==========
 
     /**
@@ -170,57 +183,57 @@ public class PlayerStats {
         providedAbilities.clear();
     }
 
-    // ========== Debuff 过滤系统 ==========
+    // ========== Buff 过滤系统 ==========
 
     /**
-     * 获取过滤模式：true=黑名单（不拦截列表中的），false=白名单（只拦截列表中的）
+     * 获取过滤模式：true=黑名单（列表中的拦截），false=白名单（列表中的绝对不拦截，其他不管）
      */
-    public boolean isDebuffUseBlacklist() {
-        return debuffUseBlacklist;
+    public boolean isBuffUseBlacklist() {
+        return buffUseBlacklist;
     }
 
     /**
      * 设置过滤模式
      */
-    public void setDebuffUseBlacklist(boolean blacklist) {
-        this.debuffUseBlacklist = blacklist;
+    public void setBuffUseBlacklist(boolean blacklist) {
+        this.buffUseBlacklist = blacklist;
     }
 
     /**
      * 获取过滤列表（不可变副本）
      */
-    public Set<String> getDebuffFilterList() {
-        return Collections.unmodifiableSet(debuffFilterList);
+    public Set<String> getBuffFilterList() {
+        return Collections.unmodifiableSet(buffFilterList);
     }
 
     /**
      * 添加效果到过滤列表
      */
-    public void addDebuffFilter(String effectId) {
-        debuffFilterList.add(effectId);
+    public void addBuffFilter(String effectId) {
+        buffFilterList.add(effectId);
     }
 
     /**
      * 从过滤列表移除效果
      */
-    public void removeDebuffFilter(String effectId) {
-        debuffFilterList.remove(effectId);
+    public void removeBuffFilter(String effectId) {
+        buffFilterList.remove(effectId);
     }
 
     /**
      * 清空过滤列表
      */
-    public void clearDebuffFilters() {
-        debuffFilterList.clear();
+    public void clearBuffFilters() {
+        buffFilterList.clear();
     }
 
     /**
      * 设置完整过滤列表（从网络同步）
      */
-    public void setDebuffFilterList(Set<String> list, boolean useBlacklist) {
-        debuffFilterList.clear();
-        debuffFilterList.addAll(list);
-        this.debuffUseBlacklist = useBlacklist;
+    public void setBuffFilterList(Set<String> list, boolean useBlacklist) {
+        buffFilterList.clear();
+        buffFilterList.addAll(list);
+        this.buffUseBlacklist = useBlacklist;
     }
 
     /**
@@ -228,8 +241,8 @@ public class PlayerStats {
      * @return true = 应该拦截
      */
     public boolean shouldBlockEffect(String effectId) {
-        boolean inList = debuffFilterList.contains(effectId);
-        if (debuffUseBlacklist) {
+        boolean inList = buffFilterList.contains(effectId);
+        if (buffUseBlacklist) {
             // 黑名单模式：列表中的就是要拦截的
             // 空列表 = 没有要拦截的 = 全放行
             return inList;
@@ -289,30 +302,38 @@ public class PlayerStats {
     }
 
     /**
-     * 批量添加属性点（允许可用点数为负——借用未来点数）
+     * 批量添加属性点（禁止透支可用点数）
      * "+" 统一语义：值往正向走（current += count）
-     *   current >= 0 → 消耗点数；current < 0 → 返还点数（因为绝对值变小）
+     *   current >= 0 → 远离零点，消耗可用点数
+     *   current < 0 → 往 0 靠近，返还可用点数
      */
     public boolean addPoints(StatType stat, long count) {
         if (count <= 0) return false;
 
         long current = allocatedPoints.getOrDefault(stat.getId(), 0L);
 
-        // 开关型属性：一次性加到激活阈值
-        if (stat.isToggle() && current < stat.getMaxLevel()) {
-            count = stat.getMaxLevel() - current;
+        // 开关型属性：一次性加到激活阈值（不允许透支点数）
+        if (stat.isToggle()) {
+            if (current >= stat.getMaxLevel()) return false;
+            long toAdd = stat.getMaxLevel() - current;
+            if (toAdd <= 0 || availablePoints < toAdd) return false;
+            allocatedPoints.put(stat.getId(), current + toAdd);
+            availablePoints -= toAdd;
+            invalidateCache();
+            return true;
         }
 
         if (current >= 0) {
-            // 正值方向：往上加（最多到 maxLevel），消耗点数
+            // 正值方向：往上加（最多到 maxLevel），消耗可用点数
             long max = stat.getMaxLevel();
             long space = max - current;
             long toAdd = Math.min(count, space);
             if (toAdd <= 0) return false;
+            if (availablePoints < toAdd) return false;
             allocatedPoints.put(stat.getId(), current + toAdd);
             availablePoints -= toAdd;
         } else {
-            // 负值方向：靠近 0，返还点数（绝对值变小）
+            // 属性已为负：往 0 靠近，返还可用点数
             long newVal = Math.min(0, current + count);
             long moved = newVal - current; // 正值，如 -10→-3 则 moved=7
             if (moved <= 0) return false;
@@ -329,10 +350,10 @@ public class PlayerStats {
     }
 
     /**
-     * 移除属性点（允许降入负数）
-     * "-" 统一语义：值往负向走（current -= count）
-     *   current > 0：正向部分返还点数，越过 0 后的负向部分消耗点数
-     *   current <= 0：继续往负走，消耗点数
+     * 移除属性点
+     * "-" 统一语义：值往负向走
+     *   current > 0 → 往 0 靠近，返还可用点数
+     *   current <= 0 → 远离零点（继续往负），消耗可用点数，下限 = -maxLevel
      */
     public boolean removePoints(StatType stat, long count) {
         if (count <= 0) return false;
@@ -341,29 +362,36 @@ public class PlayerStats {
 
         // 开关型属性：一次性全部移除
         if (stat.isToggle()) {
-            count = current;
-        }
-
-        if (count <= 0) return false;
-
-        long newVal = current - count;
-
-        if (newVal == 0) {
+            if (current <= 0) return false;
             allocatedPoints.remove(stat.getId());
-        } else {
-            allocatedPoints.put(stat.getId(), newVal);
+            availablePoints += current;
+            invalidateCache();
+            return true;
         }
 
-        // 点数核算
         if (current > 0) {
-            // 从正值往负走：正向部分 (min(current, count)) 返还点数
-            // 若跨过 0 进入负数，超出部分 (count - min(current, count)) 消耗点数
-            long returned = Math.min(current, count);
-            availablePoints += returned;
-            availablePoints -= (count - returned);
+            // 正值方向：往 0 靠近，返还点数
+            long toRemove = Math.min(count, current);
+            long newVal = current - toRemove;
+            if (newVal == 0) {
+                allocatedPoints.remove(stat.getId());
+            } else {
+                allocatedPoints.put(stat.getId(), newVal);
+            }
+            availablePoints += toRemove;
         } else {
-            // 从 0 或负数继续往负走：消耗点数
-            availablePoints -= count;
+            // 已为 0 或负数：继续往负方向（远离零点），消耗可用点数
+            long minLevel = -(long) stat.getMaxLevel();
+            long newVal = Math.max(minLevel, current - count);
+            long moved = current - newVal; // 正值，如 0→-3 则 moved=3
+            if (moved <= 0) return false;
+            if (availablePoints < moved) return false; // 点数不足
+            if (newVal == 0) {
+                allocatedPoints.remove(stat.getId());
+            } else {
+                allocatedPoints.put(stat.getId(), newVal);
+            }
+            availablePoints -= moved; // 消耗点数
         }
 
         invalidateCache();
@@ -483,10 +511,10 @@ public class PlayerStats {
         }
         tag.put("providedAbilities", abilitiesList);
 
-        // 序列化 debuff 过滤列表
-        tag.putBoolean("debuffUseBlacklist", debuffUseBlacklist);
+        // 序列化 buff 过滤列表
+        tag.putBoolean("debuffUseBlacklist", buffUseBlacklist);
         ListTag filterList = new ListTag();
-        for (String effectId : debuffFilterList) {
+        for (String effectId : buffFilterList) {
             CompoundTag fTag = new CompoundTag();
             fTag.putString("id", effectId);
             filterList.add(fTag);
@@ -525,12 +553,12 @@ public class PlayerStats {
                 providedAbilities.add(aTag.getString("id"));
             }
         }
-        debuffUseBlacklist = tag.contains("debuffUseBlacklist") ? tag.getBoolean("debuffUseBlacklist") : true;
-        debuffFilterList.clear();
+        buffUseBlacklist = tag.contains("debuffUseBlacklist") ? tag.getBoolean("debuffUseBlacklist") : true;
+        buffFilterList.clear();
         if (tag.contains("debuffFilterList")) {
             ListTag filterList = tag.getList("debuffFilterList", Tag.TAG_COMPOUND);
             for (int i = 0; i < filterList.size(); i++) {
-                debuffFilterList.add(filterList.getCompound(i).getString("id"));
+                buffFilterList.add(filterList.getCompound(i).getString("id"));
             }
         }
 
@@ -549,9 +577,9 @@ public class PlayerStats {
         this.passiveTickCounter = other.passiveTickCounter;
         this.providedAbilities.clear();
         this.providedAbilities.addAll(other.providedAbilities);
-        this.debuffUseBlacklist = other.debuffUseBlacklist;
-        this.debuffFilterList.clear();
-        this.debuffFilterList.addAll(other.debuffFilterList);
+        this.buffUseBlacklist = other.buffUseBlacklist;
+        this.buffFilterList.clear();
+        this.buffFilterList.addAll(other.buffFilterList);
         this.allocatedPoints.clear();
         this.allocatedPoints.putAll(other.allocatedPoints);
         invalidateCache();
@@ -565,8 +593,8 @@ public class PlayerStats {
                 level, experience, availablePoints,
                 lastReviveTime, currentMana, passiveTickCounter,
                 new HashMap<>(allocatedPoints),
-                debuffUseBlacklist,
-                new HashSet<>(debuffFilterList)
+                buffUseBlacklist,
+                new HashSet<>(buffFilterList)
         );
     }
 
@@ -582,9 +610,9 @@ public class PlayerStats {
         this.passiveTickCounter = snapshot.passiveTickCounter;
         this.allocatedPoints.clear();
         this.allocatedPoints.putAll(snapshot.allocatedPoints);
-        this.debuffUseBlacklist = snapshot.debuffUseBlacklist;
-        this.debuffFilterList.clear();
-        this.debuffFilterList.addAll(snapshot.debuffFilterList);
+        this.buffUseBlacklist = snapshot.buffUseBlacklist;
+        this.buffFilterList.clear();
+        this.buffFilterList.addAll(snapshot.buffFilterList);
         invalidateCache();
     }
 
@@ -598,13 +626,13 @@ public class PlayerStats {
         public final float currentMana;
         public final int passiveTickCounter;
         public final Map<String, Long> allocatedPoints;
-        public final boolean debuffUseBlacklist;
-        public final Set<String> debuffFilterList;
+        public final boolean buffUseBlacklist;
+        public final Set<String> buffFilterList;
 
         public StatsSnapshot(long level, long experience, long availablePoints,
                 long lastReviveTime, float currentMana, int passiveTickCounter,
                 Map<String, Long> allocatedPoints,
-                boolean debuffUseBlacklist, Set<String> debuffFilterList) {
+                boolean buffUseBlacklist, Set<String> buffFilterList) {
             this.level = level;
             this.experience = experience;
             this.availablePoints = availablePoints;
@@ -612,8 +640,8 @@ public class PlayerStats {
             this.currentMana = currentMana;
             this.passiveTickCounter = passiveTickCounter;
             this.allocatedPoints = allocatedPoints;
-            this.debuffUseBlacklist = debuffUseBlacklist;
-            this.debuffFilterList = debuffFilterList;
+            this.buffUseBlacklist = buffUseBlacklist;
+            this.buffFilterList = buffFilterList;
         }
     }
 }

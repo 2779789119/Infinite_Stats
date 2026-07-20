@@ -104,7 +104,7 @@ public class DefenseHandler implements StatEffectHandler {
 
     /**
      * 驱散负面药水效果（debuff_immunity 开关）
-     * 支持玩家自定义过滤列表
+     * 支持玩家自定义过滤列表，可选择过滤所有效果（包括正面buff和负面debuff）
      */
     private void applyDebuffImmunity(ServerPlayer player, PlayerStats stats) {
         if (!stats.isToggleActive("debuff_immunity")) return;
@@ -112,7 +112,7 @@ public class DefenseHandler implements StatEffectHandler {
         var effects = player.getActiveEffects();
         // 遍历副本，安全移除
         for (MobEffectInstance inst : new java.util.ArrayList<>(effects)) {
-            if (inst.getEffect() == null || inst.getEffect().isBeneficial()) continue;
+            if (inst.getEffect() == null) continue;
 
             String effectId = ForgeRegistries.MOB_EFFECTS.getKey(inst.getEffect()).toString();
             if (stats.shouldBlockEffect(effectId)) {
