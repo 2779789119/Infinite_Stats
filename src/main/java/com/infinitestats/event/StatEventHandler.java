@@ -38,7 +38,7 @@ import net.minecraftforge.fml.common.Mod;
  * 主事件处理器 - 整合所有属性效果
  * 使用HandlerRegistry统一调度各个专用处理器
  */
-@Mod.EventBusSubscriber(modid = InfiniteStats.MODID)
+@Mod.EventBusSubscriber(modid = InfiniteStats.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class StatEventHandler {
 
     // ========== 死亡事件 ==========
@@ -168,8 +168,10 @@ public final class StatEventHandler {
 
     @SubscribeEvent(priority = EventPriority.LOW)
     public static void onLivingHurt(LivingHurtEvent event) {
-        // 玩家攻击
-        if (event.getSource().getEntity() instanceof ServerPlayer player) {
+        // 玩家攻击（覆盖近战、弓箭/三叉戟等玩家拥有的抛射物，
+        // 避免“伤害来源实体不是玩家”导致范围伤害等攻击效果时灵时不灵）
+        ServerPlayer player = getPlayerAttacker(event);
+        if (player != null) {
             player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
                 float amount = event.getAmount();
 
@@ -210,12 +212,21 @@ public final class StatEventHandler {
                         event.setAmount(event.getAmount() + bonus);
                     }
                 }
+
+                // 真实伤害（无视护甲与减伤）
+                AttackHandler.applyTrueDamage(player, stats, event.getAmount(), event.getEntity());
+
+                // 攻击降低目标最大生命值
+                AttackHandler.applyReduceMaxHealth(player, stats, event.getEntity());
+
+                // 范围攻击：波及周围敌人
+                AttackHandler.applyScopeAttack(player, stats, event.getAmount(), event.getEntity());
             });
         }
 
         // 玩家受伤
-        if (event.getEntity() instanceof ServerPlayer player) {
-            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+        if (event.getEntity() instanceof ServerPlayer hurtPlayer) {
+            hurtPlayer.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
                 float amount = event.getAmount();
 
                 // 无敌：取消所有伤害
@@ -225,15 +236,15 @@ public final class StatEventHandler {
                 }
 
                 // 检查免疫
-                if (DefenseHandler.isImmune(stats, event.getSource(), player)) {
+                if (DefenseHandler.isImmune(stats, event.getSource(), hurtPlayer)) {
                     event.setCanceled(true);
                     return;
                 }
 
                 // 闪避
-                if (DefenseHandler.handleDodge(player, stats)) {
+                if (DefenseHandler.handleDodge(hurtPlayer, stats)) {
                     event.setCanceled(true);
-                    player.displayClientMessage(
+                    hurtPlayer.displayClientMessage(
                             net.minecraft.network.chat.Component.translatable("message.infinitestats.dodged"),
                             true
                     );
@@ -241,9 +252,9 @@ public final class StatEventHandler {
                 }
 
                 // 格挡
-                if (DefenseHandler.handleBlock(player, stats)) {
+                if (DefenseHandler.handleBlock(hurtPlayer, stats)) {
                     event.setCanceled(true);
-                    player.displayClientMessage(
+                    hurtPlayer.displayClientMessage(
                             net.minecraft.network.chat.Component.translatable("message.infinitestats.blocked"),
                             true
                     );
@@ -261,7 +272,7 @@ public final class StatEventHandler {
                 amount = DefenseHandler.applyDamageReduction(stats, amount);
 
                 // 摔落伤害减免
-                boolean isFall = event.getSource() == player.level().damageSources().fall();
+                boolean isFall = event.getSource() == hurtPlayer.level().damageSources().fall();
                 amount = DefenseHandler.applyFallDamageReduction(stats, amount, isFall);
                 if (amount <= 0) {
                     event.setCanceled(true);
@@ -272,7 +283,7 @@ public final class StatEventHandler {
 
                 // 伤害反射
                 if (event.getSource().getEntity() instanceof LivingEntity attacker) {
-                    DefenseHandler.applyDamageReflection(player, stats, event.getAmount(), attacker);
+                    DefenseHandler.applyDamageReflection(hurtPlayer, stats, event.getAmount(), attacker);
                 }
             });
         }
@@ -330,16 +341,33 @@ public final class StatEventHandler {
 
         // 使用HandlerRegistry处理所有效果（含跳跃检测、被动经验，每玩家独立计数）
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-            HandlerRegistry.tickAll(player, stats, tickCount);
-
-            // 跳跃加成检测（tick 级兜底，比 LivingJumpEvent 更可靠）
-            handleJumpBoost(player, stats);
-
-            // 被动经验 - 每玩家独立计数器
-            stats.incrementPassiveTickCounter();
-            if (stats.getPassiveTickCounter() >= Config.PASSIVE_XP_INTERVAL.get()) {
-                stats.resetPassiveTickCounter();
-                addXpAndSync(player, stats, Config.PASSIVE_XP_AMOUNT.get());
+            try {
+                HandlerRegistry.tickAll(player, stats, tickCount);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+            try {
+                // 跳跃加成检测（tick 级兜底，比 LivingJumpEvent 更可靠）
+                handleJumpBoost(player, stats);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+            try {
+                // 被动经验 - 每玩家独立计数器
+                stats.incrementPassiveTickCounter();
+                if (stats.getPassiveTickCounter() >= Config.PASSIVE_XP_INTERVAL.get()) {
+                    stats.resetPassiveTickCounter();
+                    addXpAndSync(player, stats, Config.PASSIVE_XP_AMOUNT.get());
+                }
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+            // 随身熔炉：每个玩家 tick 都驱动冶炼进度（与界面是否打开无关）
+            // 独立 try，确保即使上述逻辑异常也照常冶炼
+            try {
+                stats.getFurnaceData().tick(player.level());
+            } catch (Throwable t) {
+                t.printStackTrace();
             }
         });
     }
@@ -510,6 +538,23 @@ public final class StatEventHandler {
     }
 
     // ========== 辅助方法 ==========
+
+    /**
+     * 判断本次伤害是否由玩家造成：
+     * 1) 伤害来源实体直接就是玩家（近战挥砍、多数模组技能/召唤物以玩家为来源）
+     * 2) 直接实体是玩家拥有的抛射物（弓箭、三叉戟等）
+     * 用于让范围伤害、吸血等攻击附加效果在更多攻击方式下稳定触发
+     */
+    private static ServerPlayer getPlayerAttacker(LivingHurtEvent event) {
+        var source = event.getSource();
+        if (source.getEntity() instanceof ServerPlayer sp) return sp;
+        var direct = source.getDirectEntity();
+        if (direct instanceof net.minecraft.world.entity.projectile.Projectile p
+                && p.getOwner() instanceof ServerPlayer sp) {
+            return sp;
+        }
+        return null;
+    }
 
     private static void addXpAndSync(ServerPlayer player, PlayerStats stats, long xp) {
         boolean leveledUp = stats.addExperience(xp);

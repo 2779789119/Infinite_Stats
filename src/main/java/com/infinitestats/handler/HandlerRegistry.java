@@ -61,10 +61,15 @@ public final class HandlerRegistry {
     /**
      * 执行所有处理器的tick方法
      */
-    public static void tickAll(net.minecraft.server.level.ServerPlayer player, 
+    public static void tickAll(net.minecraft.server.level.ServerPlayer player,
             com.infinitestats.stats.PlayerStats stats, long tickCount) {
         for (StatEffectHandler handler : getEnabledHandlers()) {
-            handler.onTick(player, stats, tickCount);
+            try {
+                handler.onTick(player, stats, tickCount);
+            } catch (Throwable t) {
+                // 单个 handler 异常不应中断其它 handler，也不应影响后续熔炉冶炼
+                t.printStackTrace();
+            }
         }
     }
 

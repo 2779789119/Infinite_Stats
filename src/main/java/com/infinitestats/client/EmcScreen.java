@@ -414,7 +414,7 @@ public class EmcScreen extends AbstractContainerScreen<EmcMenu> {
 
     @Override
     public boolean isPauseScreen() {
-        return false;
+        return true;
     }
 
     // ==================== EDitBox 焦点恢复 ====================

@@ -19,6 +19,9 @@ public final class Config {
     public static ForgeConfigSpec.IntValue PASSIVE_XP_AMOUNT;
     public static ForgeConfigSpec.IntValue PASSIVE_XP_INTERVAL;
 
+    // 每提升一级随身工作台物品倍率所消耗的可分配点数（属性点数）
+    public static ForgeConfigSpec.IntValue CRAFTING_MULTIPLIER_COST;
+
     // ========== 升级设置 ==========
 
     public static ForgeConfigSpec.IntValue BASE_XP_PER_LEVEL;
@@ -54,6 +57,11 @@ public final class Config {
 
     // 基础半径：即使玩家未加「加速半径」点数也生效的最小半径
     public static ForgeConfigSpec.IntValue TIME_ACCEL_RADIUS;
+
+    // ========== 随身熔炉加速设置 ==========
+
+    // 每提升一级熔炉速度所消耗的可分配点数（属性点数）
+    public static ForgeConfigSpec.IntValue FURNACE_SPEED_COST;
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
@@ -151,6 +159,22 @@ public final class Config {
                 .comment("「加速」的基础影响半径（方块）。以玩家为中心，水平与垂直方向同半径。",
                          "这是未加「加速半径」点数时的最小半径；玩家可通过「加速半径」属性自行扩大。")
                 .defineInRange("timeAccelRadius", 4, 1, 64);
+        builder.pop();
+
+        // 随身熔炉加速设置
+        builder.push("Furnace");
+        FURNACE_SPEED_COST = builder
+                .comment("每提升一级随身熔炉速度所消耗的可分配点数（属性点数）。",
+                         "降低速度等级时会返还相同点数。")
+                .defineInRange("furnaceSpeedCost", 5, 1, 100000);
+        builder.pop();
+
+        // 随身工作台倍率设置
+        builder.push("Crafting");
+        CRAFTING_MULTIPLIER_COST = builder
+                .comment("每提升一级随身工作台物品倍率所消耗的可分配点数（属性点数）。",
+                         "降低倍率等级时会返还相同点数。")
+                .defineInRange("craftingMultiplierCost", 5, 1, 100000);
         builder.pop();
 
         SPEC = builder.build();

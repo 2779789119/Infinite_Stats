@@ -15,6 +15,7 @@ import net.minecraft.world.level.block.entity.BlockEntityTicker;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 
+import java.util.ArrayList;
 import java.util.Map;
 
 /**
@@ -126,7 +127,9 @@ public class TimeAccelHandler implements StatEffectHandler {
                 LevelChunk chunk = level.getChunkSource().getChunkNow(cx, cz);
                 if (chunk == null) continue;
 
-                for (BlockEntity be : chunk.getBlockEntities().values()) {
+                // 遍历副本快照：tick 过程中区块方块实体可能被增删（刷怪笼、漏斗等），
+                // 直接遍历原 HashMap 会触发 ConcurrentModificationException
+                for (BlockEntity be : new ArrayList<>(chunk.getBlockEntities().values())) {
                     BlockPos bep = be.getBlockPos();
                     if (bep.getY() < yMin || bep.getY() > yMax) continue;
                     if (Math.abs(bep.getX() - center.getX()) > radius) continue;

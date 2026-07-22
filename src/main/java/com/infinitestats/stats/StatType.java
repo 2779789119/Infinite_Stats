@@ -413,6 +413,27 @@ public final class StatType {
                 .perPointValue(0.02f)
                 .build(),
 
+            create("true_damage").category(StatCategory.ATTACK)
+                .percentage()
+                .perPointValue(0.01f)
+                .description("每次攻击附加基于伤害的额外真实伤害，无视护甲与减伤")
+                .build(),
+
+            create("reduce_max_health").category(StatCategory.ATTACK)
+                .perPointValue(1.0f)
+                .description("每次攻击降低目标最大生命值（每点 -1 点，最低保留 1 点）")
+                .build(),
+
+            create("scope_attack").category(StatCategory.ATTACK)
+                .perPointValue(0.3f)
+                .description("攻击时波及周围敌人，对范围内敌人造成 50% 伤害（半径每点 +0.3 格）")
+                .build(),
+
+            create("repulsion").category(StatCategory.ATTACK)
+                .perPointValue(0.5f)
+                .description("持续排斥周围的敌对生物，将它们推开（半径每点 +0.5 格）")
+                .build(),
+
             // ===== 防御属性 =====
             create("max_health").category(StatCategory.DEFENSE)
                 .attribute("minecraft:generic.max_health")
@@ -646,6 +667,30 @@ public final class StatType {
             create("time_accel_radius").category(StatCategory.UTILITY)
                 .perPointValue(1.0f)
                 .description("扩大「加速」的影响半径（每点 +1 格），玩家可自行加点扩展范围")
+                .build(),
+
+            create("cross_dimension_teleport").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可使用 /infstats crossdim 进行跨维度传送")
+                .build(),
+
+            create("fixed_point_teleport").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可使用 /infstats wp 保存与传送到固定坐标点")
+                .build(),
+
+            create("portable_crafting").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可使用 /infstats craft 打开随身工作台")
+                .build(),
+
+            create("portable_furnace").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可使用 /infstats furnace 打开随身熔炉")
                 .build(),
 
             // ===== 魔法属性 =====

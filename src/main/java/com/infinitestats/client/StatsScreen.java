@@ -39,7 +39,7 @@ public class StatsScreen extends Screen {
     private static final int CARD_H = 30;
     private static final int CARD_GAP = 2;
     private static final int MAX_VISIBLE = 6;
-    private static final int FOOTER_H = 44;
+    private static final int FOOTER_H = 58;
     private static final int SCROLLBAR_W = 6;
     private static final int BTN_W = 24;
     private static final int BTN_H = 18;
@@ -94,7 +94,8 @@ public class StatsScreen extends Screen {
     private PlayerStats cachedStats;
     private int scrollOffset;
     private int maxScroll;
-    private int batchMode; // 0=x1, 1=x5, 2=x10, 3=Max
+    private int addAmountIndex; // 0..4 → x1,x10,x100,x1000,x10000
+    private boolean maxMode; // true=一次加满
     private boolean scrollbarDragging;
     private int scrollbarDragStartY;
     private int scrollbarDragStartOffset;
@@ -136,8 +137,8 @@ public class StatsScreen extends Screen {
     private final List<DisplayEntry> externalDisplayList = new ArrayList<>();
     private final Set<String> collapsedExternalGroups = new HashSet<>();
 
-    private static final String[] BATCH_LABELS = {"x1", "x5", "x10", "MAX"};
-    private static final int[] BATCH_VALUES = {1, 5, 10, Integer.MAX_VALUE};
+    private static final String[] ADD_LABELS = {"x1", "x10", "x100", "x1000", "x10000"};
+    private static final long[] ADD_VALUES = {1, 10, 100, 1000, 10000};
 
     // ======================== 属性图标映射 ========================
 
@@ -365,6 +366,7 @@ public class StatsScreen extends Screen {
         addStatCardButtons();
         addBatchModeButtons();
         addResetButtons();
+        addPanelNavButtons();
     }
 
     private void addCategoryTabs() {
@@ -477,36 +479,38 @@ public class StatsScreen extends Screen {
     }
 
     private void addBatchModeButtons() {
-        int footerY = GUI_HEIGHT - FOOTER_H + 6;
-        for (int i = 0; i < BATCH_LABELS.length; i++) {
-            final int mode = i;
-            boolean active = batchMode == mode;
-            int bx = 8 + i * 42;
-            int bgColor = active ? 0xFF3B82F6 : 0x50252535;
-            int hoverColor = active ? 0xFF60A5FA : 0x80353550;
-            Button btn = new PixelButton(bx, footerY, 38, 14,
-                    Component.literal(BATCH_LABELS[mode]),
-                    bgColor, hoverColor,
-                    active ? TEXT_PRIMARY : TEXT_SECONDARY,
-                    b -> { playClickSound(); setBatchMode(mode); });
-            addRenderableWidget(btn);
-        }
+        int footerY = GUI_HEIGHT - FOOTER_H + 26;
+        int btnW = 64, gap = 4;
+
+        // 倍率切换按钮：点击循环 x1 → x10 → x100 → x1000 → x10000（同时关闭 MAX）
+        Button multBtn = new PixelButton(8, footerY, btnW, 14,
+                Component.literal(ADD_LABELS[addAmountIndex]),
+                0x50252535, 0x80353550, TEXT_SECONDARY,
+                b -> {
+                    playClickSound();
+                    addAmountIndex = (addAmountIndex + 1) % ADD_LABELS.length;
+                    maxMode = false;
+                    rebuildAllWidgets();
+                });
+        addRenderableWidget(multBtn);
+
+        // MAX 按钮：与倍率互斥，开启后一次加满
+        Button maxBtn = new PixelButton(8 + btnW + gap, footerY, 48, 14,
+                Component.literal("MAX"),
+                maxMode ? 0xFFB45309 : 0x50252535,
+                maxMode ? 0xFFD97706 : 0x80353550,
+                maxMode ? TEXT_PRIMARY : TEXT_SECONDARY,
+                b -> {
+                    playClickSound();
+                    maxMode = !maxMode;
+                    rebuildAllWidgets();
+                });
+        addRenderableWidget(maxBtn);
     }
 
     private void addResetButtons() {
-        int footerY = GUI_HEIGHT - FOOTER_H + 6;
+        int footerY = GUI_HEIGHT - FOOTER_H + 26;
         int btnWidth = 48;
-
-        // 仅防御分类时显示 debuff 过滤器按钮
-        if (selectedCategory == StatCategory.DEFENSE) {
-            Button filterBtn = new PixelButton(
-                    GUI_WIDTH - SCROLLBAR_W - btnWidth * 3 - 34, footerY,
-                    btnWidth + 12, 14,
-                    Component.translatable("screen.infinitestats.debuff_filter"),
-                    0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
-                    b -> openDebuffFilter());
-            addRenderableWidget(filterBtn);
-        }
 
         Button resetCatBtn = new PixelButton(
                 GUI_WIDTH - SCROLLBAR_W - btnWidth * 2 - 24, footerY,
@@ -523,6 +527,45 @@ public class StatsScreen extends Screen {
                 0x504A1A1A, 0x808A2E2E, TEXT_SECONDARY,
                 b -> { playClickSound(); resetAll(); });
         addRenderableWidget(resetAllBtn);
+
+        // 打开传送点面板
+        Button wpBtn = new PixelButton(
+                8 + 4 * 42 + 8, footerY,
+                70, 14,
+                Component.translatable("screen.infinitestats.waypoint"),
+                0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                b -> {
+                    playClickSound();
+                    if (minecraft != null) minecraft.setScreen(new WaypointScreen());
+                });
+        addRenderableWidget(wpBtn);
+    }
+
+    /** 页脚导航行：从主面板一键打开其它独立面板。 */
+    private void addPanelNavButtons() {
+        int navY = GUI_HEIGHT - FOOTER_H + 4;
+        int btnW = 45, gap = 4;
+        String[] labels = {"传送", "跨维度", "过滤", "EMC", "成就", "物品", "HUD", "工作台", "熔炉"};
+        Runnable[] actions = {
+                () -> { if (minecraft != null) minecraft.setScreen(new WaypointScreen()); },
+                () -> { if (minecraft != null) minecraft.setScreen(new CrossDimScreen()); },
+                this::openDebuffFilter,
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket()),
+                () -> { if (minecraft != null) minecraft.setScreen(new AchievementManagerScreen()); },
+                () -> { if (minecraft != null) minecraft.setScreen(new ItemEditorScreen()); },
+                () -> { if (minecraft != null) minecraft.setScreen(new HudEditScreen()); },
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.CraftingOpenPacket()),
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceOpenPacket())
+        };
+        int totalW = labels.length * btnW + (labels.length - 1) * gap;
+        int startX = (GUI_WIDTH - totalW) / 2;
+        for (int i = 0; i < labels.length; i++) {
+            final int idx = i;
+            Button btn = new PixelButton(startX + i * (btnW + gap), navY, btnW, 16,
+                    Component.literal(labels[i]), 0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                    b -> { playClickSound(); actions[idx].run(); });
+            addRenderableWidget(btn);
+        }
     }
 
     private void openDebuffFilter() {
@@ -539,12 +582,6 @@ public class StatsScreen extends Screen {
         selectedCategory = cat;
         scrollOffset = 0;
         updateMaxScroll();
-        rebuildAllWidgets();
-    }
-
-    private void setBatchMode(int mode) {
-        if (mode == batchMode) return;
-        batchMode = mode;
         rebuildAllWidgets();
     }
 
@@ -606,7 +643,7 @@ public class StatsScreen extends Screen {
     }
 
     private long getBatchAmount(StatType stat, boolean isAdd) {
-        if (batchMode == 3) { // MAX
+        if (maxMode) { // MAX
             if (cachedStats == null) return 0L;
             long level = cachedStats.getStatLevel(stat);
             long available = cachedStats.getAvailablePoints();
@@ -632,7 +669,7 @@ public class StatsScreen extends Screen {
             }
         }
         // 非 MAX 模式：如果是消耗操作，受可用点数限制
-        long base = BATCH_VALUES[batchMode];
+        long base = ADD_VALUES[addAmountIndex];
         if (cachedStats != null) {
             long level = cachedStats.getStatLevel(stat);
             long available = cachedStats.getAvailablePoints();
@@ -670,7 +707,7 @@ public class StatsScreen extends Screen {
             return;
         }
         long count;
-        if (batchMode == 3) {
+        if (maxMode) {
             if (current < 0) {
                 // 负值加正：往 0 靠近，返还点数，最多加 -current
                 count = -current;
@@ -680,7 +717,7 @@ public class StatsScreen extends Screen {
                 count = Math.min(available, space);
             }
         } else {
-            count = BATCH_VALUES[batchMode];
+            count = ADD_VALUES[addAmountIndex];
             if (current >= 0) {
                 // 消耗操作：不得超过可用点数和上限
                 long space = (long) stat.getMaxLevel() - current;
@@ -1131,12 +1168,12 @@ public class StatsScreen extends Screen {
     // ======================== 底栏绘制 ========================
 
     private void renderFooter(GuiGraphics g, int l, int t) {
-        int footerY = t + GUI_HEIGHT - FOOTER_H;
+        int footerY = t + GUI_HEIGHT - FOOTER_H + 4;
         // 绘制实心底栏背景，避免与卡片重叠
-        g.fill(l, footerY, l + GUI_WIDTH, footerY + FOOTER_H, BG_PANEL);
+        g.fill(l, footerY, l + GUI_WIDTH, footerY + FOOTER_H - 4, BG_PANEL);
         g.fill(l + 1, footerY, l + GUI_WIDTH - 1, footerY + 1, 0x30334860);
 
-        int hintY = footerY + 26;
+        int hintY = footerY + 38;
         String hint = "P " + Component.translatable("screen.infinitestats.hint_close").getString()
                 + "  1-6 " + Component.translatable("screen.infinitestats.hint_switch").getString()
                 + "  B " + Component.translatable("screen.infinitestats.hint_batch").getString()
@@ -1201,7 +1238,7 @@ public class StatsScreen extends Screen {
             long amount = hoveredBtnType == 2
                     ? getBatchAmount(stat, true)
                     : getBatchAmount(stat, false);
-            String label = batchMode == 3 ? "MAX" : String.valueOf(amount);
+            String label = maxMode ? "MAX" : String.valueOf(amount);
             if (hoveredBtnType == 2) {
                 tooltipLines.add(Component.translatable("screen.infinitestats.tooltip_add", label).getString());
                 // "+" 统一语义：值往正向走，负值区返还点数
@@ -1433,7 +1470,10 @@ public class StatsScreen extends Screen {
         }
 
         if (keyCode == GLFW.GLFW_KEY_B) {
-            setBatchMode((batchMode + 1) % BATCH_LABELS.length);
+            addAmountIndex = (addAmountIndex + 1) % ADD_LABELS.length;
+            maxMode = false;
+            playClickSound();
+            rebuildAllWidgets();
             return true;
         }
 
@@ -1530,7 +1570,7 @@ public class StatsScreen extends Screen {
 
     @Override
     public boolean isPauseScreen() {
-        return false;
+        return true;
     }
 
     // ======================== 自定义按钮控件 ========================

@@ -1,0 +1,466 @@
+package com.infinitestats.furnace;
+
+import net.minecraft.core.NonNullList;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.Tag;
+import net.minecraft.world.Container;
+import net.minecraft.world.ContainerHelper;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.crafting.AbstractCookingRecipe;
+import net.minecraft.world.item.crafting.RecipeType;
+import net.minecraft.world.level.Level;
+import net.minecraftforge.common.ForgeHooks;
+
+import java.lang.reflect.Field;
+
+/**
+ * 随身熔炉的持久化状态，挂在玩家 PlayerStats 上随存档保存。
+ * 即使关闭界面、甚至完全不打开界面，也会持续冶炼。
+ *
+ * 容量模型：每个槽位的“真实数量”存放在 {@code amounts[]}（long）中，
+ * ItemStack 仅作为物品模板（count 恒为 1）。这样可突破原版
+ * ItemStack 对 count 的 64 / 单字节 NBT 上限，实现槽位堆叠无上限。
+ *
+ * 单输入/单输出布局：与原版熔炉一致，1 个输入槽 + 1 个输出槽 + 1 个燃料槽。
+ */
+public class PlayerFurnaceData {
+
+    /** 并行冶炼的输入/输出槽数量（与原版熔炉一致：1 个）。 */
+    public static final int INPUT_COUNT = 1;
+
+    public static final int FUEL_SLOT = 0;
+    public static int inputSlot(int i) {
+        return 1 + i;
+    }
+    public static int outputSlot(int i) {
+        return 1 + INPUT_COUNT + i;
+    }
+    public static final int TOTAL_SLOTS = 1 + 2 * INPUT_COUNT;
+
+    /** 单槽数量的理论上限（受 int 类型的 ItemStack 展示限制，足够“无上限”体验）。 */
+    public static final int UNBOUNDED = Integer.MAX_VALUE;
+
+    /** 矿石储备箱格子数：3 行 × 9 列，与外部箱子 UI 一致。 */
+    public static final int INPUT_BUFFER_SLOTS = 27;
+
+    // data 数组布局：
+    // [0] = 剩余燃烧时间 [1] = 总燃烧时间
+    // 每个输入槽 i：[2 + 2*i] = 冶炼进度 [3 + 2*i] = 冶炼总时长
+    // 末位 = 加速等级（0 = 普通速度，每级倍率 +1）
+    private final int[] data = new int[3 + 2 * INPUT_COUNT];
+    private final NonNullList<ItemStack> items = NonNullList.withSize(TOTAL_SLOTS, ItemStack.EMPTY);
+    /** 每个槽的真实数量（权威存储）。 */
+    private final long[] amounts = new long[TOTAL_SLOTS];
+
+    /** 矿石储备箱：存放待熔炼的矿石，格子数量有限（普通堆叠加），由 FurnaceFuelBufferMenu 读写。 */
+    private final NonNullList<ItemStack> inputBuffer = NonNullList.withSize(INPUT_BUFFER_SLOTS, ItemStack.EMPTY);
+
+    /** 获取矿石储备箱的底层列表（外部箱子 UI 直接读写）。 */
+    public NonNullList<ItemStack> getInputBuffer() {
+        return inputBuffer;
+    }
+
+    // ========== 绕过 ItemStack count 钳制的反射工具 ==========
+    private static final Field STACK_COUNT_FIELD;
+
+    static {
+        Field f = null;
+        try {
+            f = ItemStack.class.getDeclaredField("count");
+            f.setAccessible(true);
+        } catch (Exception ignored) {
+            try {
+                f = ItemStack.class.getDeclaredField("field_190927_a");
+                f.setAccessible(true);
+            } catch (Exception ignored2) {
+                f = null;
+            }
+        }
+        STACK_COUNT_FIELD = f;
+    }
+
+    /** 读取 ItemStack 的真实 count（不被 maxStackSize 钳制）。 */
+    public static int rawGetCount(ItemStack stack) {
+        if (STACK_COUNT_FIELD == null) return stack.getCount();
+        try {
+            return (int) STACK_COUNT_FIELD.get(stack);
+        } catch (Exception e) {
+            return stack.getCount();
+        }
+    }
+
+    /** 直接设置 ItemStack 的 count（绕过 maxStackSize 钳制）。 */
+    public static void rawSetCount(ItemStack stack, int count) {
+        if (STACK_COUNT_FIELD == null) {
+            stack.setCount(count);
+            return;
+        }
+        try {
+            STACK_COUNT_FIELD.set(stack, count);
+        } catch (Exception e) {
+            stack.setCount(count);
+        }
+    }
+
+    // ========== 槽位访问（模板 + 数量） ==========
+
+    public NonNullList<ItemStack> getItems() {
+        return items;
+    }
+
+    public long[] getAmounts() {
+        return amounts;
+    }
+
+    public long getAmount(int i) {
+        return amounts[i];
+    }
+
+    /** 返回用于显示 / 配方匹配 / 网络同步的 ItemStack（count 为真实数量）。 */
+    public ItemStack getStack(int i) {
+        ItemStack t = items.get(i);
+        if (t.isEmpty()) return ItemStack.EMPTY;
+        ItemStack s = t.copy();
+        rawSetCount(s, (int) Math.min(amounts[i], UNBOUNDED));
+        return s;
+    }
+
+    /** 设置某槽（写入模板 + 数量）。空栈会清空该槽。 */
+    public void setSlot(int i, ItemStack stack) {
+        if (stack.isEmpty()) {
+            clearSlot(i);
+            return;
+        }
+        items.set(i, stack.copyWithCount(1));
+        amounts[i] = stack.getCount();
+    }
+
+    /** 仅更新数量（模板保持不变，调用前需确保模板已存在）。 */
+    public void setAmountOnly(int i, long amount) {
+        if (amount <= 0) {
+            clearSlot(i);
+        } else {
+            amounts[i] = amount;
+        }
+    }
+
+    /** 取出最多 count 个，返回对应的 ItemStack（count 为真实取出量）。 */
+    public ItemStack removeSlot(int i, int count) {
+        ItemStack tpl = items.get(i);
+        if (tpl.isEmpty()) return ItemStack.EMPTY;
+        int take = (int) Math.min(count, amounts[i]);
+        amounts[i] -= take;
+        ItemStack out = tpl.copy();
+        rawSetCount(out, take);
+        if (amounts[i] <= 0) {
+            items.set(i, ItemStack.EMPTY);
+            amounts[i] = 0;
+        }
+        return out;
+    }
+
+    public void clearSlot(int i) {
+        items.set(i, ItemStack.EMPTY);
+        amounts[i] = 0;
+    }
+
+    public int[] getData() {
+        return data;
+    }
+
+    // ========== 进度访问 ==========
+
+    private int cookIdx(int i) {
+        return 2 + 2 * i;
+    }
+    private int cookTotalIdx(int i) {
+        return 3 + 2 * i;
+    }
+    private int speedIdx() {
+        return 2 + 2 * INPUT_COUNT;
+    }
+
+    public int getCook(int i) {
+        return data[cookIdx(i)];
+    }
+    public void setCook(int i, int v) {
+        data[cookIdx(i)] = v;
+    }
+    public void addCook(int i, int v) {
+        data[cookIdx(i)] += v;
+    }
+    public int getCookTotal(int i) {
+        return data[cookTotalIdx(i)];
+    }
+    public void setCookTotal(int i, int v) {
+        data[cookTotalIdx(i)] = v;
+    }
+
+    /** 供界面读取的进度 */
+    public boolean isLit() {
+        return data[0] > 0;
+    }
+
+    public float getLitProgress() {
+        int lit = data[0];
+        int dur = data[1];
+        if (dur <= 0) return 0;
+        return lit / (float) dur;
+    }
+
+    public float getCookProgress(int i) {
+        int prog = getCook(i);
+        int total = getCookTotal(i);
+        if (total <= 0) return 0;
+        return prog / (float) total;
+    }
+
+    /** 当前加速等级（0 = 普通速度）。 */
+    public int getSpeedLevel() {
+        return Math.max(0, data[speedIdx()]);
+    }
+
+    /** 当前熔炼速度倍率（加速等级 + 1）。 */
+    public int getSpeedMultiplier() {
+        return 1 + getSpeedLevel();
+    }
+
+    /** 设置加速等级（自动钳制为非负）。 */
+    public void setSpeedLevel(int level) {
+        data[speedIdx()] = Math.max(0, level);
+    }
+
+    /** 每 tick 驱动一次冶炼。level 为 null 或客户端直接跳过。 */
+    public void tick(Level level) {
+        if (level == null || level.isClientSide()) return;
+
+        // 输入槽为空时，先尝试从矿石储备箱取出矿石放入输入槽。
+        // 必须放在 anyWork 判定之前：否则输入槽为空会被直接判为"无活可干"而 return，
+        // 导致自动取矿永远触发不到，熔炉无法自动开始工作。
+        for (int i = 0; i < INPUT_COUNT; i++) {
+            if (amounts[inputSlot(i)] <= 0) {
+                pullInputFromBuffer();
+            }
+        }
+
+        // 是否有任意输入可冶炼（有匹配配方且输出槽可接收）
+        boolean anyWork = false;
+        for (int i = 0; i < INPUT_COUNT; i++) {
+            if (canSmeltInput(level, i)) {
+                anyWork = true;
+                break;
+            }
+        }
+
+        if (!anyWork) {
+            // 无活可干：熄火并清空所有冶炼进度
+            if (data[0] > 0) data[0] = 0;
+            for (int i = 0; i < INPUT_COUNT; i++) setCook(i, 0);
+            return;
+        }
+
+        // 燃料计时递减
+        if (data[0] > 0) data[0]--;
+
+        // 燃料烧尽时尝试重新点火（需要仍有可冶炼的输入；燃料需玩家手动放入燃料槽）
+        if (data[0] <= 0) {
+            if (amounts[FUEL_SLOT] > 0) {
+                ItemStack fuel = items.get(FUEL_SLOT);
+                int burnTime = ForgeHooks.getBurnTime(fuel, RecipeType.SMELTING);
+                if (burnTime > 0) {
+                    data[0] = burnTime;
+                    data[1] = burnTime;
+                    consumeFuel();
+                }
+            }
+        }
+
+        if (data[0] > 0) {
+            int mult = getSpeedMultiplier();
+            for (int i = 0; i < INPUT_COUNT; i++) {
+                if (!canSmeltInput(level, i)) {
+                    setCook(i, 0);
+                    continue;
+                }
+                AbstractCookingRecipe recipe = findRecipe(level, items.get(inputSlot(i)));
+                if (recipe == null) {
+                    setCook(i, 0);
+                    continue;
+                }
+                ItemStack result = recipe.getResultItem(level.registryAccess());
+                int total = recipe.getCookingTime();
+                setCookTotal(i, total);
+                addCook(i, mult);
+                if (getCook(i) >= total) {
+                    ItemStack output = items.get(outputSlot(i));
+                    if (output.isEmpty()) {
+                        items.set(outputSlot(i), result.copy());
+                        amounts[outputSlot(i)] = result.getCount();
+                    } else if (ItemStack.isSameItemSameTags(output, result)) {
+                        long combined = amounts[outputSlot(i)] + result.getCount();
+                        if (combined <= UNBOUNDED) {
+                            amounts[outputSlot(i)] = combined;
+                        }
+                    }
+                    // 消耗一份输入
+                    if (amounts[inputSlot(i)] > 1) {
+                        amounts[inputSlot(i)]--;
+                    } else {
+                        items.set(inputSlot(i), ItemStack.EMPTY);
+                        amounts[inputSlot(i)] = 0;
+                    }
+                    setCook(i, 0);
+                }
+            }
+        } else {
+            for (int i = 0; i < INPUT_COUNT; i++) setCook(i, 0);
+        }
+    }
+
+    /** 某输入槽当前能否冶炼（有输入、有配方、输出可接收）。 */
+    private boolean canSmeltInput(Level level, int i) {
+        if (amounts[inputSlot(i)] <= 0) return false;
+        ItemStack in = items.get(inputSlot(i));
+        if (in.isEmpty()) {
+            amounts[inputSlot(i)] = 0;
+            return false;
+        }
+        AbstractCookingRecipe recipe = findRecipe(level, in);
+        if (recipe == null) return false;
+        ItemStack result = recipe.getResultItem(level.registryAccess());
+        return canBurn(in, result, items.get(outputSlot(i)), amounts[outputSlot(i)]);
+    }
+
+    /** 优先匹配高炉（Blast Furnace）配方，其次回退到普通熔炉配方。 */
+    private AbstractCookingRecipe findRecipe(Level level, ItemStack input) {
+        var blast = level.getRecipeManager()
+                .getRecipeFor(RecipeType.BLASTING, singleItemView(input), level);
+        if (blast.isPresent()) return blast.get();
+        var smelt = level.getRecipeManager()
+                .getRecipeFor(RecipeType.SMELTING, singleItemView(input), level);
+        return smelt.orElse(null);
+    }
+
+    /** 消耗一份燃料（处理容器残留物，如空桶）。 */
+    private void consumeFuel() {
+        ItemStack fuel = items.get(FUEL_SLOT);
+        if (amounts[FUEL_SLOT] > 1) {
+            amounts[FUEL_SLOT]--;
+        } else {
+            ItemStack container = fuel.getCraftingRemainingItem();
+            if (!container.isEmpty()) {
+                items.set(FUEL_SLOT, container.copy());
+                amounts[FUEL_SLOT] = 1;
+            } else {
+                items.set(FUEL_SLOT, ItemStack.EMPTY);
+                amounts[FUEL_SLOT] = 0;
+            }
+        }
+    }
+
+    /**
+     * 从矿石储备箱（箱子）中自动取出第一种矿石放入输入槽。
+     * <p>规则：仅当输入槽为空，或与储备箱当前物品同类时才合并；遇到被其他种类
+     * 占用的格子则跳过继续向后找，保证“一种熔完了再放下一个”的队列语义。
+     *
+     * @return 是否成功取出
+     */
+    public boolean pullInputFromBuffer() {
+        for (int i = 0; i < INPUT_BUFFER_SLOTS; i++) {
+            ItemStack s = inputBuffer.get(i);
+            if (s.isEmpty()) continue;
+            int slot = inputSlot(0);
+            long cur = amounts[slot];
+            if (cur <= 0) {
+                items.set(slot, s.copyWithCount(1));
+                amounts[slot] = s.getCount();
+            } else if (ItemStack.isSameItemSameTags(items.get(slot), s)) {
+                long combined = cur + s.getCount();
+                if (combined > UNBOUNDED) combined = UNBOUNDED;
+                amounts[slot] = combined;
+            } else {
+                continue;
+            }
+            inputBuffer.set(i, ItemStack.EMPTY);
+            return true;
+        }
+        return false;
+    }
+
+    private boolean canBurn(ItemStack input, ItemStack result, ItemStack output, long outAmount) {
+        if (input.isEmpty()) return false;
+        if (result.isEmpty()) return false;
+        if (output.isEmpty()) return true;
+        if (!ItemStack.isSameItemSameTags(output, result)) return false;
+        return outAmount + result.getCount() <= UNBOUNDED;
+    }
+
+    /** 仅供配方查询的只读单物品容器视图。 */
+    private static Container singleItemView(ItemStack stack) {
+        return new Container() {
+            @Override public int getContainerSize() { return 1; }
+            @Override public boolean isEmpty() { return stack.isEmpty(); }
+            @Override public ItemStack getItem(int index) { return index == 0 ? stack : ItemStack.EMPTY; }
+            @Override public ItemStack removeItem(int index, int count) { return index == 0 ? stack.copy() : ItemStack.EMPTY; }
+            @Override public ItemStack removeItemNoUpdate(int index) { return getItem(index); }
+            @Override public void setItem(int index, ItemStack stack) { }
+            @Override public void setChanged() { }
+            @Override public boolean stillValid(Player player) { return true; }
+            @Override public void clearContent() { }
+        };
+    }
+
+    public void copyFrom(PlayerFurnaceData other) {
+        for (int i = 0; i < items.size(); i++) {
+            items.set(i, other.items.get(i).copy());
+        }
+        System.arraycopy(other.data, 0, data, 0, data.length);
+        System.arraycopy(other.amounts, 0, amounts, 0, amounts.length);
+    }
+
+    public CompoundTag serializeNBT() {
+        CompoundTag tag = new CompoundTag();
+        // 模板物品（count 恒为 1，真实数量在 amounts 中）
+        tag.put("Items", ContainerHelper.saveAllItems(new CompoundTag(), items));
+        tag.putLongArray("Amounts", amounts);
+        tag.putIntArray("Data", data);
+        // 矿石储备箱（普通堆叠，使用标准容器序列化）
+        tag.put("InputBuffer", ContainerHelper.saveAllItems(new CompoundTag(), inputBuffer));
+        return tag;
+    }
+
+    public void deserializeNBT(CompoundTag tag) {
+        if (tag.contains("Items")) {
+            ContainerHelper.loadAllItems(tag.getCompound("Items"), items);
+        }
+        if (tag.contains("Amounts", Tag.TAG_LONG_ARRAY)) {
+            long[] arr = tag.getLongArray("Amounts");
+            System.arraycopy(arr, 0, amounts, 0, Math.min(arr.length, amounts.length));
+        }
+        if (tag.contains("Data", Tag.TAG_INT_ARRAY)) {
+            int[] arr = tag.getIntArray("Data");
+            int oldLen = arr.length;
+            if (oldLen == data.length) {
+                System.arraycopy(arr, 0, data, 0, data.length);
+            } else {
+                // 旧存档：data 数组较长（多槽位版本），按位置映射关键字段
+                // data[0]lit [1]dur [2+2i]cook_i [3+2i]total_i [...]speed
+                if (oldLen > 0) data[0] = arr[0];
+                if (oldLen > 1) data[1] = arr[1];
+                if (oldLen > 2) data[2] = arr[2];
+                if (oldLen > 3) data[3] = arr[3];
+                int oldSpeedIdx = oldLen - 1; // 旧版本速度永远在最后
+                if (oldSpeedIdx >= 0 && oldSpeedIdx < oldLen) {
+                    data[2 + 2 * INPUT_COUNT] = arr[oldSpeedIdx];
+                }
+            }
+        }
+        if (tag.contains("InputBuffer")) {
+            ContainerHelper.loadAllItems(tag.getCompound("InputBuffer"), inputBuffer);
+        } else if (tag.contains("FuelBuffer")) {
+            // 兼容旧版本存档（旧 key 名为 FuelBuffer）
+            ContainerHelper.loadAllItems(tag.getCompound("FuelBuffer"), inputBuffer);
+        }
+    }
+}

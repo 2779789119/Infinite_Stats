@@ -578,7 +578,7 @@ public class DebuffFilterScreen extends Screen {
 
     @Override
     public boolean isPauseScreen() {
-        return false;
+        return true;
     }
 
     // ======================== 自定义控件 ========================

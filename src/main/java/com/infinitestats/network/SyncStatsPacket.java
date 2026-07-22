@@ -2,6 +2,7 @@ package com.infinitestats.network;
 
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
+import com.infinitestats.stats.Waypoint;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraftforge.network.NetworkEvent;
@@ -27,6 +28,7 @@ public final class SyncStatsPacket {
     private Map<String, Long> allocatedPoints;
     private boolean buffUseBlacklist;
     private Set<String> buffFilterList;
+    private Map<String, Waypoint> waypoints;
 
     /**
      * 从快照创建
@@ -40,6 +42,7 @@ public final class SyncStatsPacket {
         this.allocatedPoints = snapshot.allocatedPoints;
         this.buffUseBlacklist = snapshot.buffUseBlacklist;
         this.buffFilterList = snapshot.buffFilterList;
+        this.waypoints = snapshot.waypoints;
     }
 
     /**
@@ -69,6 +72,20 @@ public final class SyncStatsPacket {
         for (int i = 0; i < filterCount; i++) {
             buffFilterList.add(buf.readUtf());
         }
+
+        // 读取传送点
+        int wpCount = buf.readVarInt();
+        this.waypoints = new HashMap<>();
+        for (int i = 0; i < wpCount; i++) {
+            String name = buf.readUtf();
+            String dimension = buf.readUtf();
+            double x = buf.readDouble();
+            double y = buf.readDouble();
+            double z = buf.readDouble();
+            float yaw = buf.readFloat();
+            float pitch = buf.readFloat();
+            waypoints.put(name, new Waypoint(dimension, x, y, z, yaw, pitch));
+        }
     }
 
     /**
@@ -95,6 +112,19 @@ public final class SyncStatsPacket {
         buf.writeVarInt(msg.buffFilterList.size());
         for (String effectId : msg.buffFilterList) {
             buf.writeUtf(effectId);
+        }
+
+        // 写入传送点
+        buf.writeVarInt(msg.waypoints.size());
+        for (Map.Entry<String, Waypoint> entry : msg.waypoints.entrySet()) {
+            buf.writeUtf(entry.getKey());
+            Waypoint wp = entry.getValue();
+            buf.writeUtf(wp.dimension);
+            buf.writeDouble(wp.x);
+            buf.writeDouble(wp.y);
+            buf.writeDouble(wp.z);
+            buf.writeFloat(wp.yaw);
+            buf.writeFloat(wp.pitch);
         }
     }
 
@@ -123,7 +153,8 @@ public final class SyncStatsPacket {
                         -1,
                         msg.allocatedPoints,
                         msg.buffUseBlacklist,
-                        msg.buffFilterList
+                        msg.buffFilterList,
+                        msg.waypoints
                 );
                 stats.restoreFromSnapshot(snapshot);
             });
@@ -141,7 +172,8 @@ public final class SyncStatsPacket {
                 -1,
                 allocatedPoints,
                 buffUseBlacklist,
-                buffFilterList
+                buffFilterList,
+                waypoints
         );
     }
 }

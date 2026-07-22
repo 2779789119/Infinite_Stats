@@ -248,6 +248,6 @@ public class EditItemMetaScreen extends Screen {
 
     @Override
     public boolean isPauseScreen() {
-        return false;
+        return true;
     }
 }

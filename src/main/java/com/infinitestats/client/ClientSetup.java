@@ -68,6 +68,15 @@ public final class ClientSetup {
             "key.categories.infinitestats"
     );
 
+    /**
+     * 打开传送点面板按键（默认 Y）
+     */
+    public static final KeyMapping OPEN_WAYPOINT_KEY = new KeyMapping(
+            "key.infinitestats.waypoint",
+            GLFW.GLFW_KEY_Y,
+            "key.categories.infinitestats"
+    );
+
     @SubscribeEvent
     public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(OPEN_STATS_KEY);
@@ -76,5 +85,6 @@ public final class ClientSetup {
         event.register(OPEN_ITEM_EDITOR_KEY);
         event.register(OPEN_EMC_KEY);
         event.register(OPEN_ACHIEVEMENTS_KEY);
+        event.register(OPEN_WAYPOINT_KEY);
     }
 }

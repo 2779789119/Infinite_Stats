@@ -1,6 +1,7 @@
 package com.infinitestats.stats;
 
 import com.infinitestats.Config;
+import com.infinitestats.furnace.PlayerFurnaceData;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
@@ -47,6 +48,27 @@ public class PlayerStats {
     // 效果 ID 过滤列表（如 "minecraft:poison"，包含正面和负面效果）
     private final Set<String> buffFilterList = new HashSet<>();
 
+    // 定点传送点集合：名称 → 传送点
+    private final Map<String, Waypoint> waypoints = new HashMap<>();
+
+    // 随身熔炉的持久化状态（物品 + 燃烧/冶炼进度）
+    private final PlayerFurnaceData furnaceData = new PlayerFurnaceData();
+
+    public PlayerFurnaceData getFurnaceData() {
+        return furnaceData;
+    }
+
+    // 随身工作台的物品倍率（基础为 1，可通过点数提升，影响每次合成的产出数量）
+    private long craftingMultiplier = 1;
+
+    public long getCraftingMultiplier() {
+        return Math.max(1, craftingMultiplier);
+    }
+
+    public void setCraftingMultiplier(long value) {
+        this.craftingMultiplier = Math.max(1, value);
+    }
+
     // ========== 构造器 ==========
 
     public PlayerStats() {
@@ -64,6 +86,10 @@ public class PlayerStats {
 
     public long getAvailablePoints() {
         return availablePoints;
+    }
+
+    public void setAvailablePoints(long value) {
+        this.availablePoints = value;
     }
 
     public long getXpForNextLevel() {
@@ -258,6 +284,7 @@ public class PlayerStats {
      * 获取属性点数
      */
     public long getStatLevel(StatType stat) {
+        if (stat == null) return 0L;
         return allocatedPoints.getOrDefault(stat.getId(), 0L);
     }
 
@@ -272,6 +299,7 @@ public class PlayerStats {
      * 获取属性值 - 使用缓存
      */
     public float getStatValue(StatType stat) {
+        if (stat == null) return 0f;
         ensureCacheValid();
         return valueCache.getOrDefault(stat.getId(), 0f);
     }
@@ -480,6 +508,28 @@ public class PlayerStats {
         return total;
     }
 
+    // ========== 定点传送点管理 ==========
+
+    public void setWaypoint(String name, Waypoint wp) {
+        waypoints.put(name, wp);
+    }
+
+    public Waypoint getWaypoint(String name) {
+        return waypoints.get(name);
+    }
+
+    public boolean hasWaypoint(String name) {
+        return waypoints.containsKey(name);
+    }
+
+    public void removeWaypoint(String name) {
+        waypoints.remove(name);
+    }
+
+    public Map<String, Waypoint> getWaypoints() {
+        return Collections.unmodifiableMap(waypoints);
+    }
+
     // ========== NBT序列化 ==========
 
     public CompoundTag serializeNBT() {
@@ -520,6 +570,22 @@ public class PlayerStats {
             filterList.add(fTag);
         }
         tag.put("debuffFilterList", filterList);
+
+        // 序列化定点传送点
+        ListTag wpList = new ListTag();
+        for (Map.Entry<String, Waypoint> entry : waypoints.entrySet()) {
+            CompoundTag wpTag = new CompoundTag();
+            wpTag.putString("name", entry.getKey());
+            wpTag.put("pos", entry.getValue().toTag());
+            wpList.add(wpTag);
+        }
+        tag.put("waypoints", wpList);
+
+        // 序列化随身熔炉状态
+        tag.put("furnace", furnaceData.serializeNBT());
+
+        // 序列化随身工作台倍率
+        tag.putLong("craftingMultiplier", craftingMultiplier);
 
         return tag;
     }
@@ -562,6 +628,29 @@ public class PlayerStats {
             }
         }
 
+        // 反序列化定点传送点
+        waypoints.clear();
+        if (tag.contains("waypoints")) {
+            ListTag wpList = tag.getList("waypoints", Tag.TAG_COMPOUND);
+            for (int i = 0; i < wpList.size(); i++) {
+                CompoundTag wpTag = wpList.getCompound(i);
+                String name = wpTag.getString("name");
+                if (wpTag.contains("pos")) {
+                    waypoints.put(name, Waypoint.fromTag(wpTag.getCompound("pos")));
+                }
+            }
+        }
+
+        // 反序列化随身熔炉状态
+        if (tag.contains("furnace")) {
+            furnaceData.deserializeNBT(tag.getCompound("furnace"));
+        }
+
+        // 反序列化随身工作台倍率
+        if (tag.contains("craftingMultiplier")) {
+            craftingMultiplier = tag.getLong("craftingMultiplier");
+        }
+
         invalidateCache();
     }
 
@@ -582,6 +671,10 @@ public class PlayerStats {
         this.buffFilterList.addAll(other.buffFilterList);
         this.allocatedPoints.clear();
         this.allocatedPoints.putAll(other.allocatedPoints);
+        this.waypoints.clear();
+        this.waypoints.putAll(other.waypoints);
+        this.furnaceData.copyFrom(other.furnaceData);
+        this.craftingMultiplier = other.craftingMultiplier;
         invalidateCache();
     }
 
@@ -594,7 +687,8 @@ public class PlayerStats {
                 lastReviveTime, currentMana, passiveTickCounter,
                 new HashMap<>(allocatedPoints),
                 buffUseBlacklist,
-                new HashSet<>(buffFilterList)
+                new HashSet<>(buffFilterList),
+                new HashMap<>(waypoints)
         );
     }
 
@@ -613,6 +707,8 @@ public class PlayerStats {
         this.buffUseBlacklist = snapshot.buffUseBlacklist;
         this.buffFilterList.clear();
         this.buffFilterList.addAll(snapshot.buffFilterList);
+        this.waypoints.clear();
+        this.waypoints.putAll(snapshot.waypoints);
         invalidateCache();
     }
 
@@ -628,11 +724,13 @@ public class PlayerStats {
         public final Map<String, Long> allocatedPoints;
         public final boolean buffUseBlacklist;
         public final Set<String> buffFilterList;
+        public final Map<String, Waypoint> waypoints;
 
         public StatsSnapshot(long level, long experience, long availablePoints,
                 long lastReviveTime, float currentMana, int passiveTickCounter,
                 Map<String, Long> allocatedPoints,
-                boolean buffUseBlacklist, Set<String> buffFilterList) {
+                boolean buffUseBlacklist, Set<String> buffFilterList,
+                Map<String, Waypoint> waypoints) {
             this.level = level;
             this.experience = experience;
             this.availablePoints = availablePoints;
@@ -642,6 +740,7 @@ public class PlayerStats {
             this.allocatedPoints = allocatedPoints;
             this.buffUseBlacklist = buffUseBlacklist;
             this.buffFilterList = buffFilterList;
+            this.waypoints = waypoints;
         }
     }
 }

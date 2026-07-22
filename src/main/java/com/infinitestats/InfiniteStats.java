@@ -1,9 +1,11 @@
 package com.infinitestats;
 
+import com.infinitestats.command.ModServerCommands;
 import com.infinitestats.emc.ModMenuTypes;
 import com.infinitestats.handler.HandlerRegistry;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.StatType;
+import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.fml.ModLoadingContext;
 import net.minecraftforge.fml.common.Mod;
@@ -18,7 +20,7 @@ import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 public final class InfiniteStats {
 
     public static final String MODID = "infinitestats";
-    public static final String VERSION = "2.0.0";
+    public static final String VERSION = "1.6.0";
 
     public InfiniteStats() {
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
@@ -28,6 +30,9 @@ public final class InfiniteStats {
 
         // 注册事件总线
         modEventBus.addListener(this::setup);
+
+        // 注册服务端命令（跨维度/定点传送），兼容单人（内置服务器）与专用服务器
+        MinecraftForge.EVENT_BUS.addListener(ModServerCommands::registerCommands);
 
         // 初始化处理器注册中心
         HandlerRegistry.initialize();

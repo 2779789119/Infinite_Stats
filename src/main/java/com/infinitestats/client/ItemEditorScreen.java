@@ -459,7 +459,7 @@ public class ItemEditorScreen extends Screen {
 
     @Override
     public boolean isPauseScreen() {
-        return false;
+        return true;
     }
 
     // ======================== 附魔描述（兼容 Enchantment-Descriptions） ========================

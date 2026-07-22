@@ -47,10 +47,19 @@ minecraft {
 }
 
 repositories {
+    maven {
+        // JEI
+        url "https://maven.blamejared.com/"
+    }
 }
 
 dependencies {
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    // JEI（仅编译期需要 API；运行时由整合包内的 JEI 提供）
+    compileOnly fg.deobf("mezz.jei:jei-${minecraft_version}-common-api:${jei_version}")
+    compileOnly fg.deobf("mezz.jei:jei-${minecraft_version}-forge-api:${jei_version}")
+    runtimeOnly fg.deobf("mezz.jei:jei-${minecraft_version}-forge:${jei_version}")
 }
 
 sourceSets.main.resources { srcDir 'src/generated/resources' }

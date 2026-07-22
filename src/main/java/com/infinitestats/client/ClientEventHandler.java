@@ -3,6 +3,10 @@ package com.infinitestats.client;
 import com.infinitestats.InfiniteStats;
 import com.infinitestats.emc.EmcMenu;
 import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.crafting.PortableCraftingMenu;
+import com.infinitestats.furnace.PortableFurnaceMenu;
+import com.infinitestats.furnace.FurnaceFuelBufferMenu;
+import com.infinitestats.client.PortableFurnaceScreen;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
@@ -12,9 +16,12 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.CrossbowItem;
 import net.minecraft.world.item.TridentItem;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.InputEvent;
 import net.minecraftforge.client.event.RegisterGuiOverlaysEvent;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.living.LivingEntityUseItemEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -104,6 +111,49 @@ public final class ClientEventHandler {
             if (mc.screen != null) break;
             mc.setScreen(new AchievementManagerScreen());
         }
+
+        // 打开传送点面板
+        while (ClientSetup.OPEN_WAYPOINT_KEY.consumeClick()) {
+            if (mc.screen != null) break;
+            mc.setScreen(new WaypointScreen());
+        }
+    }
+
+    // ========== 客户端强制维持夜视（彻底绕过任何模组拦截） ==========
+
+    /**
+     * 在客户端本地（渲染前最后一刻）把夜视效果直接写回本地玩家效果表。
+     * 直接操作 activeEffects 地图，绕过：
+     *   1) 其他模组在 MobEffectEvent.Applicable 中对夜视的 DENY 拦截；
+     *   2) 其他模组在各自 tick 中直接 removeEffect(NIGHT_VISION) 导致服务端最终无夜视、
+     *      客户端又收到 remove 包而丢失的问题。
+     * 由于渲染读取的是本地 activeEffects，服务端来回的 add/remove 包不再影响最终画面。
+     * 同时清除本地的 DARKNESS（黑暗）效果，避免它对夜视视觉的压制，使夜视真正"强力"。
+     * toggle 关闭时仅移除我们写入的无限夜视，避免误删其他模组的有限夜视。
+     */
+    @SubscribeEvent
+    public static void onClientTick(TickEvent.ClientTickEvent event) {
+        if (event.phase != TickEvent.Phase.END) return;
+        var mc = Minecraft.getInstance();
+        var player = mc.player;
+        if (player == null) return;
+
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            var map = player.getActiveEffectsMap();
+            if (stats.isToggleActive("night_vision")) {
+                map.put(MobEffects.NIGHT_VISION, new MobEffectInstance(
+                        MobEffects.NIGHT_VISION,
+                        MobEffectInstance.INFINITE_DURATION, 0, false, true, true));
+                // 移除黑暗效果，防止其压制夜视视觉
+                map.remove(MobEffects.DARKNESS);
+            } else {
+                // 关闭时只移除我们写入的无限夜视，避免误删其他模组的有限夜视
+                MobEffectInstance cur = player.getEffect(MobEffects.NIGHT_VISION);
+                if (cur != null && cur.getDuration() == MobEffectInstance.INFINITE_DURATION) {
+                    map.remove(MobEffects.NIGHT_VISION);
+                }
+            }
+        });
     }
 
     /**
@@ -118,8 +168,12 @@ public final class ClientEventHandler {
             ClientSettings.load();
 
             // 注册 EMC 转化桌屏幕（客户端侧 MenuType → Screen 映射）
-            event.enqueueWork(() ->
-                    MenuScreens.register(ModMenuTypes.EMC_MENU.get(), EmcScreen::new));
+            event.enqueueWork(() -> {
+                MenuScreens.register(ModMenuTypes.EMC_MENU.get(), EmcScreen::new);
+                MenuScreens.register(ModMenuTypes.PORTABLE_FURNACE_MENU.get(), PortableFurnaceScreen::new);
+                MenuScreens.register(ModMenuTypes.FURNACE_FUEL_BUFFER_MENU.get(), FurnaceFuelBufferScreen::new);
+                MenuScreens.register(ModMenuTypes.PORTABLE_CRAFTING_MENU.get(), PortableCraftingScreen::new);
+            });
         }
 
         @SubscribeEvent

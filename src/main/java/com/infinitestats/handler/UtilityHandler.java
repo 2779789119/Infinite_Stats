@@ -41,6 +41,9 @@ public class UtilityHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
+        // 夜视：每 tick 强制维持（forceAddEffect 绕过其他模组对 Applicable 事件的拦截/清除）
+        applyNightVision(player, stats);
+
         // 每5tick处理磁铁和效果
         if (tickCount % 5 == 0) {
             applyItemMagnet(player, stats);
@@ -51,7 +54,6 @@ public class UtilityHandler implements StatEffectHandler {
 
         // 每2秒处理呼吸、饥饿和幸运
         if (tickCount % 40 == 0) {
-            applyNightVision(player, stats);
             applyWaterBreathing(player, stats);
             applyLootLuck(player, stats);
         }
@@ -105,12 +107,11 @@ public class UtilityHandler implements StatEffectHandler {
         boolean weProvided = stats.isProviding("night_vision");
 
         if (nightVision) {
-            // visible=true：必须有 HUD 图标，否则玩家无法确认效果是否生效
-            // 某些客户端渲染环境下 visible=false 可能导致 shader 不激活
-            if (!player.hasEffect(MobEffects.NIGHT_VISION)) {
-                player.addEffect(new MobEffectInstance(MobEffects.NIGHT_VISION,
-                        MobEffectInstance.INFINITE_DURATION, 0, false, true, true));
-            }
+            // 使用 forceAddEffect 直接写入效果，不触发 MobEffectEvent.Applicable，
+            // 从而绕过其他模组（如免疫类/夜视管理类）对该事件的 DENY 拦截。
+            // 每 tick 调用一次，保证效果被中途清除时立即补回、无闪烁。
+            player.forceAddEffect(new MobEffectInstance(MobEffects.NIGHT_VISION,
+                    MobEffectInstance.INFINITE_DURATION, 0, false, true, true), player);
             stats.setProviding("night_vision", true);
         } else if (weProvided) {
             player.removeEffect(MobEffects.NIGHT_VISION);
@@ -156,10 +157,12 @@ public class UtilityHandler implements StatEffectHandler {
         boolean weProvided = stats.isProviding("invisibility");
 
         if (invis) {
-            // 只在玩家没有隐身药水效果时才施加（避免反复刷新触发其他模组的 effect remove）
+            // 使用 forceAddEffect 直接写入效果，不触发 MobEffectEvent.Applicable，
+            // 从而绕过其他模组对隐身效果的 DENY 拦截。
+            // 仅在效果缺失时施加，避免每 5 tick 无意义刷新。
             if (!player.hasEffect(MobEffects.INVISIBILITY)) {
-                player.addEffect(new MobEffectInstance(MobEffects.INVISIBILITY,
-                        MobEffectInstance.INFINITE_DURATION, 0, false, false, true));
+                player.forceAddEffect(new MobEffectInstance(MobEffects.INVISIBILITY,
+                        MobEffectInstance.INFINITE_DURATION, 0, false, false, true), player);
             }
             // setInvisible 作为备用视觉机制：即使药水效果被其他模组清除，玩家模型仍不可见
             player.setInvisible(true);

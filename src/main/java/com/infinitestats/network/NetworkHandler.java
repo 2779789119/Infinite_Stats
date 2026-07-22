@@ -1,24 +1,35 @@
 package com.infinitestats.network;
 
 import com.infinitestats.InfiniteStats;
+import com.infinitestats.crafting.PortableCraftingMenu;
 import com.infinitestats.emc.EmcDatabase;
 import com.infinitestats.emc.EmcMenu;
 import com.infinitestats.emc.EmcPlayerData;
 import com.infinitestats.emc.EmcPlayerDataProvider;
+import com.infinitestats.furnace.FurnaceFuelBufferMenu;
+import com.infinitestats.furnace.PortableFurnaceMenu;
+import com.infinitestats.Config;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import com.infinitestats.handler.AttributeHandler;
+import com.infinitestats.util.TeleportUtil;
 import com.infinitestats.handler.HandlerRegistry;
+import com.infinitestats.client.CrossDimScreen;
 import net.minecraft.advancements.Advancement;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.level.Level;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.network.NetworkEvent;
 import net.minecraftforge.network.NetworkHooks;
@@ -27,6 +38,7 @@ import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.network.simple.SimpleChannel;
 
 import java.util.*;
+import java.lang.reflect.Method;
 import java.util.function.Supplier;
 
 /**
@@ -120,6 +132,52 @@ public final class NetworkHandler {
                 EmcOpenPacket::decode,
                 EmcOpenPacket::handle);
 
+        // 便携式熔炉菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, FurnaceOpenPacket.class,
+                FurnaceOpenPacket::encode,
+                FurnaceOpenPacket::decode,
+                FurnaceOpenPacket::handle);
+
+        // 燃料仓菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, FurnaceFuelOpenPacket.class,
+                FurnaceFuelOpenPacket::encode,
+                FurnaceFuelOpenPacket::decode,
+                FurnaceFuelOpenPacket::handle);
+
+        // 随身熔炉速度调节数据包（客户端 → 服务器，消耗/返还可分配点数）
+        CHANNEL.registerMessage(packetId++, FurnaceSpeedPacket.class,
+                FurnaceSpeedPacket::encode,
+                FurnaceSpeedPacket::decode,
+                FurnaceSpeedPacket::handle);
+
+        // 随身工作台倍率调节数据包（客户端 → 服务器，消耗/返还可分配点数）
+        CHANNEL.registerMessage(packetId++, CraftingMultiplierPacket.class,
+                CraftingMultiplierPacket::encode,
+                CraftingMultiplierPacket::decode,
+                CraftingMultiplierPacket::handle);
+
+        // 随身工作台菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, CraftingOpenPacket.class,
+                CraftingOpenPacket::encode,
+                CraftingOpenPacket::decode,
+                CraftingOpenPacket::handle);
+
+        // 跨维度传送请求数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, CrossDimRequestPacket.class,
+                CrossDimRequestPacket::encode,
+                CrossDimRequestPacket::decode,
+                CrossDimRequestPacket::handle);
+
+        // 跨维度维度列表请求 / 响应（客户端 ↔ 服务器）
+        CHANNEL.registerMessage(packetId++, CrossDimListRequestPacket.class,
+                CrossDimListRequestPacket::encode,
+                CrossDimListRequestPacket::decode,
+                CrossDimListRequestPacket::handle);
+        CHANNEL.registerMessage(packetId++, CrossDimListPacket.class,
+                CrossDimListPacket::encode,
+                CrossDimListPacket::decode,
+                CrossDimListPacket::handle);
+
         // ========== 成就管理数据包 ==========
 
         // 请求成就列表（客户端 → 服务器）
@@ -139,6 +197,14 @@ public final class NetworkHandler {
                 ToggleAdvancementPacket::encode,
                 ToggleAdvancementPacket::decode,
                 ToggleAdvancementPacket::handle);
+
+        // ========== 传送点管理数据包 ==========
+
+        // 传送点操作（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, WaypointActionPacket.class,
+                WaypointActionPacket::encode,
+                WaypointActionPacket::decode,
+                WaypointActionPacket::handle);
     }
 
     // ========== 数据包类 ==========
@@ -512,41 +578,348 @@ public final class NetworkHandler {
         }
     }
 
-    // ========== 成就管理数据包类 ==========
+    /** 客户端请求打开便携式熔炉（需已开启 portable_furnace 开关）。 */
+    public static final class FurnaceOpenPacket {
+        public FurnaceOpenPacket() {}
 
-    /**
-     * 单条成就信息（用于网络传输）
-     */
-    public static final class AchievementInfo {
-        public final String id;
-        public final String displayName;
-        public final String description;
-        public final String iconItemId;
-        public final boolean completed;
-
-        public AchievementInfo(String id, String displayName, String description,
-                                String iconItemId, boolean completed) {
-            this.id = id;
-            this.displayName = displayName;
-            this.description = description;
-            this.iconItemId = iconItemId;
-            this.completed = completed;
+        public static void encode(FurnaceOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
         }
 
-        public static void encode(AchievementInfo info, FriendlyByteBuf buf) {
-            buf.writeUtf(info.id);
-            buf.writeUtf(info.displayName);
-            buf.writeUtf(info.description);
-            buf.writeUtf(info.iconItemId);
-            buf.writeBoolean(info.completed);
+        public static FurnaceOpenPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceOpenPacket();
         }
 
-        public static AchievementInfo decode(FriendlyByteBuf buf) {
-            return new AchievementInfo(
-                    buf.readUtf(), buf.readUtf(), buf.readUtf(),
-                    buf.readUtf(), buf.readBoolean());
+        public static void handle(FurnaceOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_furnace")) return;
+                    NetworkHooks.openScreen(player,
+                            new SimpleMenuProvider(
+                                    (id, inv, p) -> new PortableFurnaceMenu(id, inv),
+                                    Component.translatable("screen.infinitestats.furnace")));
+                });
+            });
+            ctx.get().setPacketHandled(true);
         }
     }
+
+    /** 客户端请求打开燃料仓（需已开启 portable_furnace 开关）。 */
+    public static final class FurnaceFuelOpenPacket {
+        public FurnaceFuelOpenPacket() {}
+
+        public static void encode(FurnaceFuelOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static FurnaceFuelOpenPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceFuelOpenPacket();
+        }
+
+        public static void handle(FurnaceFuelOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_furnace")) return;
+                    NetworkHooks.openScreen(player,
+                            new SimpleMenuProvider(
+                                    (id, inv, p) -> new FurnaceFuelBufferMenu(id, inv),
+                                    Component.translatable("screen.infinitestats.furnace.fuel_buffer")));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端向服务器请求增减随身熔炉速度（消耗/返还可分配点数）。 */
+    public static final class FurnaceSpeedPacket {
+        private final boolean increase; // true=加速（消耗点数）；false=减速（返点数）
+
+        public FurnaceSpeedPacket(boolean increase) {
+            this.increase = increase;
+        }
+
+        public static void encode(FurnaceSpeedPacket msg, FriendlyByteBuf buf) {
+            buf.writeBoolean(msg.increase);
+        }
+
+        public static FurnaceSpeedPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceSpeedPacket(buf.readBoolean());
+        }
+
+        public static void handle(FurnaceSpeedPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_furnace")) return;
+
+                    var furnace = stats.getFurnaceData();
+                    int cost = Config.FURNACE_SPEED_COST.get();
+
+                    if (msg.increase) {
+                        if (stats.getAvailablePoints() < cost) {
+                            player.sendSystemMessage(Component.literal(
+                                    "§c可分配点数不足，提升一级速度需 " + cost + " 点"));
+                            return;
+                        }
+                        stats.setAvailablePoints(stats.getAvailablePoints() - cost);
+                        furnace.setSpeedLevel(furnace.getSpeedLevel() + 1);
+                        player.sendSystemMessage(Component.literal(
+                                "§a熔炉加速至 §f×" + furnace.getSpeedMultiplier()
+                                        + "§a（消耗 " + cost + " 点）"));
+                    } else {
+                        if (furnace.getSpeedLevel() <= 0) {
+                            player.sendSystemMessage(Component.literal("§e随身熔炉已处于普通速度"));
+                            return;
+                        }
+                        furnace.setSpeedLevel(furnace.getSpeedLevel() - 1);
+                        stats.setAvailablePoints(stats.getAvailablePoints() + cost);
+                        player.sendSystemMessage(Component.literal(
+                                "§a熔炉减速至 §f×" + furnace.getSpeedMultiplier()
+                                        + "§a（返还 " + cost + " 点）"));
+                    }
+
+                    // 同步点数变动到客户端
+                    syncToClient(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端向服务器请求增减随身工作台物品倍率（消耗/返还可分配点数）。 */
+    public static final class CraftingMultiplierPacket {
+        private static final int MAX_MULTIPLIER = 64; // 受物品堆叠上限约束
+        private final boolean increase; // true=提升倍率（消耗点数）；false=降低倍率（返点数）
+
+        public CraftingMultiplierPacket(boolean increase) {
+            this.increase = increase;
+        }
+
+        public static void encode(CraftingMultiplierPacket msg, FriendlyByteBuf buf) {
+            buf.writeBoolean(msg.increase);
+        }
+
+        public static CraftingMultiplierPacket decode(FriendlyByteBuf buf) {
+            return new CraftingMultiplierPacket(buf.readBoolean());
+        }
+
+        public static void handle(CraftingMultiplierPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_crafting")) return;
+
+                    int cost = Config.CRAFTING_MULTIPLIER_COST.get();
+                    long mult = stats.getCraftingMultiplier();
+
+                    if (msg.increase) {
+                        if (mult >= MAX_MULTIPLIER) {
+                            player.sendSystemMessage(Component.literal(
+                                    "§e随身工作台倍率已达上限 ×" + MAX_MULTIPLIER));
+                            return;
+                        }
+                        if (stats.getAvailablePoints() < cost) {
+                            player.sendSystemMessage(Component.literal(
+                                    "§c可分配点数不足，提升一级倍率需 " + cost + " 点"));
+                            return;
+                        }
+                        stats.setAvailablePoints(stats.getAvailablePoints() - cost);
+                        stats.setCraftingMultiplier(mult + 1);
+                        player.sendSystemMessage(Component.literal(
+                                "§a工作台倍率提升至 §f×" + stats.getCraftingMultiplier()
+                                        + "§a（消耗 " + cost + " 点）"));
+                    } else {
+                        if (mult <= 1) {
+                            player.sendSystemMessage(Component.literal("§e随身工作台已处于基础倍率 ×1"));
+                            return;
+                        }
+                        stats.setCraftingMultiplier(mult - 1);
+                        stats.setAvailablePoints(stats.getAvailablePoints() + cost);
+                        player.sendSystemMessage(Component.literal(
+                                "§a工作台倍率降至 §f×" + stats.getCraftingMultiplier()
+                                        + "§a（返还 " + cost + " 点）"));
+                    }
+
+                    // 同步点数与倍率变动到客户端
+                    syncToClient(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求打开随身工作台（需已开启 portable_crafting 开关）。 */
+    public static final class CraftingOpenPacket {
+        public CraftingOpenPacket() {}
+
+        public static void encode(CraftingOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static CraftingOpenPacket decode(FriendlyByteBuf buf) {
+            return new CraftingOpenPacket();
+        }
+
+        public static void handle(CraftingOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_crafting")) {
+                        player.sendSystemMessage(Component.literal("未激活『内置工作台』属性，无法打开随身工作台"));
+                        return;
+                    }
+                    NetworkHooks.openScreen(player,
+                            new SimpleMenuProvider(
+                                    (id, inv, p) -> new PortableCraftingMenu(id, inv),
+                                    Component.translatable("container.crafting")));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求跨维度传送（需已开启 cross_dimension_teleport 开关）。 */
+    public static final class CrossDimRequestPacket {
+        private final String dimension;
+
+        public CrossDimRequestPacket(String dimension) {
+            this.dimension = dimension;
+        }
+
+        public static void encode(CrossDimRequestPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.dimension == null ? "" : msg.dimension);
+        }
+
+        public static CrossDimRequestPacket decode(FriendlyByteBuf buf) {
+            return new CrossDimRequestPacket(buf.readUtf());
+        }
+
+        public static void handle(CrossDimRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                // 兼容别名（overworld / nether / end）与完整注册名（modid:dimension）
+                String dimArg = msg.dimension.trim().toLowerCase(Locale.ROOT);
+                ResourceLocation rl = switch (dimArg) {
+                    case "overworld" -> Level.OVERWORLD.location();
+                    case "nether" -> Level.NETHER.location();
+                    case "end" -> Level.END.location();
+                    default -> dimArg.indexOf(':') < 0
+                            ? new ResourceLocation("minecraft", dimArg)
+                            : new ResourceLocation(dimArg);
+                };
+                ResourceKey<Level> targetKey = ResourceKey.create(Registries.DIMENSION, rl);
+                PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+                if (stats == null || !stats.isToggleActive("cross_dimension_teleport")) {
+                    player.sendSystemMessage(Component.literal("未激活『跨维度传送』属性，无法跨维度传送"));
+                    return;
+                }
+                if (player.level().dimension() == targetKey) {
+                    player.sendSystemMessage(Component.literal("你已经在该维度"));
+                    return;
+                }
+                ServerLevel target = getOrLoadLevel(player.getServer(), targetKey);
+                if (target == null) {
+                    player.sendSystemMessage(Component.literal("未知或无法加载的维度: " + rl + "（可用命令 /infstats crossdim 查看）"));
+                    return;
+                }
+                // 强制跨维度传送：绕过外部「维度进入权限」（不触发可取消的 EntityTravelToDimensionEvent）
+                TeleportUtil.forceTeleportTo(player, target, player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot());
+                player.sendSystemMessage(Component.literal("§a已跨维度传送到 §f" + rl));
+            });
+            ctx.get().setPacketHandled(true);
+        }
+
+        /**
+         * 获取指定维度；若维度已注册（存在于 levelKeys）但当前尚未加载到内存，
+         * 则通过反射调用 MinecraftServer#loadLevel() 按需加载（该方法仅补充缺失维度，
+         * 不会重复加载已加载的维度），之后再尝试获取。
+         */
+        private static ServerLevel getOrLoadLevel(MinecraftServer server, ResourceKey<Level> key) {
+            ServerLevel level = server.getLevel(key);
+            if (level != null) return level;
+            if (server.levelKeys().contains(key)) {
+                try {
+                    Method loadLevel = MinecraftServer.class.getDeclaredMethod("loadLevel");
+                    loadLevel.setAccessible(true);
+                    loadLevel.invoke(server);
+                } catch (Throwable ignored) {
+                    // 加载失败则下方再次获取，仍可能为 null，由调用方给出提示
+                }
+                level = server.getLevel(key);
+            }
+            return level;
+        }
+    }
+
+    /** 客户端向服务器请求当前世界已加载的维度列表。 */
+    public static final class CrossDimListRequestPacket {
+        public CrossDimListRequestPacket() {}
+
+        public static void encode(CrossDimListRequestPacket msg, FriendlyByteBuf buf) {}
+
+        public static CrossDimListRequestPacket decode(FriendlyByteBuf buf) {
+            return new CrossDimListRequestPacket();
+        }
+
+        public static void handle(CrossDimListRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                MinecraftServer server = player.getServer();
+                if (server == null) return;
+                List<String> dims = new ArrayList<>();
+                // 枚举所有已知维度（levelKeys 包含已注册但当前未加载的维度，比 getAllLevels 更全）
+                for (ResourceKey<Level> key : server.levelKeys()) {
+                    dims.add(key.location().toString());
+                }
+                // 主世界/下界/末地排前面，其余按字典序，方便查找
+                dims.sort((a, b) -> {
+                    boolean am = a.startsWith("minecraft:");
+                    boolean bm = b.startsWith("minecraft:");
+                    if (am != bm) return am ? -1 : 1;
+                    return a.compareTo(b);
+                });
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new CrossDimListPacket(dims));
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 服务器将维度列表回传给客户端用于构建 UI。 */
+    public static final class CrossDimListPacket {
+        private final List<String> dimensions;
+
+        public CrossDimListPacket(List<String> dimensions) {
+            this.dimensions = dimensions;
+        }
+
+        public static void encode(CrossDimListPacket msg, FriendlyByteBuf buf) {
+            buf.writeCollection(msg.dimensions, FriendlyByteBuf::writeUtf);
+        }
+
+        public static CrossDimListPacket decode(FriendlyByteBuf buf) {
+            return new CrossDimListPacket(buf.readList(FriendlyByteBuf::readUtf));
+        }
+
+        public static void handle(CrossDimListPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> CrossDimScreen.setServerDimensions(msg.dimensions));
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    // ========== 成就管理数据包类 ==========
+    // 注意：AchievementInfo 已提升为顶层类（com.infinitestats.network.AchievementInfo），
+    // 以避免 Forge ModuleClassLoader 对嵌套类二进制名（NetworkHandler$AchievementInfo）解析失败。
 
     /**
      * 请求成就列表数据包（客户端 → 服务器）

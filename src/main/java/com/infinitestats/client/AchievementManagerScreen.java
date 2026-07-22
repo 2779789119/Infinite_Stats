@@ -1,5 +1,6 @@
 package com.infinitestats.client;
 
+import com.infinitestats.network.AchievementInfo;
 import com.infinitestats.network.NetworkHandler;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -24,6 +25,11 @@ import java.util.stream.Collectors;
  * 一键授予/撤销成就，服务器端即时生效。
  */
 public class AchievementManagerScreen extends Screen {
+
+    @Override
+    public boolean isPauseScreen() {
+        return true;
+    }
 
     private static final int GUI_WIDTH = 380;
     private static final int GUI_HEIGHT = 260;
@@ -57,8 +63,8 @@ public class AchievementManagerScreen extends Screen {
     // ======================== 状态 ========================
 
     private int leftPos, topPos;
-    private List<NetworkHandler.AchievementInfo> allAchievements = new ArrayList<>();
-    private List<NetworkHandler.AchievementInfo> filteredAchievements = new ArrayList<>();
+    private List<AchievementInfo> allAchievements = new ArrayList<>();
+    private List<AchievementInfo> filteredAchievements = new ArrayList<>();
     private int scrollOffset;
     private int maxScroll;
 
@@ -130,7 +136,7 @@ public class AchievementManagerScreen extends Screen {
     /**
      * 由 SyncAdvancementsPacket 的 handle 通过静态字段间接调用
      */
-    public void receiveAdvancements(List<NetworkHandler.AchievementInfo> list) {
+    public void receiveAdvancements(List<AchievementInfo> list) {
         allAchievements = new ArrayList<>(list);
         dataReceived = true;
         applyFilter(false); // 数据刷新不重置滚动位置
@@ -261,7 +267,7 @@ public class AchievementManagerScreen extends Screen {
             int idx = scrollOffset + i;
             if (idx >= filteredAchievements.size()) break;
 
-            NetworkHandler.AchievementInfo info = filteredAchievements.get(idx);
+            AchievementInfo info = filteredAchievements.get(idx);
             int y = listTop + i * ROW_HEIGHT;
 
             // 行背景
@@ -312,7 +318,7 @@ public class AchievementManagerScreen extends Screen {
         }
     }
 
-    private void renderToggleButton(GuiGraphics graphics, NetworkHandler.AchievementInfo info,
+    private void renderToggleButton(GuiGraphics graphics, AchievementInfo info,
                                      int y, int mouseX, int mouseY) {
         int btnX = leftPos + GUI_WIDTH - 54;
         int btnY = y + (ROW_HEIGHT - 14) / 2;
@@ -375,7 +381,7 @@ public class AchievementManagerScreen extends Screen {
                 int y = listTop + i * ROW_HEIGHT;
                 int btnY = y + (ROW_HEIGHT - 14) / 2;
                 if (mouseX >= btnX && mouseX < btnX + 44 && mouseY >= btnY && mouseY < btnY + 14) {
-                    NetworkHandler.AchievementInfo info = filteredAchievements.get(idx);
+                    AchievementInfo info = filteredAchievements.get(idx);
                     NetworkHandler.CHANNEL.sendToServer(
                             new NetworkHandler.ToggleAdvancementPacket(info.id, !info.completed));
                     return true;
