@@ -22,3 +22,11 @@ Thumbs.db
 *.tmp
 copy_to_mods.bat
 infinite-stats-mod/
+
+# Temp scripts / build logs / stray assets / compiled classes
+_check*.ps1
+build_log*.txt
+gong_zui_tai.png
+rong_lu.png
+vanilla_crafting_table.png
+*.class
