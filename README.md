@@ -1,323 +1,186 @@
-# Infinite Stats / 无限加点
+# 无限加点模组（Infinite Stats）
 
-[![MC Version](https://img.shields.io/badge/Minecraft-1.20.1-brightgreen)](https://www.minecraft.net/)
-[![Forge](https://img.shields.io/badge/Forge-47.3.0%2B-orange)](https://files.minecraftforge.net/)
-[![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.4.0-purple)](https://github.com/example/infinitestats)
+> 一个泰拉瑞亚（Terraria）风格的 **无限属性加点系统** Minecraft Forge 模组。
+> 通过打怪与挂机获取经验升级，获得可自由分配的属性点，打造属于你自己的 Build。
 
-A **Terraria-style infinite stat leveling system** for Minecraft 1.20.1 Forge.  
-Kill mobs, earn XP, level up, and freely allocate stat points to customize your character.
-
-类似**泰拉瑞亚的无限属性加点系统**。击杀怪物获取经验升级，获得属性点自由分配，打造独一无二的角色。
+- **Mod ID**：`infinitestats`
+- **当前版本**：`1.6.0`（见 `gradle.properties` → `mod_version`）
+- **运行环境**：Minecraft `1.20.1` / Forge `47.4.x+`
+- **许可证**：MIT
 
 ---
 
-## 作者 / Author
+## ✨ 核心特性
 
-**佚名既无名**
-
----
-
-## 核心特色 / Highlights
-
-| 特色 | 说明 |
-|------|------|
-| 🎯 **60+ 属性** | 攻击/防御/机动/功能/魔法 五大分类 + 外部属性自动发现 |
-| ♾️ **无限升级** | 无等级上限，属性可无限叠加，开关类能力到达阈值激活 |
-| 🪙 **内置 EMC 系统** | 简易的等价交换系统，Bellman-Ford 自动计算，可转化物品 |
-| 🖥 **物品编辑器** | 内置 NBT 编辑器，支持 Apotheosis 附魔扩展字段编辑 |
-| 🌍 **多人联机** | 属性数据自动同步，客户端-服务端完整通信 |
-| ⚙ **高度可配置** | 经验获取/升级曲线/冷却时间/磁铁范围等均可配置 |
+- 🎯 **经验升级加点**：击杀怪物与挂机被动获取经验，升级获得可分配属性点（默认每级 3 点）。
+- 📊 **78+ 内置属性**，分为五大类：攻击 / 防御 / 机动 / 功能 / 魔法。
+- 🔌 **自动发现外部属性**：开启后，其他模组注册的属性会自动出现在「外部属性」分类中，无需手动适配。
+- 🖥️ **属性面板 GUI**（默认 `P`）：分类浏览、搜索、一键加点、重置。
+- 📟 **HUD 实时显示**（默认 `H` 开关）：在游戏界面直接展示当前属性与点数。
+- 🛠️ **物品编辑器**（默认 `O`）：可视化编辑物品的附魔、词条、NBT 等元数据。
+- 💎 **内置等价交换（EMC）系统**（默认 `V`）：将物品转化为 EMC 并反向兑换，支持学习/查询/管理员发放。
+- 🎒 **随身工作台 / 随身熔炉**：通过 `/infstats craft`、`/infstats furnace` 或对应属性随时打开。
+- 🧭 **传送点 & 跨维度传送**：保存定点传送（`/infstats wp`）、一键跨维度（`/infstats crossdim`）。
+- 🏆 **成就 / 统计面板**（默认 `U`）：查看与模组相关的进度统计。
+- 👥 **完整多人联机支持**：属性、EMC、传送点等数据均随玩家存档同步到服务端。
 
 ---
 
-## 属性分类 / Stat Categories
+## 📦 安装
 
-### 🟥 攻击 / Attack（11 个）
+1. 安装 Minecraft `1.20.1` 与对应 Forge（`47.4.x` 或更高）。
+2. 下载本模组 `infinite_stats-*.jar`，放入 `.minecraft/mods/` 文件夹。
+3. 启动游戏即可，无需额外前置依赖（Forge 自带 Mixin 支持）。
 
-| 属性 | 类型 | 效果 |
+---
+
+## 🎮 快速上手
+
+1. 进入世界后，击杀怪物或挂机即可在经验条积累经验。
+2. 升级时获得属性点（默认每级 3 点）。
+3. 按 **`P`** 打开属性面板，选择分类，点击属性右侧的 `+` 即可加点；也可按 **`=`(加号键)** 快速加点。
+4. 按 **`H`** 开关屏幕 HUD，随时查看属性与剩余点数。
+5. 功能类中的「开关型」属性（如飞行、夜视、连锁挖掘等）在激活后即时生效，可在面板中开关。
+
+---
+
+## ⌨️ 按键绑定
+
+| 按键（默认） | 功能 |
+|------------|------|
+| `P` | 打开属性面板 |
+| `=`（等号/加号键） | 快速加点 |
+| `H` | 开关 HUD 显示 |
+| `O` | 打开物品编辑器 |
+| `V` | 打开 EMC 转化桌 |
+| `U` | 打开成就 / 统计面板 |
+| `Y` | 打开传送点面板 |
+
+> 以上按键均可在游戏内「设置 → 按键绑定 → 无限加点模组」中修改。
+
+---
+
+## 💻 命令
+
+### EMC 等价交换（`/emc`）
+
+| 命令 | 说明 | 权限 |
 |------|------|------|
-| `attack_damage` | 叠加 | 攻击伤害，每点 +0.05 |
-| `attack_speed` | 叠加 | 攻击速度，每点 +0.005 |
-| `crit_chance` | 百分比 | 暴击率，每点 +0.5% |
-| `crit_damage` | 百分比 | 暴击伤害，每点 +2.0% |
-| `armor_penetration` | 百分比 | 护甲穿透，每点 +1.0% |
-| `knockback_power` | 百分比 | 击退力，每点 +2.0% |
-| `projectile_damage` | 百分比 | 弹射物伤害，每点 +3.0% |
-| `life_steal` | 百分比 | 生命偷取，每点 +1.0% |
-| `life_steal_aoe` | 百分比 | 范围吸血（击杀时），每点 +1.0% |
-| `damage_reflection` | 百分比 | 伤害反射，每点 +1.0% |
-| `execute` | 百分比 | 处决（目标低于 30% 血时增伤），每点 +2.0% |
+| `/emc` | 查看自己的当前 EMC 值 | 玩家 |
+| `/emc learn` | 学习手持物品（获得其 EMC 价值） | 玩家 |
+| `/emc learn all` | 学习背包中所有有 EMC 价值的物品 | 玩家 |
+| `/emc give <玩家> <数量>` | 给予指定玩家 EMC | 管理员（≥2） |
+| `/emc reload` | 重新加载 EMC 数据库 | 管理员（≥2） |
 
-### 🟦 防御 / Defense（17 个）
+### 传送 / 随身工具（`/infstats`）
 
-| 属性 | 类型 | 效果 |
-|------|------|------|
-| `max_health` | 叠加 | 最大生命值，每点 +2.0 |
-| `armor` | 叠加 | 护甲值，每点 +0.5 |
-| `armor_toughness` | 叠加 | 盔甲韧性，每点 +0.25 |
-| `health_regen` | 叠加 | 生命恢复，每点 +0.05/5秒 |
-| `damage_reduction` | 百分比 | 全伤害减免，每点 +0.2% |
-| `knockback_resist` | 百分比 | 击退抗性，每点 +1.0% |
-| `fall_resist` | 百分比 | 摔落抗性，每点 +1.0% |
-| `block_chance` | 百分比 | 格挡率，每点 +1.0% |
-| `absorption_shield` | 叠加 | 吸收护盾（黄心），每 4 点 +1 级 |
-| `dodge_chance` | 百分比 | 闪避率，每点 +0.8% |
-| `fire_immunity` | 3 级开关 | 免疫火焰伤害 |
-| `projectile_immunity` | 5 级开关 | 免疫弹射物 |
-| `explosion_immunity` | 5 级开关 | 免疫爆炸 |
-| `suffocation_immunity` | 2 级开关 | 免疫窒息 |
-| `debuff_immunity` | 4 级开关 | 免疫负面效果（支持黑白名单过滤） |
-| `invincibility` | 1 级开关 | 🔒 隐藏属性 — 免疫一切伤害并保持满血 |
-| `auto_revive` | 8 级开关 | 死亡自动复活（冷却可配，默认 5 分钟） |
+> 下列命令均需要对应属性处于激活状态才能使用。
 
-### 🟩 机动 / Mobility（12 个）
-
-| 属性 | 类型 | 效果 |
-|------|------|------|
-| `movement_speed` | 叠加 | 移动速度，每点 +0.001 |
-| `swim_speed` | 百分比 | 游泳速度，每点 +0.3% |
-| `jump_height` | 百分比 | 跳跃高度，每点 +0.5% |
-| `step_height` | 百分比 | 跨越高度，每点 +0.6% |
-| `fly_speed` | 百分比 | 飞行速度，每点 +0.2% |
-| `fly` | 8 级开关 | 创造模式飞行 |
-| `no_fall_damage` | 2 级开关 | 完全免疫摔落 |
-| `auto_step` | 2 级开关 | 自动跨越 1 格方块 |
-| `follow_range` | 叠加 | 生物跟踪范围，每点 +0.5 |
-
-### 🟨 功能 / Utility（18 个）
-
-| 属性 | 类型 | 效果 |
-|------|------|------|
-| `luck` | 叠加 | 幸运值，每点 +0.1 |
-| `mining_speed` | 百分比 | 挖掘速度，每点 +1.0% |
-| `reach` | 叠加 | 方块触及距离，每点 +0.04 |
-| `entity_reach` | 叠加 | 实体触及距离，每点 +0.04 |
-| `xp_gain` | 百分比 | 经验获取加成，每点 +2.0% |
-| `loot_luck` | 百分比 | 掉落幸运，每点 +1.0% |
-| `night_vision` | 2 级开关 | 永久夜视 |
-| `water_breathing` | 2 级开关 | 水下呼吸 |
-| `no_hunger` | 3 级开关 | 永不饥饿 |
-| `item_magnet` | 2 级开关 | 物品磁铁（自动吸取掉落物） |
-| `xp_magnet` | 2 级开关 | 经验磁铁（自动吸取经验球） |
-| `invisibility` | 3 级开关 | 永久隐身 |
-| `vein_miner` | 3 级开关 | 连锁挖掘（最大方块数可配） |
-| `auto_smelt` | 2 级开关 | 自动冶炼（挖掘直接出冶炼品） |
-| `no_invincibility_frames` | 5 级开关 | 取消无敌帧 |
-| `double_loot` | 百分比 | 双倍掉落，每点 +0.5% |
-| `teleport_distance` | 叠加 | 传送距离，每点 +5.0 |
-| `crafting_bonus` | 百分比 | 额外合成，每点 +0.5% |
-| `bow_draw_speed` | 百分比 | 拉弓加速，每点 +3.0% |
-| `use_speed` | 百分比 | 使用速度（吃东西/喝药/盾牌），每点 +2.0% |
-| `auto_repair` | 2 级开关 | 自动修理背包和装备栏所有物品 |
-| `repair_amount` | 叠加 | 每次修理耐久值，每点 +1 |
-
-### 🟪 魔法 / Magic（8 个）
-
-| 属性 | 类型 | 效果 |
-|------|------|------|
-| `max_mana` | 叠加 | 最大法力值，每点 +10.0 |
-| `mana_regen` | 叠加 | 法力恢复速度，每点 +0.5 |
-| `magic_damage` | 百分比 | 魔法伤害，每点 +3.0% |
-| `cooldown_reduction` | 百分比 | 冷却缩减，每点 +0.3% |
-| `mana_shield` | 百分比 | 法力护盾，每点 +1.0%（消耗法力抵消伤害） |
-| `mana_steal` | 百分比 | 法力窃取，每点 +1.0% |
-| `spell_power` | 百分比 | 法术强度，每点 +2.5% |
-| `mana_on_kill` | 叠加 | 击杀回蓝，每点 +2.0 |
-
-### 🟪 外部属性 / External — 自动发现
-
-开启 `enableAttributeDiscovery`（默认开启）后，自动扫描所有其他模组注册的属性并加入 GUI 的「外部属性」分类。按命名空间自动分组折叠，支持自定义翻译。
+| 命令 | 说明 | 需求属性 |
+|------|------|---------|
+| `/infstats crossdim` | 列出当前世界所有维度 | — |
+| `/infstats crossdim <维度名>` | 强制跨维度传送（如 `overworld`/`nether`/`end` 或 `<modid>:<维度>`） | 跨维度传送 |
+| `/infstats wp set <名称>` | 保存当前位置为传送点 | 定点传送 |
+| `/infstats wp del <名称>` | 删除传送点 | 定点传送 |
+| `/infstats wp list` | 列出所有传送点 | 定点传送 |
+| `/infstats wp <名称>` | 传送到指定传送点 | 定点传送 |
+| `/infstats craft` | 打开随身工作台 | 内置工作台 |
+| `/infstats furnace` | 打开随身熔炉 | 内置熔炉 |
 
 ---
 
-## EMC 等价交换系统 / EMC System
+## ⚙️ 配置
 
-v1.4.0 起内置完整的等价交换系统：
+配置文件位于 `config/infinitestats-server.toml`（服务器管理员可调整平衡性，修改后无需重启游戏即大部分生效）。
 
-- **Bellman-Ford 自动计算**：遍历所有合成/烧炼/锻造/切石配方，迭代收敛计算 EMC 值
-- **手动锚点**：`config/infinitestats/emc_values.json` 预设 120+ 基础物品锚点
-- **漏洞防护**：循环检测、原矿黑名单、0-EMC 物品过滤
-- **ProjectE 互通**：若检测到 ProjectE 安装，自动通过反射完全互通 EMC 值
-- **转化桌 GUI**：搜索 → 学习 → 提取（x1/x10/x64），EMC 余额实时显示
-
-### EMC 命令 / Commands
-
-| 命令 | 功能 |
-|------|------|
-| `/emc` | 查看 EMC 余额和已学物品数 |
-| `/emc learn` | 学习手持物品 |
-| `/emc learn all` | 学习背包中全部物品 |
-| `/emc give <玩家> <数量>` | 管理员给予 EMC |
-| `/emc reload` | 重载 EMC 数据库（管理员） |
-
----
-
-## 物品编辑器 / Item Editor
-
-v1.3.0 起内置物品 NBT 编辑器：
-
-- **附魔编辑**：添加/修改/删除附魔，支持超过原版等级上限
-- **扩展 NBT 支持**：完整读写 Apotheosis 等模组的附魔扩展字段（宝石、词缀等）
-- **通用物品编辑**：修改物品名称、Lore、耐久、堆叠数量等
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `experience.xpPerKillBase` | `20` | 击杀怪物基础经验值 |
+| `experience.xpPerKillHealthFactor` | `3.0` | 怪物最大生命值每点附加的经验系数 |
+| `experience.passiveXpAmount` | `2` | 被动获取的经验值 |
+| `experience.passiveXpInterval` | `80` | 被动经验间隔（tick，20tick=1秒） |
+| `leveling.baseXpPerLevel` | `60` | 升到 2 级所需基础经验 |
+| `leveling.xpPerLevelIncrement` | `30` | 每级增加的经验需求 |
+| `leveling.pointsPerLevel` | `3` | 每次升级获得的属性点 |
+| `autoRevive.autoReviveCooldown` | `300` | 自动复活冷却（秒，0=无冷却） |
+| `autoRevive.autoReviveHealthPercent` | `0.3` | 复活后恢复生命百分比 |
+| `passiveEffects.healthRegenInterval` | `100` | 生命恢复间隔（tick） |
+| `passiveEffects.manaRegenInterval` | `40` | 法力恢复间隔（tick） |
+| `passiveEffects.magnetRange` | `10` | 物品/经验磁铁吸引范围 |
+| `passiveEffects.veinMinerMaxBlocks` | `64` | 连锁挖掘最大方块数 |
+| `gui.showHiddenStats` | `false` | 是否显示隐藏属性（如无敌），改后重开面板生效 |
+| `compatibility.enableAttributeDiscovery` | `true` | 自动发现其他模组属性（**需重启**） |
+| `emc.emcEnabled` | `true` | 是否启用 EMC 系统 |
+| `emc.emcLossRate` | `0.0` | EMC 转换损耗率（0=无损耗，1=全损耗） |
+| `timeAccel.timeAccelRadius` | `4` | 「加速」属性基础影响半径（方块） |
+| `furnace.furnaceSpeedCost` | `5` | 每级随身熔炉速度消耗的属性点 |
+| `crafting.craftingMultiplierCost` | `5` | 每级随身工作台倍率消耗的属性点 |
 
 ---
 
-## 键位与操作 / Controls
+## 🧬 内置属性一览
 
-| 按键 | 功能 |
-|------|------|
-| `P` | 打开属性加点面板 |
-| 左键点击属性 | 分配 1 点 |
-| 右键点击属性 | 撤回 1 点 |
-| Shift + 左键 | 分配 10 点 |
-| Shift + 右键 | 撤回 10 点 |
-| 分类重置按钮 | 返还该分类全部已分配点数 |
+> 共 **78** 个内置属性。标注 **[开关]** 的为功能型开关，激活后即时生效，可随时开启/关闭。
 
-GUI 支持**右键拖动面板**、**Ctrl+滚轮缩放**、**中键重置视角**。
+### ⚔️ 攻击（15）
 
----
+`attack_damage` 攻击伤害 · `attack_speed` 攻击速度 · `crit_chance` 暴击率 · `crit_damage` 暴击伤害 · `armor_penetration` 护甲穿透 · `knockback_power` 击退力度 · `projectile_damage` 远程伤害 · `life_steal` 生命偷取 · `life_steal_aoe` 范围吸血 · `damage_reflection` 反伤 · `execute` 处决 · `true_damage` 真实伤害 · `reduce_max_health` 削弱最大生命 · `scope_attack` 瞄准攻击 · `repulsion` 斥力
 
-## 伤害处理链 / Damage Processing Chain
+### 🛡️ 防御（17，含 1 隐藏）
 
-玩家受到伤害时按以下优先级依次判定：
+`max_health` 最大生命 · `armor` 护甲 · `armor_toughness` 盔甲韧性 · `health_regen` 生命恢复 · `damage_reduction` 伤害减免 · `knockback_resist` 击退抗性 · `fall_resist` 摔落抗性 · `fire_immunity` **[开关]** 火焰免疫 · `projectile_immunity` **[开关]** 弹射物免疫 · `explosion_immunity` **[开关]** 爆炸免疫 · `suffocation_immunity` **[开关]** 窒息免疫 · `auto_revive` 自动复活 · `block_chance` 格挡几率 · `absorption_shield` 吸收护盾 · `dodge_chance` 闪避几率 · `debuff_immunity` **[开关]** 负面效果免疫 · `invincibility`（隐藏）无敌
 
-1. **免疫判定** — 火焰 / 弹射物 / 爆炸 / 窒息免疫
-2. **自动复活** — 死亡时触发
-3. **闪避** — `dodge_chance`
-4. **格挡** — `block_chance`
-5. **法力护盾** — `mana_shield`
-6. **伤害减免** — `damage_reduction`
-7. **摔落减免** — `fall_resist` / `no_fall_damage`
-8. **伤害反射** — `damage_reflection`
+### 🏃 机动（9，含若干开关）
 
----
+`movement_speed` 移动速度 · `swim_speed` 游泳速度 · `jump_height` 跳跃高度 · `step_height` 跨步高度 · `fly_speed` 飞行速度 · `fly` **[开关]** 飞行 · `no_fall_damage` **[开关]** 免摔落伤害 · `auto_step` **[开关]** 自动跨步 · `follow_range` 仇恨范围
 
-## 配置 / Configuration
+### 🧰 功能（29，含多个开关）
 
-配置文件位于 `config/infinitestats-common.toml`：
+`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 战利品幸运 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `item_magnet` 物品磁铁 · `invisibility` **[开关]** 隐身 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `xp_magnet` 经验磁铁 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `double_loot` 双倍战利品 · `teleport_distance` 传送距离 · `crafting_bonus` 合成加成 · `bow_draw_speed` 拉弓速度 · `use_speed` 使用速度 · `auto_repair` **[开关]** 自动修复 · `repair_amount` 修复量 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `portable_crafting` **[开关]** 内置工作台 · `portable_furnace` **[开关]** 内置熔炉
 
-```toml
-[Experience]
-xpPerKillBase = 20              # 击杀基础经验
-xpPerKillHealthFactor = 3.0     # 按血量加成的经验系数
-passiveXpAmount = 2            # 被动挂机每轮经验
-passiveXpInterval = 80          # 被动经验间隔（tick）
+### 🔮 魔法（8）
 
-[Leveling]
-baseXpPerLevel = 60             # 升 2 级所需经验
-xpPerLevelIncrement = 30        # 每级递增经验值
-pointsPerLevel = 3              # 每次升级获得点数
+`max_mana` 最大法力 · `mana_regen` 法力恢复 · `magic_damage` 魔法伤害 · `cooldown_reduction` 冷却缩减 · `mana_shield` 法力护盾 · `mana_steal` 法力偷取 · `spell_power` 法术强度 · `mana_on_kill` 击杀回蓝
 
-[AutoRevive]
-autoReviveCooldown = 300        # 自动复活冷却（秒）
-autoReviveHealthPercent = 0.3   # 复活后血量百分比
+### 🌐 外部属性（动态）
 
-[PassiveEffects]
-healthRegenInterval = 100       # 生命恢复间隔（tick）
-manaRegenInterval = 40          # 法力恢复间隔（tick）
-magnetRange = 10                # 磁铁吸引范围
-veinMinerMaxBlocks = 64         # 连锁挖掘最大方块数
-
-[GUI]
-showHiddenStats = false         # 显示隐藏属性（如无敌）
-
-[Compatibility]
-enableAttributeDiscovery = true # 自动发现第三方属性
-
-[EMC]
-emcEnabled = true               # 启用内置 EMC 系统
-emcLossRate = 0.0               # EMC 转换损耗率
-```
+开启 `compatibility.enableAttributeDiscovery`（默认开）后，游戏内其他模组注册的能力属性会自动归并到「外部属性」分类，并可像内置属性一样加点。遇到兼容性问题时可关闭该选项（需重启）。
 
 ---
 
-## 经验获取 / XP System
+## 🔧 开发 / 构建
 
-| 来源 | 公式 |
-|------|------|
-| 击杀怪物 | `xpPerKillBase + 怪物最大生命值 × xpPerKillHealthFactor` |
-| 被动挂机 | 每 `passiveXpInterval` tick 获得 `passiveXpAmount` 经验 |
-
-经验获取受 `xp_gain` 属性加成影响。
-
----
-
-## 兼容性 / Compatibility
-
-- **纯服务端模组**，客户端可选安装（推荐安装以使用 GUI）
-- **独立运行**，无前置依赖，仅需 Forge 47+ 和 MC 1.20.1
-- 自动兼容所有模组的 Attribute 属性（外部属性发现）
-- 支持 Curios API 饰品槽
-- 支持 FTB Teams 团队经验共享
-- 与 Apotheosis / Iron's Spells / Ars Nouveau / Goety 等模组良好共存
-
----
-
-## 构建 / Build
-
-**环境要求：**
-- JDK 17
-- Gradle（使用项目自带的 `gradlew`）
+本项目为标准 ForgeGradle 工程，使用 Java 17 / Gradle 8.8。
 
 ```bash
-# 克隆项目
-git clone <repo-url>
-cd infinite-stats-mod
-
-# 构建
+# 生成可运行客户端（构建产物在 build/libs/）
 ./gradlew build
 
-# 构建产物位于 build/libs/
+# 仅重新生成 IDE 运行配置
+./gradlew genEclipseRuns   # 或 gradlew genIntellijRuns
 ```
 
----
-
-## 项目结构 / Project Structure
+源码结构：
 
 ```
 src/main/java/com/infinitestats/
-├── InfiniteStats.java            # 模组入口
-├── Config.java                   # 配置文件
-├── client/                       # 客户端 UI 和渲染
-│   ├── StatsScreen.java          # 属性加点面板
-│   ├── EmcScreen.java            # EMC 转化桌 GUI
-│   ├── ItemEditorScreen.java     # 物品编辑器
-│   ├── DebuffFilterScreen.java   # 负面效果过滤器
-│   └── StatsHudOverlay.java      # HUD 状态栏
-├── emc/                          # EMC 等价交换系统
-│   ├── EmcDatabase.java          # EMC 数据库与计算引擎
-│   ├── EmcPlayerData.java        # 玩家 EMC 数据 Capability
-│   └── EmcMenu.java              # EMC 转化桌容器
-├── handler/                      # 属性效果处理器
-│   ├── AttackHandler.java        # 攻击属性处理
-│   ├── DefenseHandler.java       # 防御属性处理
-│   ├── MobilityHandler.java      # 机动属性处理
-│   ├── UtilityHandler.java       # 功能属性处理
-│   └── MagicHandler.java         # 魔法属性处理
-├── network/                      # 网络通信
-├── stats/                        # 属性定义与数据
-│   ├── StatType.java             # 属性类型定义（60+ 属性）
-│   ├── PlayerStats.java          # 玩家属性数据 Capability
-│   └── StatCategory.java         # 属性分类枚举
-└── event/                        # 事件处理
+├── InfiniteStats.java          # 模组入口
+├── Config.java                 # Forge 配置
+├── client/                     # 各类 GUI 与客户端逻辑（属性面板/EMC/物品编辑器/HUD/传送点/成就…）
+├── command/                    # 服务端命令（/infstats）
+├── compat/jei/                 # JEI 配方查看集成
+├── crafting/                   # 随身工作台
+├── emc/                        # EMC 等价交换系统
+├── event/                      # 事件总线
+├── furnace/                    # 随身熔炉 / 燃料缓冲
+├── handler/                    # 属性效果处理器（攻击/防御/机动/魔法/功能/时间加速…）
+├── network/                    # 网络同步数据包
+├── stats/                      # 玩家属性数据、属性类型、传送点
+└── util/                       # 工具类（如传送）
 ```
 
 ---
 
-## 更新日志 / Changelog
+## 📄 许可证
 
-详见 [CHANGELOG.md](CHANGELOG.md)。
-
----
-
-## 许可证 / License
-
-MIT — 自由使用和修改。
-
----
-
-## 鸣谢 / Credits
-
-- 灵感来源：泰拉瑞亚的无限属性加点系统
-- 构建工具：Minecraft Forge
+本项目以 **MIT 许可证** 发布。详见仓库 `LICENSE`（如缺失，遵循 MIT 条款：可自由使用、修改、分发，须保留版权声明）。
