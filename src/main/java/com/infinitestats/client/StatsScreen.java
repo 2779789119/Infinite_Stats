@@ -156,6 +156,11 @@ public class StatsScreen extends Screen {
         icon("life_steal", Items.GOLDEN_APPLE);
         icon("life_steal_aoe", Items.ENCHANTED_GOLDEN_APPLE);
         icon("damage_reflection", Items.SHIELD);
+        icon("execute", Items.WITHER_SKELETON_SKULL);
+        icon("true_damage", Items.NETHERITE_AXE);
+        icon("reduce_max_health", Items.WITHER_ROSE);
+        icon("scope_attack", Items.TRIDENT);
+        icon("repulsion", Items.SLIME_BALL);
 
         // ═══════ 防御 ═══════
         icon("max_health", Items.RED_BED);
@@ -173,6 +178,8 @@ public class StatsScreen extends Screen {
         icon("block_chance", Items.SHIELD);
         icon("absorption_shield", Items.GOLDEN_APPLE);
         icon("dodge_chance", Items.RABBIT_FOOT);
+        icon("debuff_immunity", Items.MILK_BUCKET);
+        icon("invincibility", Items.END_CRYSTAL);
 
         // ═══════ 机动 ═══════
         icon("movement_speed", Items.LEATHER_BOOTS);
@@ -184,6 +191,7 @@ public class StatsScreen extends Screen {
         icon("no_fall_damage", Items.FEATHER);
         icon("auto_step", Items.OAK_STAIRS);
         icon("dash_cooldown", Items.CLOCK);
+        icon("follow_range", Items.SPYGLASS);
 
         // ═══════ 功能 ═══════
         icon("luck", Items.RABBIT_FOOT);
@@ -203,6 +211,20 @@ public class StatsScreen extends Screen {
         icon("double_loot", Items.CHEST_MINECART);
         icon("extra_loot_slot", Items.BUNDLE);
         icon("teleport_distance", Items.ENDER_PEARL);
+        icon("mining_level", Items.NETHERITE_PICKAXE);
+        icon("entity_reach", Items.LEAD);
+        icon("crafting_bonus", Items.CRAFTING_TABLE);
+        icon("bow_draw_speed", Items.CROSSBOW);
+        icon("use_speed", Items.CLOCK);
+        icon("auto_repair", Items.ANVIL);
+        icon("repair_amount", Items.IRON_INGOT);
+        icon("time_accel", Items.CLOCK);
+        icon("time_accel_radius", Items.COMPASS);
+        icon("cross_dimension_teleport", Items.ENDER_PEARL);
+        icon("fixed_point_teleport", Items.LODESTONE);
+        icon("portable_crafting", Items.CRAFTING_TABLE);
+        icon("portable_furnace", Items.FURNACE);
+        icon("pe_auto_learn", Items.BOOK);
 
         // ═══════ 魔法 ═══════
         icon("max_mana", Items.ENCHANTING_TABLE);
@@ -212,6 +234,7 @@ public class StatsScreen extends Screen {
         icon("mana_shield", Items.END_CRYSTAL);
         icon("mana_steal", Items.WITHER_ROSE);
         icon("spell_power", Items.ENCHANTED_BOOK);
+        icon("mana_on_kill", Items.EXPERIENCE_BOTTLE);
     }
 
     private static void icon(String statId, net.minecraft.world.item.Item item) {
@@ -219,8 +242,15 @@ public class StatsScreen extends Screen {
     }
 
     private static ItemStack getIcon(StatType stat) {
-        return STAT_ICONS.getOrDefault(stat.getId(), ItemStack.EMPTY);
+        ItemStack icon = STAT_ICONS.getOrDefault(stat.getId(), ItemStack.EMPTY);
+        if (icon.isEmpty() && stat.getCategory() == StatCategory.EXTERNAL) {
+            return DEFAULT_EXTERNAL_ICON;
+        }
+        return icon;
     }
+
+    /** 外部属性的默认图标 */
+    private static final ItemStack DEFAULT_EXTERNAL_ICON = new ItemStack(Items.KNOWLEDGE_BOOK);
 
     // ======================== 构造与初始化 ========================
 
@@ -1043,10 +1073,17 @@ public class StatsScreen extends Screen {
         // 折叠指示符 + 命名空间 + 数量
         boolean collapsed = collapsedExternalGroups.contains(header.namespace);
         String arrow = collapsed ? "▶" : "▼";
+        int iconSize = 12;
+        int iconX = x + 18;
+        int iconY = y + (CARD_H - iconSize) / 2;
+        g.renderItem(GROUP_HEADER_ICON, iconX, iconY);
         String label = arrow + " " + header.namespace + "  §7(" + header.groupSize + ")";
-        g.drawString(font, label, x + 12, y + (CARD_H - font.lineHeight) / 2 + 1,
+        g.drawString(font, label, x + 34, y + (CARD_H - font.lineHeight) / 2 + 1,
                 hovered ? TEXT_PRIMARY : TEXT_SECONDARY);
     }
+
+    /** 分组头默认图标 */
+    private static final ItemStack GROUP_HEADER_ICON = new ItemStack(Items.BOOKSHELF);
 
     private void renderOneCard(GuiGraphics g, int x, int y, int width, StatType stat, boolean hovered) {
         int bgColor = hovered ? BG_CARD_HOVER : BG_CARD;

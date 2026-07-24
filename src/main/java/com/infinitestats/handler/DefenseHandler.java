@@ -134,11 +134,39 @@ public class DefenseHandler implements StatEffectHandler {
         if (gameTick - stats.getLastReviveTime() >= cooldownTicks) {
             player.setHealth(player.getMaxHealth() * Config.AUTO_REVIVE_HEALTH_PERCENT.get().floatValue());
             player.setAirSupply(player.getMaxAirSupply());
-            player.removeAllEffects();
+
+            // 清除效果：默认只清负面效果以保留其他模组的增益Buff；关闭则该回全部清除（旧行为）
+            if (Config.AUTO_REVIVE_CLEAR_DEBUFFS_ONLY.get()) {
+                for (MobEffectInstance inst : new java.util.ArrayList<>(player.getActiveEffects())) {
+                    if (inst.getEffect() != null && !inst.getEffect().isBeneficial()) {
+                        player.removeEffect(inst.getEffect());
+                    }
+                }
+            } else {
+                player.removeAllEffects();
+            }
+
+            // 补满饥饿与饱食度（默认开启），避免复活后立刻饿死
+            if (Config.AUTO_REVIVE_REFILL_FOOD.get()) {
+                player.getFoodData().setFoodLevel(20);
+                player.getFoodData().setSaturation(20.0f);
+            }
+
+            // 复活后短暂伤害免疫，防止在危险地点（岩浆/敌群）立刻再次死亡
+            int invulnSeconds = Config.AUTO_REVIVE_INVULN_SECONDS.get();
+            stats.setReviveInvulnUntilTick(invulnSeconds > 0 ? gameTick + invulnSeconds * 20L : 0);
+
             stats.setLastReviveTime(gameTick);
             return true;
         }
         return false;
+    }
+
+    /**
+     * 复活无敌窗口内：玩家免疫一切伤害，避免复活瞬间在原地再次致死却因冷却无法再复活。
+     */
+    public static boolean isReviveInvulnerable(ServerPlayer player, PlayerStats stats) {
+        return player.level().getGameTime() < stats.getReviveInvulnUntilTick();
     }
 
     /**

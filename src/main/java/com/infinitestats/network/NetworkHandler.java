@@ -7,6 +7,7 @@ import com.infinitestats.emc.EmcMenu;
 import com.infinitestats.emc.EmcPlayerData;
 import com.infinitestats.emc.EmcPlayerDataProvider;
 import com.infinitestats.furnace.FurnaceFuelBufferMenu;
+import com.infinitestats.furnace.FurnaceProductBufferMenu;
 import com.infinitestats.furnace.PortableFurnaceMenu;
 import com.infinitestats.Config;
 import com.infinitestats.stats.PlayerStats;
@@ -27,6 +28,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.level.Level;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.resources.ResourceKey;
@@ -69,6 +71,28 @@ public final class NetworkHandler {
                 SyncStatsPacket::encode,
                 SyncStatsPacket::decode,
                 SyncStatsPacket::handle);
+
+        // ========== 随身工作台 / 熔炉 联动 Refined Storage ==========
+        CHANNEL.registerMessage(packetId++, CraftingRecipeFillPacket.class,
+                CraftingRecipeFillPacket::encode,
+                CraftingRecipeFillPacket::decode,
+                CraftingRecipeFillPacket::handle);
+        CHANNEL.registerMessage(packetId++, CraftingOutputModePacket.class,
+                CraftingOutputModePacket::encode,
+                CraftingOutputModePacket::decode,
+                CraftingOutputModePacket::handle);
+        CHANNEL.registerMessage(packetId++, FurnaceRSRefillOrePacket.class,
+                FurnaceRSRefillOrePacket::encode,
+                FurnaceRSRefillOrePacket::decode,
+                FurnaceRSRefillOrePacket::handle);
+        CHANNEL.registerMessage(packetId++, FurnaceRSRefillFuelPacket.class,
+                FurnaceRSRefillFuelPacket::encode,
+                FurnaceRSRefillFuelPacket::decode,
+                FurnaceRSRefillFuelPacket::handle);
+        CHANNEL.registerMessage(packetId++, FurnaceRSDepositPacket.class,
+                FurnaceRSDepositPacket::encode,
+                FurnaceRSDepositPacket::decode,
+                FurnaceRSDepositPacket::handle);
 
         // 属性修改数据包（客户端 → 服务器）
         CHANNEL.registerMessage(packetId++, ModifyStatPacket.class,
@@ -143,6 +167,18 @@ public final class NetworkHandler {
                 FurnaceFuelOpenPacket::encode,
                 FurnaceFuelOpenPacket::decode,
                 FurnaceFuelOpenPacket::handle);
+
+        // 成品仓菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, FurnaceProductOpenPacket.class,
+                FurnaceProductOpenPacket::encode,
+                FurnaceProductOpenPacket::decode,
+                FurnaceProductOpenPacket::handle);
+
+        // 成品仓：将成品存入 RS 网络（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, FurnaceProductRSDepositPacket.class,
+                FurnaceProductRSDepositPacket::encode,
+                FurnaceProductRSDepositPacket::decode,
+                FurnaceProductRSDepositPacket::handle);
 
         // 随身熔炉速度调节数据包（客户端 → 服务器，消耗/返还可分配点数）
         CHANNEL.registerMessage(packetId++, FurnaceSpeedPacket.class,
@@ -634,6 +670,56 @@ public final class NetworkHandler {
         }
     }
 
+    /** 客户端请求打开成品仓（需已开启 portable_furnace 开关）。 */
+    public static final class FurnaceProductOpenPacket {
+        public FurnaceProductOpenPacket() {}
+
+        public static void encode(FurnaceProductOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static FurnaceProductOpenPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceProductOpenPacket();
+        }
+
+        public static void handle(FurnaceProductOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_furnace")) return;
+                    NetworkHooks.openScreen(player,
+                            new SimpleMenuProvider(
+                                    (id, inv, p) -> new FurnaceProductBufferMenu(id, inv),
+                                    Component.translatable("screen.infinitestats.furnace.product_buffer")));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 成品仓：把成品储备箱中的成品存入 RS 网络。 */
+    public static final class FurnaceProductRSDepositPacket {
+        public FurnaceProductRSDepositPacket() {}
+
+        public static void encode(FurnaceProductRSDepositPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static FurnaceProductRSDepositPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceProductRSDepositPacket();
+        }
+
+        public static void handle(FurnaceProductRSDepositPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof FurnaceProductBufferMenu m) m.depositToNetwork();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
     /** 客户端向服务器请求增减随身熔炉速度（消耗/返还可分配点数）。 */
     public static final class FurnaceSpeedPacket {
         private final boolean increase; // true=加速（消耗点数）；false=减速（返点数）
@@ -1071,5 +1157,129 @@ public final class NetworkHandler {
 
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                 new SyncAdvancementsPacket(list));
+    }
+
+    // ========== 随身工作台 / 熔炉 联动 Refined Storage ==========
+
+    /** 工作台：JEI 一键转移配方时，按给定 3x3 材料布局从背包/存储网络补充材料。 */
+    public static final class CraftingRecipeFillPacket {
+        private final Ingredient[] ingredients = new Ingredient[9];
+
+        public CraftingRecipeFillPacket(Ingredient[] grid) {
+            System.arraycopy(grid, 0, ingredients, 0, 9);
+        }
+
+        public static void encode(CraftingRecipeFillPacket msg, FriendlyByteBuf buf) {
+            for (int i = 0; i < 9; i++) {
+                msg.ingredients[i].toNetwork(buf);
+            }
+        }
+
+        public static CraftingRecipeFillPacket decode(FriendlyByteBuf buf) {
+            CraftingRecipeFillPacket msg = new CraftingRecipeFillPacket(new Ingredient[9]);
+            for (int i = 0; i < 9; i++) {
+                msg.ingredients[i] = Ingredient.fromNetwork(buf);
+            }
+            return msg;
+        }
+
+        public static void handle(CraftingRecipeFillPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof PortableCraftingMenu m) {
+                    m.fillGridFromIngredients(msg.ingredients);
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 工作台：切换合成成品的去向（背包 / 存储空间）。 */
+    public static final class CraftingOutputModePacket {
+        public CraftingOutputModePacket() {
+        }
+
+        public static void encode(CraftingOutputModePacket msg, FriendlyByteBuf buf) {
+        }
+
+        public static CraftingOutputModePacket decode(FriendlyByteBuf buf) {
+            return new CraftingOutputModePacket();
+        }
+
+        public static void handle(CraftingOutputModePacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof PortableCraftingMenu m) m.toggleOutputToStorage();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 熔炉：从 RS 网络提取可熔炼矿物补入输入槽。 */
+    public static final class FurnaceRSRefillOrePacket {
+        public FurnaceRSRefillOrePacket() {
+        }
+
+        public static void encode(FurnaceRSRefillOrePacket msg, FriendlyByteBuf buf) {
+        }
+
+        public static FurnaceRSRefillOrePacket decode(FriendlyByteBuf buf) {
+            return new FurnaceRSRefillOrePacket();
+        }
+
+        public static void handle(FurnaceRSRefillOrePacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof PortableFurnaceMenu m) m.refillOreFromNetwork();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 熔炉：从 RS 网络提取燃料补入燃料槽。 */
+    public static final class FurnaceRSRefillFuelPacket {
+        public FurnaceRSRefillFuelPacket() {
+        }
+
+        public static void encode(FurnaceRSRefillFuelPacket msg, FriendlyByteBuf buf) {
+        }
+
+        public static FurnaceRSRefillFuelPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceRSRefillFuelPacket();
+        }
+
+        public static void handle(FurnaceRSRefillFuelPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof PortableFurnaceMenu m) m.refillFuelFromNetwork();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 熔炉：将输出槽的成品存入 RS 网络。 */
+    public static final class FurnaceRSDepositPacket {
+        public FurnaceRSDepositPacket() {
+        }
+
+        public static void encode(FurnaceRSDepositPacket msg, FriendlyByteBuf buf) {
+        }
+
+        public static FurnaceRSDepositPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceRSDepositPacket();
+        }
+
+        public static void handle(FurnaceRSDepositPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof PortableFurnaceMenu m) m.depositProductsToNetwork();
+            });
+            ctx.get().setPacketHandled(true);
+        }
     }
 }

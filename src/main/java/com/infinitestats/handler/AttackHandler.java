@@ -167,6 +167,7 @@ public class AttackHandler implements StatEffectHandler {
 
     /**
      * 应用攻击减血量上限：每次攻击降低目标最大生命值（最低保留 1 点）
+     * 兼容其他模组的生命加成：读取总值和基础值的差值作为修饰符，计算新基础值时扣除修饰符部分
      */
     public static void applyReduceMaxHealth(ServerPlayer player, PlayerStats stats, LivingEntity target) {
         float reduce = stats.getStatValue(StatType.fromId("reduce_max_health"));
@@ -176,10 +177,13 @@ public class AttackHandler implements StatEffectHandler {
         if (maxHp == null) return;
 
         double curMax = maxHp.getValue();
+        double curBase = maxHp.getBaseValue();
+        double modifiers = curMax - curBase; // 其他模组加成部分
         double newMax = Math.max(1.0, curMax - Math.min(reduce, curMax - 1.0));
         if (newMax < curMax - 0.001) {
             double lose = curMax - newMax;
-            maxHp.setBaseValue(newMax);
+            double newBase = Math.max(1.0, newMax - modifiers);
+            maxHp.setBaseValue(newBase);
             applyDirectDamage(player, target, (float) lose);
         }
     }

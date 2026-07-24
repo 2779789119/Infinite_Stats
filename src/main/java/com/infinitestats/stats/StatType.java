@@ -605,6 +605,7 @@ public final class StatType {
 
             create("item_magnet").category(StatCategory.UTILITY)
                 .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
+                .description("立即收集范围内的掉落物，范围由配置 magnetRange 决定（默认 10 格）")
                 .build(),
 
             create("invisibility").category(StatCategory.UTILITY)
@@ -691,6 +692,12 @@ public final class StatType {
                 .toggle()
                 .maxLevel(1)
                 .description("开启后可使用 /infstats furnace 打开随身熔炉")
+                .build(),
+
+            create("pe_auto_learn").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(5)
+                .description("投入5点解锁：获得物品时自动学习到ProjectE知识库，无需卖入转化桌即可用EMC转化")
                 .build(),
 
             // ===== 魔法属性 =====

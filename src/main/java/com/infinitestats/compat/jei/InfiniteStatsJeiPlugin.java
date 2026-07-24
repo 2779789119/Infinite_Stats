@@ -1,8 +1,6 @@
 package com.infinitestats.compat.jei;
 
 import com.infinitestats.InfiniteStats;
-import com.infinitestats.crafting.PortableCraftingMenu;
-import com.infinitestats.emc.ModMenuTypes;
 import mezz.jei.api.IModPlugin;
 import mezz.jei.api.JeiPlugin;
 import mezz.jei.api.constants.RecipeTypes;
@@ -23,14 +21,9 @@ public class InfiniteStatsJeiPlugin implements IModPlugin {
 
     @Override
     public void registerRecipeTransferHandlers(IRecipeTransferRegistration registration) {
+        // 使用自定义处理器：背包材料不足时，自动从存储网络（RS/AE2/BD/背包/汤姆）补充到 3×3 网格
         registration.addRecipeTransferHandler(
-                PortableCraftingMenu.class,
-                ModMenuTypes.PORTABLE_CRAFTING_MENU.get(),
-                RecipeTypes.CRAFTING,
-                1,   // recipeSlotStart：合成网格从 index 1 开始
-                9,   // recipeSlotCount：3x3 = 9
-                10,  // inventorySlotStart：玩家背包从 index 10 开始
-                36   // inventorySlotCount：27 背包 + 9 快捷栏
-        );
+                new PortableCraftingRecipeTransferHandler(),
+                RecipeTypes.CRAFTING);
     }
 }

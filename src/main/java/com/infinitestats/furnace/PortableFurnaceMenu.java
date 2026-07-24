@@ -12,7 +12,15 @@ import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.common.ForgeHooks;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.crafting.RecipeType;
+import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.level.Level;
+
+import com.infinitestats.compat.NetworkHandle;
+import com.infinitestats.compat.NetworkIO;
+import java.util.List;
 
 /**
  * 随身熔炉菜单。
@@ -27,11 +35,13 @@ public class PortableFurnaceMenu extends AbstractContainerMenu {
     private final PlayerFurnaceData furnaceData;
     private final FurnaceContainer furnace;
     private final ContainerData data;
+    private final Player player;
 
     public PortableFurnaceMenu(int windowId, Inventory inv) {
         super(ModMenuTypes.PORTABLE_FURNACE_MENU.get(), windowId);
 
         Player player = inv.player;
+        this.player = player;
         this.furnaceData = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
                 .orElseGet(PlayerStats::new).getFurnaceData();
 
@@ -306,5 +316,99 @@ public class PortableFurnaceMenu extends AbstractContainerMenu {
         public int getCount() {
             return arr.length;
         }
+    }
+
+    // ========== Refined Storage 联动 ==========
+
+    /** 从 RS 网络提取可熔炼矿物补入输入槽。 */
+    public void refillOreFromNetwork() {
+        if (!(player instanceof ServerPlayer sp)) return;
+        List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+        if (nets.isEmpty()) {
+            sp.sendSystemMessage(Component.literal(NetworkIO.diagnose(player)));
+            return;
+        }
+        List<ItemStack> items = NetworkIO.listItems(nets);
+        int idx = PlayerFurnaceData.inputSlot(0);
+        ItemStack cur = furnaceData.getStack(idx);
+        int total = 0;
+        for (ItemStack netStack : items) {
+            if (netStack.isEmpty()) continue;
+            if (!cur.isEmpty() && !ItemStack.isSameItemSameTags(cur, netStack)) continue;
+            if (!hasSmeltingRecipe(netStack, player.level())) continue;
+            ItemStack got = NetworkIO.extract(nets, netStack.copyWithCount(64), 64);
+            if (got.isEmpty()) continue;
+            if (cur.isEmpty()) {
+                furnaceData.setSlot(idx, got);
+                cur = got;
+            } else {
+                long space = (long) PlayerFurnaceData.UNBOUNDED - furnaceData.getAmount(idx);
+                int put = (int) Math.min(got.getCount(), space);
+                if (put <= 0) continue;
+                furnaceData.setAmountOnly(idx, furnaceData.getAmount(idx) + put);
+            }
+            this.slots.get(idx).set(furnaceData.getStack(idx));
+            total += got.getCount();
+            if (total >= 64 * 16) break;
+        }
+        if (total == 0) sp.sendSystemMessage(Component.literal("§e网络中没有可熔炼的矿物"));
+        else sp.sendSystemMessage(Component.literal("§a已从网络提取 §f" + total + "§a 个矿物到输入槽"));
+        broadcastChanges();
+    }
+
+    /** 从 RS 网络提取燃料补入燃料槽。 */
+    public void refillFuelFromNetwork() {
+        if (!(player instanceof ServerPlayer sp)) return;
+        List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+        if (nets.isEmpty()) {
+            sp.sendSystemMessage(Component.literal(NetworkIO.diagnose(player)));
+            return;
+        }
+        List<ItemStack> items = NetworkIO.listItems(nets);
+        int idx = PlayerFurnaceData.FUEL_SLOT;
+        ItemStack cur = furnaceData.getStack(idx);
+        int total = 0;
+        for (ItemStack netStack : items) {
+            if (netStack.isEmpty()) continue;
+            if (ForgeHooks.getBurnTime(netStack, RecipeType.SMELTING) <= 0) continue;
+            if (!cur.isEmpty() && !ItemStack.isSameItemSameTags(cur, netStack)) continue;
+            ItemStack got = NetworkIO.extract(nets, netStack.copyWithCount(64), 64);
+            if (got.isEmpty()) continue;
+            if (cur.isEmpty()) {
+                furnaceData.setSlot(idx, got);
+                cur = got;
+            } else {
+                long space = (long) PlayerFurnaceData.UNBOUNDED - furnaceData.getAmount(idx);
+                int put = (int) Math.min(got.getCount(), space);
+                if (put <= 0) continue;
+                furnaceData.setAmountOnly(idx, furnaceData.getAmount(idx) + put);
+            }
+            this.slots.get(idx).set(furnaceData.getStack(idx));
+            total += got.getCount();
+            if (total >= 1024) break;
+        }
+        if (total == 0) sp.sendSystemMessage(Component.literal("§e网络中没有可用的燃料"));
+        else sp.sendSystemMessage(Component.literal("§a已从网络提取 §f" + total + "§a 个燃料到燃料槽"));
+        broadcastChanges();
+    }
+
+    /** 将成品储备箱（成品仓）中的成品存入 RS 网络。 */
+    public void depositProductsToNetwork() {
+        if (!(player instanceof ServerPlayer sp)) return;
+        List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+        if (nets.isEmpty()) {
+            sp.sendSystemMessage(Component.literal(NetworkIO.diagnose(player)));
+            return;
+        }
+        sp.sendSystemMessage(furnaceData.depositOutputToNetwork(nets));
+        broadcastChanges();
+    }
+
+    private boolean hasSmeltingRecipe(ItemStack stack, Level level) {
+        SimpleContainer c = new SimpleContainer(1);
+        c.setItem(0, stack);
+        return level.getRecipeManager()
+                .getRecipeFor(RecipeType.SMELTING, c, level)
+                .isPresent();
     }
 }

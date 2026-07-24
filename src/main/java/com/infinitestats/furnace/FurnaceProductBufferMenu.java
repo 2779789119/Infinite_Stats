@@ -1,26 +1,30 @@
 package com.infinitestats.furnace;
 
+import com.infinitestats.compat.NetworkHandle;
+import com.infinitestats.compat.NetworkIO;
 import com.infinitestats.emc.ModMenuTypes;
+
+import java.util.List;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import net.minecraft.core.NonNullList;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.crafting.RecipeType;
-import net.minecraft.world.level.Level;
-import net.minecraftforge.common.ForgeHooks;
 
 /**
- * 矿石储备箱菜单：一个类似箱子的 GUI，用于存放“待熔炼的矿石/物品”。
- * 箱子里的矿石会在随身熔炉的输入槽为空时，按格子顺序自动被取出放入输入槽。
+ * 成品储备箱菜单：一个类似箱子的 GUI，用于存放“熔炉输出槽熔炼出的成品”。
+ * 熔炉输出槽一旦产出成品，会被自动转入此箱（见 PlayerFurnaceData.pushOutputToBuffer），
+ * 玩家可在此统一收集成品。
  *
  * 格子布局 3 行 × 9 列（与外部箱子 UI 一致），每个槽位为普通堆叠上限（64）。
  */
-public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
+public class FurnaceProductBufferMenu extends AbstractContainerMenu {
 
     /** 储备箱行 / 列数（与外部箱子一致）。 */
     public static final int ROWS = 3;
@@ -29,29 +33,28 @@ public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
 
     /**
      * 玩家背包槽位的 y 起点：取“标签下方 + 1 像素间距”。
-     * 标签由 FurnaceFuelBufferScreen 的 {@code inventoryLabelY = imageHeight - 94 = 74} 绘制，
+     * 标签由 FurnaceProductBufferScreen 的 {@code inventoryLabelY = imageHeight - 94 = 74} 绘制，
      * 文字占 ~8 像素，因此玩家背包从 y = 83 开始，正好落在 imageHeight=168 的背景内（快捷栏 141+18=159）。
      */
     private static final int PLAYER_INV_Y = 86;
     private static final int HOTBAR_Y = PLAYER_INV_Y + 3 * 18 + 4; // 141
 
+    private final Player player;
     private final PlayerFurnaceData furnaceData;
-    private final InputBufferContainer buffer;
-    private final Level level;
+    private final ProductBufferContainer buffer;
 
-    public FurnaceFuelBufferMenu(int windowId, Inventory inv) {
-        super(ModMenuTypes.FURNACE_FUEL_BUFFER_MENU.get(), windowId);
+    public FurnaceProductBufferMenu(int windowId, Inventory inv) {
+        super(ModMenuTypes.FURNACE_PRODUCT_BUFFER_MENU.get(), windowId);
 
-        Player player = inv.player;
+        this.player = inv.player;
         this.furnaceData = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
                 .orElseGet(PlayerStats::new).getFurnaceData();
-        this.level = player.level();
-        this.buffer = new InputBufferContainer(furnaceData.getInputBuffer(), furnaceData.getInputAmounts());
+        this.buffer = new ProductBufferContainer(furnaceData.getOutputBuffer(), furnaceData.getOutputAmounts());
 
-        // 储备箱格子（3 行 × 9 列），仅接受可被熔炼的物品（矿石等）
+        // 成品仓格子（3 行 × 9 列），接受任何物品，单格堆叠无上限
         for (int row = 0; row < ROWS; row++) {
             for (int col = 0; col < COLS; col++) {
-                this.addSlot(new SmeltableOnlySlot(buffer, col + row * COLS, 8 + col * 18, 18 + row * 18, level));
+                this.addSlot(new ProductUnboundedSlot(buffer, col + row * COLS, 8 + col * 18, 18 + row * 18));
             }
         }
         // 玩家背包
@@ -76,7 +79,7 @@ public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
         if (slot == null || !slot.hasItem()) return ItemStack.EMPTY;
 
         if (index < BUFFER_SLOTS) {
-            // 储备箱 -> 玩家背包：把该格物品尽量分到背包格子（每格上限 64）
+            // 成品仓 -> 玩家背包：把该格物品尽量分到背包格子（每格上限 64）
             ItemStack buf = slot.getItem().copy();
             int total = buf.getCount();
             if (total <= 0) return ItemStack.EMPTY;
@@ -101,9 +104,9 @@ public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
             int taken = total - buf.getCount();
             if (taken > 0) slot.remove(taken);
         } else {
-            // 玩家背包 -> 储备箱（仅可熔炼物品可入，单格堆叠无上限）
+            // 玩家背包 -> 成品仓（接受所有物品，单格堆叠无上限）
             ItemStack src = slot.getItem().copy();
-            if (src.isEmpty() || !isSmeltable(level, src)) return ItemStack.EMPTY;
+            if (src.isEmpty()) return ItemStack.EMPTY;
             ItemStack left = buffer.deposit(src);
             int taken = src.getCount() - left.getCount();
             if (taken > 0) slot.remove(taken);
@@ -116,32 +119,24 @@ public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
         return true;
     }
 
-    /** 判断某物品是否为“可被熔炼的输入”（有熔炼/高炉配方且本身不是燃料）。 */
-    private static boolean isSmeltable(Level level, ItemStack stack) {
-        if (stack.isEmpty()) return false;
-        // 燃料不算“被熔炼的矿石”
-        if (ForgeHooks.getBurnTime(stack, RecipeType.SMELTING) > 0) return false;
-        Container view = new Container() {
-            @Override public int getContainerSize() { return 1; }
-            @Override public boolean isEmpty() { return stack.isEmpty(); }
-            @Override public ItemStack getItem(int index) { return index == 0 ? stack : ItemStack.EMPTY; }
-            @Override public ItemStack removeItem(int index, int count) { return ItemStack.EMPTY; }
-            @Override public ItemStack removeItemNoUpdate(int index) { return ItemStack.EMPTY; }
-            @Override public void setItem(int index, ItemStack s) { }
-            @Override public void setChanged() { }
-            @Override public boolean stillValid(Player p) { return true; }
-            @Override public void clearContent() { }
-        };
-        return level.getRecipeManager().getRecipeFor(RecipeType.SMELTING, view, level).isPresent()
-                || level.getRecipeManager().getRecipeFor(RecipeType.BLASTING, view, level).isPresent();
+    /** 将成品储备箱（成品仓）中的成品存入 RS 网络。 */
+    public void depositToNetwork() {
+        if (!(player instanceof ServerPlayer sp)) return;
+        List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+        if (nets.isEmpty()) {
+            sp.sendSystemMessage(Component.literal(NetworkIO.diagnose(player)));
+            return;
+        }
+        sp.sendSystemMessage(furnaceData.depositOutputToNetwork(nets));
+        this.broadcastChanges();
     }
 
-    /** 绑定到储备箱 NonNullList 的容器视图，槽位直接读写持久化数据；单格堆叠无上限。 */
-    private static class InputBufferContainer implements Container {
+    /** 绑定到成品储备箱 NonNullList 的容器视图，槽位直接读写持久化数据；单格堆叠无上限。 */
+    private static class ProductBufferContainer implements Container {
         private final NonNullList<ItemStack> list;
         private final long[] amounts;
 
-        InputBufferContainer(NonNullList<ItemStack> list, long[] amounts) {
+        ProductBufferContainer(NonNullList<ItemStack> list, long[] amounts) {
             this.list = list;
             this.amounts = amounts;
         }
@@ -222,7 +217,7 @@ public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
             }
         }
 
-        /** 将物品存入矿石仓：先合并同类已有堆叠（无上限），再填入空槽；返回剩余。 */
+        /** 将物品存入成品仓：先合并同类已有堆叠（无上限），再填入空槽；返回剩余。 */
         public ItemStack deposit(ItemStack stack) {
             if (stack.isEmpty()) return stack;
             ItemStack left = stack.copy();
@@ -252,18 +247,10 @@ public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
         }
     }
 
-    /** 仅接受可被熔炼物品的槽位，单格堆叠无上限。 */
-    private static class SmeltableOnlySlot extends Slot {
-        private final Level level;
-
-        SmeltableOnlySlot(Container container, int index, int x, int y, Level level) {
+    /** 成品仓槽位：单格堆叠无上限。 */
+    private static class ProductUnboundedSlot extends Slot {
+        ProductUnboundedSlot(Container container, int index, int x, int y) {
             super(container, index, x, y);
-            this.level = level;
-        }
-
-        @Override
-        public boolean mayPlace(ItemStack stack) {
-            return isSmeltable(level, stack);
         }
 
         @Override

@@ -20,6 +20,7 @@ public class PlayerStats {
     private long experience = 0;
     private long availablePoints = 0;
     private long lastReviveTime = 0;
+    private long reviveInvulnUntilTick = 0;
     private float currentMana = 0;
 
     // 使用 Map 存储属性点数 - 支持动态属性发现
@@ -138,6 +139,15 @@ public class PlayerStats {
 
     public void setLastReviveTime(long time) {
         this.lastReviveTime = time;
+    }
+
+    /** 复活无敌窗口：当前游戏时间 < 该值时，玩家免疫一切伤害。 */
+    public long getReviveInvulnUntilTick() {
+        return reviveInvulnUntilTick;
+    }
+
+    public void setReviveInvulnUntilTick(long tick) {
+        this.reviveInvulnUntilTick = tick;
     }
 
     // ========== 法力 ==========
@@ -538,6 +548,7 @@ public class PlayerStats {
         tag.putLong("experience", experience);
         tag.putLong("availablePoints", availablePoints);
         tag.putLong("lastReviveTime", lastReviveTime);
+        tag.putLong("reviveInvulnUntilTick", reviveInvulnUntilTick);
         tag.putFloat("currentMana", currentMana);
 
         // 使用 ID 格式存储属性点数（支持负值）
@@ -595,6 +606,7 @@ public class PlayerStats {
         experience = tag.getLong("experience");
         availablePoints = tag.getLong("availablePoints");
         lastReviveTime = tag.getLong("lastReviveTime");
+        reviveInvulnUntilTick = tag.getLong("reviveInvulnUntilTick");
         currentMana = tag.getFloat("currentMana");
 
         // 重置所有属性点
@@ -662,6 +674,7 @@ public class PlayerStats {
         this.experience = other.experience;
         this.availablePoints = other.availablePoints;
         this.lastReviveTime = other.lastReviveTime;
+        this.reviveInvulnUntilTick = other.reviveInvulnUntilTick;
         this.currentMana = other.currentMana;
         this.passiveTickCounter = other.passiveTickCounter;
         this.providedAbilities.clear();
@@ -688,7 +701,8 @@ public class PlayerStats {
                 new HashMap<>(allocatedPoints),
                 buffUseBlacklist,
                 new HashSet<>(buffFilterList),
-                new HashMap<>(waypoints)
+                new HashMap<>(waypoints),
+                reviveInvulnUntilTick
         );
     }
 
@@ -700,6 +714,7 @@ public class PlayerStats {
         this.experience = snapshot.experience;
         this.availablePoints = snapshot.availablePoints;
         this.lastReviveTime = snapshot.lastReviveTime;
+        this.reviveInvulnUntilTick = snapshot.reviveInvulnUntilTick;
         this.currentMana = snapshot.currentMana;
         this.passiveTickCounter = snapshot.passiveTickCounter;
         this.allocatedPoints.clear();
@@ -725,12 +740,13 @@ public class PlayerStats {
         public final boolean buffUseBlacklist;
         public final Set<String> buffFilterList;
         public final Map<String, Waypoint> waypoints;
+        public final long reviveInvulnUntilTick;
 
         public StatsSnapshot(long level, long experience, long availablePoints,
                 long lastReviveTime, float currentMana, int passiveTickCounter,
                 Map<String, Long> allocatedPoints,
                 boolean buffUseBlacklist, Set<String> buffFilterList,
-                Map<String, Waypoint> waypoints) {
+                Map<String, Waypoint> waypoints, long reviveInvulnUntilTick) {
             this.level = level;
             this.experience = experience;
             this.availablePoints = availablePoints;
@@ -741,6 +757,7 @@ public class PlayerStats {
             this.buffUseBlacklist = buffUseBlacklist;
             this.buffFilterList = buffFilterList;
             this.waypoints = waypoints;
+            this.reviveInvulnUntilTick = reviveInvulnUntilTick;
         }
     }
 }

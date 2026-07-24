@@ -24,6 +24,7 @@ public final class SyncStatsPacket {
     private long experience;
     private long availablePoints;
     private long lastReviveTime;
+    private long reviveInvulnUntilTick;
     private float currentMana;
     private Map<String, Long> allocatedPoints;
     private boolean buffUseBlacklist;
@@ -38,6 +39,7 @@ public final class SyncStatsPacket {
         this.experience = snapshot.experience;
         this.availablePoints = snapshot.availablePoints;
         this.lastReviveTime = snapshot.lastReviveTime;
+        this.reviveInvulnUntilTick = snapshot.reviveInvulnUntilTick;
         this.currentMana = snapshot.currentMana;
         this.allocatedPoints = snapshot.allocatedPoints;
         this.buffUseBlacklist = snapshot.buffUseBlacklist;
@@ -53,6 +55,7 @@ public final class SyncStatsPacket {
         this.experience = buf.readVarLong();
         this.availablePoints = buf.readVarLong();
         this.lastReviveTime = buf.readVarLong();
+        this.reviveInvulnUntilTick = buf.readVarLong();
         this.currentMana = buf.readFloat();
         
         // 读取属性点数Map
@@ -96,6 +99,7 @@ public final class SyncStatsPacket {
         buf.writeVarLong(msg.experience);
         buf.writeVarLong(msg.availablePoints);
         buf.writeVarLong(msg.lastReviveTime);
+        buf.writeVarLong(msg.reviveInvulnUntilTick);
         buf.writeFloat(msg.currentMana);
 
         // 写入非零属性数量
@@ -154,7 +158,8 @@ public final class SyncStatsPacket {
                         msg.allocatedPoints,
                         msg.buffUseBlacklist,
                         msg.buffFilterList,
-                        msg.waypoints
+                        msg.waypoints,
+                        msg.reviveInvulnUntilTick
                 );
                 stats.restoreFromSnapshot(snapshot);
             });
@@ -173,7 +178,8 @@ public final class SyncStatsPacket {
                 allocatedPoints,
                 buffUseBlacklist,
                 buffFilterList,
-                waypoints
+                waypoints,
+                reviveInvulnUntilTick
         );
     }
 }

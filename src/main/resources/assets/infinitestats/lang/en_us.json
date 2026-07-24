@@ -1635,7 +1635,7 @@
   "stat.infinitestats.invisibility": "Invisibility",
   "stat.infinitestats.invisibility.desc": "Gain permanent invisibility, harder for mobs to detect you",
   "stat.infinitestats.item_magnet": "Item Magnet",
-  "stat.infinitestats.item_magnet.desc": "Automatically attract nearby dropped items",
+  "stat.infinitestats.item_magnet.desc": "Instantly collects nearby dropped items, range controlled by config magnetRange (default 10)",
   "stat.infinitestats.jump_height": "Jump Height",
   "stat.infinitestats.jump_height.desc": "Increases jump height",
   "stat.infinitestats.knockback_power": "Knockback Power",

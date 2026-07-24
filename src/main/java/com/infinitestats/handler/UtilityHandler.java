@@ -5,7 +5,6 @@ import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.StatCategory;
 import com.infinitestats.stats.StatType;
 import net.minecraft.core.BlockPos;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.effect.MobEffectInstance;
@@ -188,38 +187,34 @@ public class UtilityHandler implements StatEffectHandler {
     }
 
     /**
-     * 应用物品磁铁
+     * 应用物品磁铁 — 立即收集范围内的掉落物
+     * 范围由配置文件 magnetRange 决定（默认 10 格，3-50 可调）
      */
     private void applyItemMagnet(ServerPlayer player, PlayerStats stats) {
         if (!stats.isToggleActive("item_magnet")) return;
 
-        double range = 8.0;
+        double range = Config.MAGNET_RANGE.get();
+
         AABB area = new AABB(
                 player.getX() - range, player.getY() - range, player.getZ() - range,
                 player.getX() + range, player.getY() + range, player.getZ() + range
         );
 
-        List<ItemEntity> items = player.level().getEntitiesOfClass(ItemEntity.class, area,
-                e -> e.isAlive() && !e.hasPickUpDelay());
+        List<ItemEntity> items = player.level().getEntitiesOfClass(ItemEntity.class, area);
 
-        Vec3 playerPos = player.position();
         for (ItemEntity item : items) {
-            Vec3 diff = playerPos.subtract(item.position());
-            double dist = diff.length();
-            if (dist > 0.5) {
-                Vec3 speed = diff.normalize().scale(0.3);
-                item.setDeltaMovement(item.getDeltaMovement().add(speed));
-            }
+            if (item.isRemoved() || item.hasPickUpDelay()) continue;
+            item.playerTouch(player);
         }
     }
 
     /**
-     * 应用经验磁铁
+     * 应用经验磁铁 — 范围由配置文件 magnetRange 决定
      */
     private void applyXpMagnet(ServerPlayer player, PlayerStats stats) {
         if (!stats.isToggleActive("xp_magnet")) return;
 
-        double range = 10.0;
+        double range = Config.MAGNET_RANGE.get();
         AABB area = new AABB(
                 player.getX() - range, player.getY() - range, player.getZ() - range,
                 player.getX() + range, player.getY() + range, player.getZ() + range

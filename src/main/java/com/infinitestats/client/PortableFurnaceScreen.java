@@ -5,6 +5,7 @@ import com.infinitestats.network.NetworkHandler;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -26,6 +27,7 @@ public class PortableFurnaceScreen extends AbstractContainerScreen<PortableFurna
     private Button speedUpButton;
     private Button speedDownButton;
     private Button fuelBufferButton;
+    private Button productBufferButton;
 
     public PortableFurnaceScreen(PortableFurnaceMenu menu, Inventory inv, Component title) {
         super(menu, inv, title);
@@ -51,10 +53,45 @@ public class PortableFurnaceScreen extends AbstractContainerScreen<PortableFurna
                         Component.translatable("gui.infinitestats.furnace.fuel_buffer"),
                         b -> openFuelBuffer())
                 .pos(leftPos + 138, topPos + 24).size(36, 16).build());
+
+        // 成品储备箱 —— 点击打开类似箱子的 GUI，熔炉输出槽产出的成品会自动转入其中
+        this.productBufferButton = this.addRenderableWidget(Button.builder(
+                        Component.translatable("gui.infinitestats.furnace.product_buffer"),
+                        b -> openProductBuffer())
+                .pos(leftPos + 138, topPos + 42).size(36, 16).build());
+
+        // RS 联动按钮（需持有 RS 无线终端）：网络取矿 / 网络取燃料 / 成品存网 —— 放在左侧空白区
+        int rx = leftPos + 6;
+        int ry = topPos + 18;
+        this.addRenderableWidget(Button.builder(
+                        Component.translatable("gui.infinitestats.furnace.rs_ore"),
+                        b -> NetworkHandler.CHANNEL.sendToServer(
+                                new NetworkHandler.FurnaceRSRefillOrePacket()))
+                .pos(rx, ry).size(36, 16)
+                .tooltip(Tooltip.create(Component.translatable("gui.infinitestats.furnace.rs_ore_tip")))
+                .build());
+        this.addRenderableWidget(Button.builder(
+                        Component.translatable("gui.infinitestats.furnace.rs_fuel"),
+                        b -> NetworkHandler.CHANNEL.sendToServer(
+                                new NetworkHandler.FurnaceRSRefillFuelPacket()))
+                .pos(rx, ry + 18).size(36, 16)
+                .tooltip(Tooltip.create(Component.translatable("gui.infinitestats.furnace.rs_fuel_tip")))
+                .build());
+        this.addRenderableWidget(Button.builder(
+                        Component.translatable("gui.infinitestats.furnace.rs_deposit"),
+                        b -> NetworkHandler.CHANNEL.sendToServer(
+                                new NetworkHandler.FurnaceRSDepositPacket()))
+                .pos(rx, ry + 36).size(36, 16)
+                .tooltip(Tooltip.create(Component.translatable("gui.infinitestats.furnace.rs_deposit_tip")))
+                .build());
     }
 
     private void openFuelBuffer() {
         NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceFuelOpenPacket());
+    }
+
+    private void openProductBuffer() {
+        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceProductOpenPacket());
     }
 
     private void onSpeed(boolean increase) {
@@ -119,6 +156,10 @@ public class PortableFurnaceScreen extends AbstractContainerScreen<PortableFurna
         } else if (fuelBufferButton != null && fuelBufferButton.isMouseOver(mouseX, mouseY)) {
             graphics.renderTooltip(font,
                     Component.translatable("gui.infinitestats.furnace.fuel_buffer_tip"),
+                    mouseX, mouseY);
+        } else if (productBufferButton != null && productBufferButton.isMouseOver(mouseX, mouseY)) {
+            graphics.renderTooltip(font,
+                    Component.translatable("gui.infinitestats.furnace.product_buffer_tip"),
                     mouseX, mouseY);
         }
     }

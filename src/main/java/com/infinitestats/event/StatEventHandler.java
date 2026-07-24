@@ -229,6 +229,12 @@ public final class StatEventHandler {
             hurtPlayer.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
                 float amount = event.getAmount();
 
+                // 复活无敌窗口：取消一切伤害（最高优先级，防止复活瞬间原地再死）
+                if (DefenseHandler.isReviveInvulnerable(hurtPlayer, stats)) {
+                    event.setCanceled(true);
+                    return;
+                }
+
                 // 无敌：取消所有伤害
                 if (DefenseHandler.isInvincible(stats)) {
                     event.setCanceled(true);

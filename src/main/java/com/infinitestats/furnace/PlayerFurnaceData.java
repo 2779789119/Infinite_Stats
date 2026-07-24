@@ -12,7 +12,12 @@ import net.minecraft.world.item.crafting.RecipeType;
 import net.minecraft.world.level.Level;
 import net.minecraftforge.common.ForgeHooks;
 
+import com.infinitestats.compat.NetworkHandle;
+import com.infinitestats.compat.NetworkIO;
+import net.minecraft.network.chat.Component;
+
 import java.lang.reflect.Field;
+import java.util.List;
 
 /**
  * 随身熔炉的持久化状态，挂在玩家 PlayerStats 上随存档保存。
@@ -44,6 +49,9 @@ public class PlayerFurnaceData {
     /** 矿石储备箱格子数：3 行 × 9 列，与外部箱子 UI 一致。 */
     public static final int INPUT_BUFFER_SLOTS = 27;
 
+    /** 成品储备箱格子数：3 行 × 9 列，与外部箱子 UI 一致。 */
+    public static final int OUTPUT_BUFFER_SLOTS = 27;
+
     // data 数组布局：
     // [0] = 剩余燃烧时间 [1] = 总燃烧时间
     // 每个输入槽 i：[2 + 2*i] = 冶炼进度 [3 + 2*i] = 冶炼总时长
@@ -53,12 +61,71 @@ public class PlayerFurnaceData {
     /** 每个槽的真实数量（权威存储）。 */
     private final long[] amounts = new long[TOTAL_SLOTS];
 
-    /** 矿石储备箱：存放待熔炼的矿石，格子数量有限（普通堆叠加），由 FurnaceFuelBufferMenu 读写。 */
+    /**
+     * 矿石储备箱模板：仅作为物品类型模板（count 恒为 1），真实数量在 inputAmounts 中。
+     * 这样可突破 ItemStack 对 count 的 64 / NBT short 上限，实现单格堆叠无上限。
+     */
     private final NonNullList<ItemStack> inputBuffer = NonNullList.withSize(INPUT_BUFFER_SLOTS, ItemStack.EMPTY);
+    /** 矿石储备箱每格的真实数量（权威存储，支持无上限堆叠）。 */
+    private final long[] inputAmounts = new long[INPUT_BUFFER_SLOTS];
 
-    /** 获取矿石储备箱的底层列表（外部箱子 UI 直接读写）。 */
+    /** 获取矿石储备箱的底层模板列表（外部箱子 UI 直接读写）。 */
     public NonNullList<ItemStack> getInputBuffer() {
         return inputBuffer;
+    }
+    /** 获取矿石储备箱每格数量数组（无上限堆叠）。 */
+    public long[] getInputAmounts() {
+        return inputAmounts;
+    }
+
+    /**
+     * 成品储备箱模板：仅作为物品类型模板（count 恒为 1），真实数量在 outputAmounts 中。
+     * 单格堆叠无上限。
+     */
+    private final NonNullList<ItemStack> outputBuffer = NonNullList.withSize(OUTPUT_BUFFER_SLOTS, ItemStack.EMPTY);
+    /** 成品储备箱每格的真实数量（权威存储，支持无上限堆叠）。 */
+    private final long[] outputAmounts = new long[OUTPUT_BUFFER_SLOTS];
+
+    /** 获取成品储备箱的底层模板列表（外部箱子 UI 直接读写）。 */
+    public NonNullList<ItemStack> getOutputBuffer() {
+        return outputBuffer;
+    }
+    /** 获取成品储备箱每格数量数组（无上限堆叠）。 */
+    public long[] getOutputAmounts() {
+        return outputAmounts;
+    }
+
+    /**
+     * 将成品储备箱（成品仓）中的所有成品存入 RS 网络。
+     * 成品仓的“真实数量”存放在 {@link #outputAmounts}（long）中，
+     * ItemStack 仅为模板（count=1），因此这里按数量构造待存入栈。
+     *
+     * @return 给玩家的反馈消息
+     */
+    public Component depositOutputToNetwork(List<NetworkHandle> nets) {
+        NonNullList<ItemStack> buffer = getOutputBuffer();
+        long[] amounts = getOutputAmounts();
+        int total = 0;
+        for (int i = 0; i < buffer.size(); i++) {
+            ItemStack s = buffer.get(i);
+            if (s.isEmpty() || amounts[i] <= 0) continue;
+            ItemStack toInsert = s.copy();
+            rawSetCount(toInsert, (int) Math.min(amounts[i], UNBOUNDED));
+            ItemStack remaining = NetworkIO.insert(nets, toInsert);
+            long stored = toInsert.getCount() - remaining.getCount();
+            if (stored > 0) {
+                long newAmt = amounts[i] - stored;
+                if (newAmt <= 0) {
+                    buffer.set(i, ItemStack.EMPTY);
+                    amounts[i] = 0;
+                } else {
+                    amounts[i] = newAmt;
+                }
+                total += stored;
+            }
+        }
+        if (total == 0) return Component.literal("§e成品储备箱中没有可存入网络的成品");
+        return Component.literal("§a已将成品储备箱 §f" + total + "§a 个成品存入网络");
     }
 
     // ========== 绕过 ItemStack count 钳制的反射工具 ==========
@@ -244,6 +311,9 @@ public class PlayerFurnaceData {
             }
         }
 
+        // 输出槽有成品时，自动转入成品储备箱（避免输出槽被单一物品占满，并便于玩家统一收集）
+        pushOutputToBuffer();
+
         // 是否有任意输入可冶炼（有匹配配方且输出槽可接收）
         boolean anyWork = false;
         for (int i = 0; i < INPUT_COUNT; i++) {
@@ -369,23 +439,66 @@ public class PlayerFurnaceData {
     public boolean pullInputFromBuffer() {
         for (int i = 0; i < INPUT_BUFFER_SLOTS; i++) {
             ItemStack s = inputBuffer.get(i);
-            if (s.isEmpty()) continue;
+            if (s.isEmpty() || inputAmounts[i] <= 0) continue;
             int slot = inputSlot(0);
             long cur = amounts[slot];
             if (cur <= 0) {
                 items.set(slot, s.copyWithCount(1));
-                amounts[slot] = s.getCount();
+                amounts[slot] = inputAmounts[i];
             } else if (ItemStack.isSameItemSameTags(items.get(slot), s)) {
-                long combined = cur + s.getCount();
+                long combined = cur + inputAmounts[i];
                 if (combined > UNBOUNDED) combined = UNBOUNDED;
                 amounts[slot] = combined;
             } else {
                 continue;
             }
             inputBuffer.set(i, ItemStack.EMPTY);
+            inputAmounts[i] = 0;
             return true;
         }
         return false;
+    }
+
+    /**
+     * 将输出槽中的成品自动转入成品储备箱。
+     * <p>先填满储备箱中已存在的同类堆叠（单格无上限），再填入空槽位；储备箱放不下时，
+     * 输出槽保留剩余数量继续冶炼。
+     */
+    public void pushOutputToBuffer() {
+        int slot = outputSlot(0);
+        long amt = amounts[slot];
+        if (amt <= 0) return;
+        ItemStack out = items.get(slot);
+        if (out.isEmpty()) {
+            amounts[slot] = 0;
+            return;
+        }
+        long remaining = amt;
+        // 1) 先填满已存在的同类堆叠（单格无上限）
+        for (int i = 0; i < OUTPUT_BUFFER_SLOTS && remaining > 0; i++) {
+            ItemStack s = outputBuffer.get(i);
+            if (s.isEmpty() || !ItemStack.isSameItemSameTags(s, out)) continue;
+            long space = (long) UNBOUNDED - outputAmounts[i];
+            if (space > 0) {
+                long move = Math.min(space, remaining);
+                outputAmounts[i] += move;
+                remaining -= move;
+            }
+        }
+        // 2) 再填入空槽位
+        for (int i = 0; i < OUTPUT_BUFFER_SLOTS && remaining > 0; i++) {
+            if (!outputBuffer.get(i).isEmpty()) continue;
+            long move = Math.min((long) UNBOUNDED, remaining);
+            outputBuffer.set(i, out.copyWithCount(1));
+            outputAmounts[i] = move;
+            remaining -= move;
+        }
+        if (remaining <= 0) {
+            items.set(slot, ItemStack.EMPTY);
+            amounts[slot] = 0;
+        } else {
+            amounts[slot] = remaining;
+        }
     }
 
     private boolean canBurn(ItemStack input, ItemStack result, ItemStack output, long outAmount) {
@@ -417,6 +530,14 @@ public class PlayerFurnaceData {
         }
         System.arraycopy(other.data, 0, data, 0, data.length);
         System.arraycopy(other.amounts, 0, amounts, 0, amounts.length);
+        for (int i = 0; i < inputBuffer.size(); i++) {
+            inputBuffer.set(i, other.inputBuffer.get(i).copy());
+        }
+        System.arraycopy(other.inputAmounts, 0, inputAmounts, 0, inputAmounts.length);
+        for (int i = 0; i < outputBuffer.size(); i++) {
+            outputBuffer.set(i, other.outputBuffer.get(i).copy());
+        }
+        System.arraycopy(other.outputAmounts, 0, outputAmounts, 0, outputAmounts.length);
     }
 
     public CompoundTag serializeNBT() {
@@ -425,8 +546,12 @@ public class PlayerFurnaceData {
         tag.put("Items", ContainerHelper.saveAllItems(new CompoundTag(), items));
         tag.putLongArray("Amounts", amounts);
         tag.putIntArray("Data", data);
-        // 矿石储备箱（普通堆叠，使用标准容器序列化）
+        // 矿石储备箱：模板（count=1）用标准容器序列化，真实数量单独以 long 数组保存（突破 NBT short 上限）
         tag.put("InputBuffer", ContainerHelper.saveAllItems(new CompoundTag(), inputBuffer));
+        tag.putLongArray("InputAmounts", inputAmounts);
+        // 成品储备箱
+        tag.put("OutputBuffer", ContainerHelper.saveAllItems(new CompoundTag(), outputBuffer));
+        tag.putLongArray("OutputAmounts", outputAmounts);
         return tag;
     }
 
@@ -458,9 +583,43 @@ public class PlayerFurnaceData {
         }
         if (tag.contains("InputBuffer")) {
             ContainerHelper.loadAllItems(tag.getCompound("InputBuffer"), inputBuffer);
+            long[] inAmts = tag.contains("InputAmounts", Tag.TAG_LONG_ARRAY) ? tag.getLongArray("InputAmounts") : null;
+            for (int i = 0; i < INPUT_BUFFER_SLOTS; i++) {
+                ItemStack s = inputBuffer.get(i);
+                if (!s.isEmpty()) {
+                    long a = (inAmts != null && inAmts.length > i) ? inAmts[i] : s.getCount();
+                    inputAmounts[i] = a;
+                    inputBuffer.set(i, s.copyWithCount(1));
+                } else {
+                    inputAmounts[i] = 0;
+                }
+            }
         } else if (tag.contains("FuelBuffer")) {
-            // 兼容旧版本存档（旧 key 名为 FuelBuffer）
+            // 兼容旧版本存档（旧 key 名为 FuelBuffer，count 即数量）
             ContainerHelper.loadAllItems(tag.getCompound("FuelBuffer"), inputBuffer);
+            for (int i = 0; i < INPUT_BUFFER_SLOTS; i++) {
+                ItemStack s = inputBuffer.get(i);
+                if (!s.isEmpty()) {
+                    inputAmounts[i] = s.getCount();
+                    inputBuffer.set(i, s.copyWithCount(1));
+                } else {
+                    inputAmounts[i] = 0;
+                }
+            }
+        }
+        if (tag.contains("OutputBuffer")) {
+            ContainerHelper.loadAllItems(tag.getCompound("OutputBuffer"), outputBuffer);
+            long[] outAmts = tag.contains("OutputAmounts", Tag.TAG_LONG_ARRAY) ? tag.getLongArray("OutputAmounts") : null;
+            for (int i = 0; i < OUTPUT_BUFFER_SLOTS; i++) {
+                ItemStack s = outputBuffer.get(i);
+                if (!s.isEmpty()) {
+                    long a = (outAmts != null && outAmts.length > i) ? outAmts[i] : s.getCount();
+                    outputAmounts[i] = a;
+                    outputBuffer.set(i, s.copyWithCount(1));
+                } else {
+                    outputAmounts[i] = 0;
+                }
+            }
         }
     }
 }

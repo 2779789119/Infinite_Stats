@@ -1639,7 +1639,7 @@
   "stat.infinitestats.invisibility": "隐身",
   "stat.infinitestats.invisibility.desc": "获得永久隐身效果，怪物更难发现你",
   "stat.infinitestats.item_magnet": "物品磁铁",
-  "stat.infinitestats.item_magnet.desc": "自动吸引附近的掉落物品到身边",
+  "stat.infinitestats.item_magnet.desc": "解锁后立即收集范围内掉落物，范围由配置 magnetRange 决定（默认10格）",
   "stat.infinitestats.jump_height": "跳跃高度",
   "stat.infinitestats.jump_height.desc": "增加跳跃的高度",
   "stat.infinitestats.knockback_power": "击退强度",
@@ -1772,6 +1772,9 @@
   "screen.infinitestats.furnace.fuel_buffer": "矿石仓",
   "gui.infinitestats.furnace.fuel_buffer": "矿石仓",
   "gui.infinitestats.furnace.fuel_buffer_tip": "打开矿石储备箱：放入待熔炼的矿石，随身熔炉输入槽为空时会自动取出下一种矿石进行熔炼",
+  "screen.infinitestats.furnace.product_buffer": "成品仓",
+  "gui.infinitestats.furnace.product_buffer": "成品仓",
+  "gui.infinitestats.furnace.product_buffer_tip": "打开成品储备箱：随身熔炉输出槽熔炼出的成品会自动转入这里，便于统一收集",
   "gui.infinitestats.crafting.multiplier": "倍率 ×%s",
   "gui.infinitestats.crafting.multiplyup": "+",
   "gui.infinitestats.crafting.multiplydown": "-",
@@ -1848,5 +1851,16 @@
   "message.infinitestats.wp_saved": "§a已保存传送点: %s",
   "message.infinitestats.wp_deleted": "§a已删除传送点: %s",
   "message.infinitestats.wp_renamed": "§a已将 %s 重命名为 %s",
-  "message.infinitestats.wp_dim_unloaded": "§c维度未加载: %s"
+  "message.infinitestats.wp_dim_unloaded": "§c维度未加载: %s",
+
+  "gui.infinitestats.crafting.output_bag_tip": "成品放入背包（Shift+点击成品按此设置存放；点击此按钮切换为存储空间）",
+  "gui.infinitestats.crafting.output_storage_tip": "成品放入存储空间（Shift+点击成品按此设置存放；点击此按钮切换为背包）",
+  "gui.infinitestats.furnace.rs_ore": "网→矿",
+  "gui.infinitestats.furnace.rs_ore_tip": "从网络提取矿物补入输入槽",
+  "gui.infinitestats.furnace.rs_fuel": "网→燃",
+  "gui.infinitestats.furnace.rs_fuel_tip": "从网络提取燃料补入燃料槽",
+  "gui.infinitestats.furnace.rs_deposit": "仓→网",
+  "gui.infinitestats.furnace.rs_deposit_tip": "将成品仓中的成品存入网络",
+  "gui.infinitestats.furnace.product_rs_deposit": "仓→网",
+  "gui.infinitestats.furnace.product_rs_deposit_tip": "将成品仓中的成品存入网络"
 }

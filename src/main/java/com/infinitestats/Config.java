@@ -19,6 +19,16 @@ public final class Config {
     public static ForgeConfigSpec.IntValue PASSIVE_XP_AMOUNT;
     public static ForgeConfigSpec.IntValue PASSIVE_XP_INTERVAL;
 
+    // ========== 存储网络桥接优先级 ==========
+    // 列表顺序即自动选择存储的优先级（靠前的优先）。可选值：
+    //   RS       - Refined Storage（需持有已绑定的无线终端）
+    //   BD       - Beyond Dimensions（玩家维度网络，跨维度、无需终端）
+    //   AE2      - Applied Energistics 2（需持有已链接的无线终端）
+    //   BACKPACK - Sophisticated Backpacks（装备在身上 / Curios 背部槽的背包）
+    //   TOMS     - Tom's Storage（手持已绑定无线终端，或站在存储终端范围内）
+    // 列表中未出现的桥接将不会被自动选中；未知项会被忽略。
+    public static ForgeConfigSpec.ConfigValue<List<? extends String>> NETWORK_PRIORITY;
+
     // 每提升一级随身工作台物品倍率所消耗的可分配点数（属性点数）
     public static ForgeConfigSpec.IntValue CRAFTING_MULTIPLIER_COST;
 
@@ -32,6 +42,9 @@ public final class Config {
 
     public static ForgeConfigSpec.IntValue AUTO_REVIVE_COOLDOWN;
     public static ForgeConfigSpec.DoubleValue AUTO_REVIVE_HEALTH_PERCENT;
+    public static ForgeConfigSpec.IntValue AUTO_REVIVE_INVULN_SECONDS;
+    public static ForgeConfigSpec.BooleanValue AUTO_REVIVE_REFILL_FOOD;
+    public static ForgeConfigSpec.BooleanValue AUTO_REVIVE_CLEAR_DEBUFFS_ONLY;
 
     // ========== 被动效果设置 ==========
 
@@ -52,6 +65,9 @@ public final class Config {
 
     public static ForgeConfigSpec.DoubleValue EMC_LOSS_RATE;
     public static ForgeConfigSpec.BooleanValue EMC_ENABLED;
+
+    // 等价交换（ProjectE）联动：仅当检测到 projecte 模组时才有实际作用
+    public static ForgeConfigSpec.BooleanValue PE_AUTO_LEARN;
 
     // ========== 时间加速设置（加速属性） ==========
 
@@ -99,10 +115,19 @@ public final class Config {
         builder.push("AutoRevive");
         AUTO_REVIVE_COOLDOWN = builder
                 .comment("自动复活冷却时间（秒），设为0则无冷却")
-                .defineInRange("autoReviveCooldown", 300, 0, 36000);
+                .defineInRange("autoReviveCooldown", 0, 0, 36000);
         AUTO_REVIVE_HEALTH_PERCENT = builder
                 .comment("复活后恢复的生命值百分比（0.0-1.0）")
                 .defineInRange("autoReviveHealthPercent", 0.3, 0.1, 1.0);
+        AUTO_REVIVE_INVULN_SECONDS = builder
+                .comment("复活后获得的伤害免疫时间（秒），防止在原地（岩浆/敌群）立刻再次死亡。设为0则无免疫。")
+                .defineInRange("autoReviveInvulnSeconds", 3, 0, 60);
+        AUTO_REVIVE_REFILL_FOOD = builder
+                .comment("复活时是否把饥饿值与饱食度补满，避免复活后因饥饿立刻再次陷入险境。")
+                .define("autoReviveRefillFood", true);
+        AUTO_REVIVE_CLEAR_DEBUFFS_ONLY = builder
+                .comment("true=复活时仅清除负面效果并保留增益Buff；false=清除全部效果（旧行为）。")
+                .define("autoReviveClearDebuffsOnly", true);
         builder.pop();
 
         // 被动效果设置
@@ -151,6 +176,13 @@ public final class Config {
                          "学习物品时实际获得的 EMC = 物品EMC值 × (1 - lossRate)。",
                          "例如 lossRate=0.2 时学习一个 100 EMC 的物品获得 80 EMC。")
                 .defineInRange("emcLossRate", 0.0, 0.0, 1.0);
+        PE_AUTO_LEARN = builder
+                .comment("等价交换（ProjectE）联动：自动学习【全局主开关】。",
+                         "仅在检测到 projecte 模组时生效；未安装 ProjectE 时无任何作用。",
+                         "开启后，玩家还需要在属性面板投入 5 点解锁「pe_auto_learn」属性，",
+                         "解锁后拾取 / 合成的物品会自动加入 ProjectE 转化知识库。",
+                         "关闭此开关则所有玩家（无论是否加点）的自动学习全部禁用。")
+                .define("autoLearnProjectE", true);
         builder.pop();
 
         // 时间加速设置
@@ -167,6 +199,17 @@ public final class Config {
                 .comment("每提升一级随身熔炉速度所消耗的可分配点数（属性点数）。",
                          "降低速度等级时会返还相同点数。")
                 .defineInRange("furnaceSpeedCost", 5, 1, 100000);
+        builder.pop();
+
+        // 存储网络桥接优先级
+        builder.push("NetworkPriority");
+        NETWORK_PRIORITY = builder
+                .comment("自动选择存储网络的优先级（靠前的优先）。",
+                         "可选值：RS（Refined Storage）、BD（Beyond Dimensions）、AE2（Applied Energistics 2）、BACKPACK（Sophisticated Backpacks）、TOMS（Tom's Storage）。",
+                         "列表中未出现的桥接不会被自动选中；未知项会被忽略。",
+                         "修改此列表后重启游戏生效。",
+                         "默认顺序把 BD 放在最后作为兜底，使其在手持其他无线终端时不再抢占。")
+                .define("networkPriority", List.of("RS", "AE2", "TOMS", "BACKPACK", "BD"));
         builder.pop();
 
         // 随身工作台倍率设置
