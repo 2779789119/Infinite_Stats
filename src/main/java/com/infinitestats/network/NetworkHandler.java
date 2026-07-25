@@ -150,6 +150,12 @@ public final class NetworkHandler {
                 EmcExtractPacket::decode,
                 EmcExtractPacket::handle);
 
+        // 收藏切换数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, ToggleFavoritePacket.class,
+                ToggleFavoritePacket::encode,
+                ToggleFavoritePacket::decode,
+                ToggleFavoritePacket::handle);
+
         // EMC 菜单打开数据包（客户端 → 服务器）
         CHANNEL.registerMessage(packetId++, EmcOpenPacket.class,
                 EmcOpenPacket::encode,
@@ -1256,6 +1262,33 @@ public final class NetworkHandler {
                 ServerPlayer player = ctx.get().getSender();
                 if (player == null) return;
                 if (player.containerMenu instanceof PortableFurnaceMenu m) m.refillFuelFromNetwork();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 收藏切换：切换属性的收藏状态（客户端 → 服务器）。
+     */
+    public static final class ToggleFavoritePacket {
+        private final String statId;
+
+        public ToggleFavoritePacket(String statId) { this.statId = statId; }
+
+        public static void encode(ToggleFavoritePacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.statId);
+        }
+
+        public static ToggleFavoritePacket decode(FriendlyByteBuf buf) {
+            return new ToggleFavoritePacket(buf.readUtf());
+        }
+
+        public static void handle(ToggleFavoritePacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(
+                        stats -> stats.toggleFavorite(msg.statId));
             });
             ctx.get().setPacketHandled(true);
         }

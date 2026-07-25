@@ -1,9 +1,11 @@
 package com.infinitestats.client;
 
 import com.infinitestats.Config;
+import com.infinitestats.compat.ProjectEBridge;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
+import net.minecraft.client.gui.components.EditBox;
 import com.infinitestats.stats.StatCategory;
 import com.infinitestats.stats.StatType;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -33,7 +35,7 @@ public class StatsScreen extends Screen {
     // ======================== 布局常量（面板坐标系，未缩放） ========================
 
     private static final int GUI_WIDTH = 440;
-    private static final int GUI_HEIGHT = 352;
+    private static final int GUI_HEIGHT = 376;
     private static final int HEADER_H = 76;
     private static final int TAB_H = 30;
     private static final int CARD_H = 30;
@@ -136,6 +138,11 @@ public class StatsScreen extends Screen {
     private final Map<String, List<StatType>> externalGroups = new LinkedHashMap<>();
     private final List<DisplayEntry> externalDisplayList = new ArrayList<>();
     private final Set<String> collapsedExternalGroups = new HashSet<>();
+
+    // ═══════ 搜索与收藏 ═══════
+    private EditBox searchBox;
+    private Button favoritesBtn;
+    private boolean favoritesOnly;
 
     private static final String[] ADD_LABELS = {"x1", "x10", "x100", "x1000", "x10000"};
     private static final long[] ADD_VALUES = {1, 10, 100, 1000, 10000};
@@ -268,15 +275,60 @@ public class StatsScreen extends Screen {
         buildCategoryMap();
         updateMaxScroll();
         rebuildAllWidgets();
+
+        // 搜索框
+        searchBox = new EditBox(font, 0, 0, 0, 0,
+                Component.translatable("screen.infinitestats.search"));
+        searchBox.setMaxLength(30);
+        searchBox.setResponder(s -> {
+            scrollOffset = 0;
+            buildCategoryMap();
+            updateMaxScroll();
+            rebuildAllWidgets();
+        });
+        addRenderableWidget(searchBox);
+
+        // 收藏过滤按钮
+        favoritesBtn = addRenderableWidget(Button.builder(
+                Component.literal("\u2606"), b -> {
+                    favoritesOnly = !favoritesOnly;
+                    b.setMessage(Component.literal(favoritesOnly ? "\u2605" : "\u2606"));
+                    scrollOffset = 0;
+                    buildCategoryMap();
+                    updateMaxScroll();
+                    rebuildAllWidgets();
+                })
+                .pos(0, 0).size(14, 14).build());
+
+        // 把搜索框和按钮放到正确位置（必须在 addRenderableWidget 之后）
+        repositionSearch();
     }
+
+    private static final int SEARCH_BAR_H = 16;
+    private static final int STAR_BTN_SIZE = 12;
 
     private void recalcPanelPosition() {
         int scaledW = (int) (GUI_WIDTH * ClientSettings.guiScale);
         int scaledH = (int) (GUI_HEIGHT * ClientSettings.guiScale);
         leftPos = (width - scaledW) / 2 + dragOffsetX;
         topPos = (height - scaledH) / 2 + dragOffsetY;
-        contentTop = HEADER_H + TAB_H + 2;
+        contentTop = HEADER_H + TAB_H + SEARCH_BAR_H + 4;
         contentHeight = MAX_VISIBLE * (CARD_H + CARD_GAP) - CARD_GAP;
+        repositionSearch();
+    }
+
+    private void repositionSearch() {
+        if (searchBox != null) {
+            // widgets 在 pose.transform 内渲染，坐标须为面板内坐标
+            searchBox.setX(8);
+            searchBox.setY(HEADER_H + TAB_H + 1);
+            searchBox.setWidth(120);
+            searchBox.setHeight(14);
+        }
+        if (favoritesBtn != null) {
+            favoritesBtn.setX(132);
+            favoritesBtn.setY(HEADER_H + TAB_H + 1);
+        }
     }
 
     @Override
@@ -296,14 +348,25 @@ public class StatsScreen extends Screen {
 
     private void buildCategoryMap() {
         categoryStats.clear();
+        String search = searchBox != null ? searchBox.getValue().toLowerCase().trim() : "";
+
         for (StatCategory cat : StatCategory.values()) {
             List<StatType> list = new ArrayList<>();
             for (StatType stat : StatType.ALL_STATS) {
                 if (stat.getCategory() == cat) {
                     if (!stat.isHidden() || Config.SHOW_HIDDEN_STATS.get()) {
-                        list.add(stat);
+                        if (stat.getId().equals("pe_auto_learn") && !ProjectEBridge.isProjectELoaded()) {
+                            continue;
+                        }
+                        if (matchesSearch(stat, search)) {
+                            list.add(stat);
+                        }
                     }
                 }
+            }
+            // 仅收藏模式：当前分类只保留已收藏的属性
+            if (favoritesOnly && cachedStats != null) {
+                list.removeIf(s -> !cachedStats.isFavorite(s.getId()));
             }
             categoryStats.put(cat, list);
         }
@@ -317,6 +380,13 @@ public class StatsScreen extends Screen {
             }
             buildExternalDisplayList();
         }
+    }
+
+    private boolean matchesSearch(StatType stat, String search) {
+        if (search.isEmpty()) return true;
+        String name = Component.translatable(stat.getTranslationKey()).getString().toLowerCase();
+        String desc = stat.getDescription() != null ? stat.getDescription().toLowerCase() : "";
+        return name.contains(search) || desc.contains(search) || stat.getId().contains(search);
     }
 
     /**
@@ -397,6 +467,10 @@ public class StatsScreen extends Screen {
         addBatchModeButtons();
         addResetButtons();
         addPanelNavButtons();
+
+        // 恢复常驻组件（clearWidgets 会清掉）
+        if (searchBox != null) addRenderableWidget(searchBox);
+        if (favoritesBtn != null) addRenderableWidget(favoritesBtn);
     }
 
     private void addCategoryTabs() {
@@ -1093,13 +1167,19 @@ public class StatsScreen extends Screen {
         int catColor = stat.getCategory().getColor();
         g.fill(x, y, x + 3, y + CARD_H, catColor | 0xFF000000);
 
-        // 图标
+        // 收藏星标
+        boolean isFav = cachedStats != null && cachedStats.isFavorite(stat.getId());
+        int starX = x + 5;
+        int starY = y + (CARD_H - font.lineHeight) / 2 + 1;
+        int starColor = isFav ? 0xFFFFD700 : 0xFF555555;
+        g.drawString(font, isFav ? "\u2605" : "\u2606", starX, starY, starColor);
+
+        // 图标（向右移 10px 给星标留空间）
         ItemStack icon = getIcon(stat);
         if (!icon.isEmpty()) {
-            int iconX = x + 8;
+            int iconX = x + 18;
             int iconY = y + (CARD_H - ICON_SIZE) / 2;
             g.renderItem(icon, iconX, iconY);
-            // 对于 Toggle 型属性，图标上加一层暗色遮罩表示未激活
             if (stat.isToggle()) {
                 long lvl = cachedStats != null ? cachedStats.getStatLevel(stat) : 0L;
                 boolean activeIcon = lvl >= stat.getMaxLevel();
@@ -1109,7 +1189,7 @@ public class StatsScreen extends Screen {
             }
         }
 
-        int nameX = x + 28;
+        int nameX = x + 36;
         int rightEdge = x + width - 8;
         long level = cachedStats != null ? cachedStats.getStatLevel(stat) : 0L;
         float value = cachedStats != null ? cachedStats.getStatValue(stat) : 0;
@@ -1381,6 +1461,9 @@ public class StatsScreen extends Screen {
                 if (handleExternalHeaderClick(px, py)) return true;
             }
 
+            // 检测收藏星标点击
+            if (button == 0 && handleStarClick(px, py)) return true;
+
             return super.mouseClicked(px, py, button);
         }
 
@@ -1581,6 +1664,48 @@ public class StatsScreen extends Screen {
         int sx = GUI_WIDTH - SCROLLBAR_W - 4;
         return mouseX >= sx && mouseX < sx + SCROLLBAR_W + 4 &&
                 mouseY >= contentTop && mouseY < contentTop + contentHeight;
+    }
+
+    /**
+     * 检测是否点击了属性卡片的收藏星标
+     */
+    private boolean handleStarClick(int px, int py) {
+        int cardWidth = GUI_WIDTH - SCROLLBAR_W - 16;
+        int starRight = 4 + font.width("\u2605");
+
+        for (int i = 0; i < MAX_VISIBLE; i++) {
+            int cardY = contentTop + i * (CARD_H + CARD_GAP);
+            if (py >= cardY && py < cardY + CARD_H && px >= 4 && px <= 4 + starRight + 4) {
+                // 获取当前卡片对应的 StatType
+                StatType stat = null;
+                if (selectedCategory == StatCategory.EXTERNAL) {
+                    int di = i + scrollOffset;
+                    if (di < externalDisplayList.size() && !externalDisplayList.get(di).isHeader) {
+                        stat = externalDisplayList.get(di).stat;
+                    }
+                } else {
+                    List<StatType> list = categoryStats.get(selectedCategory);
+                    int idx = i + scrollOffset;
+                    if (list != null && idx < list.size()) stat = list.get(idx);
+                }
+                if (stat != null) {
+                    playClickSound();
+                    NetworkHandler.CHANNEL.sendToServer(
+                            new NetworkHandler.ToggleFavoritePacket(stat.getId()));
+                    // 立即更新客户端缓存
+                    if (cachedStats != null) cachedStats.toggleFavorite(stat.getId());
+                    // 如果开启了仅收藏模式，刷新列表
+                    if (favoritesOnly) {
+                        buildCategoryMap();
+                        updateMaxScroll();
+                        rebuildAllWidgets();
+                    }
+                    return true;
+                }
+                break;
+            }
+        }
+        return false;
     }
 
     /**

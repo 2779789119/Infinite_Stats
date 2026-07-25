@@ -99,11 +99,30 @@ public final class BackpackNetworkBridge {
     private static void collectCurios(Player player, List<IItemHandler> handlers) {
         try {
             Class<?> api = Class.forName("top.theillusivec4.curios.api.CuriosApi");
-            Method getInv = api.getMethod("getCuriosInventory", Player.class);
-            Object lazy = getInv.invoke(null, player);
-            if (lazy == null) return;
-            Object opt = lazy.getClass().getMethod("resolve").invoke(lazy);
-            if (opt == null || !(Boolean) opt.getClass().getMethod("isPresent").invoke(opt)) return;
+
+            // 兼容多种 Curios API 签名（Player / LivingEntity）
+            Method getInv;
+            try {
+                getInv = api.getMethod("getCuriosInventory", Player.class);
+            } catch (NoSuchMethodException e1) {
+                getInv = api.getMethod("getCuriosInventory",
+                        Class.forName("net.minecraft.world.entity.LivingEntity"));
+            }
+
+            Object raw = getInv.invoke(null, player);
+            if (raw == null) return;
+
+            // 兼容 LazyOptional 和 Optional 两种返回类型
+            Object opt;
+            if (raw.getClass().getName().contains("LazyOptional")) {
+                opt = raw.getClass().getMethod("resolve").invoke(raw);
+            } else {
+                opt = raw; // Optional
+            }
+
+            if (opt == null) return;
+            Method isPresent = opt.getClass().getMethod("isPresent");
+            if (!(Boolean) isPresent.invoke(opt)) return;
             Object ih = opt.getClass().getMethod("get").invoke(opt);
             if (ih == null) return;
             Object map = ih.getClass().getMethod("getCurios").invoke(ih);

@@ -1812,6 +1812,8 @@
   "stat.infinitestats.cross_dimension_teleport.desc": "Enables /infstats crossdim to teleport across dimensions",
   "stat.infinitestats.fixed_point_teleport": "Fixed-Point Teleport",
   "stat.infinitestats.fixed_point_teleport.desc": "Enables /infstats wp to save and teleport to fixed coordinates",
+  "stat.infinitestats.pe_auto_learn": "PE Auto Learn",
+  "stat.infinitestats.pe_auto_learn.desc": "Automatically learn items to ProjectE knowledge base when acquired",
   "stat.infinitestats.portable_crafting": "Portable Crafting Table",
   "stat.infinitestats.portable_crafting.desc": "Enables /infstats craft to open a portable crafting table anywhere",
   "stat.infinitestats.portable_furnace": "Portable Furnace",

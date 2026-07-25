@@ -62,12 +62,30 @@ public class PlayerStats {
     // 随身工作台的物品倍率（基础为 1，可通过点数提升，影响每次合成的产出数量）
     private long craftingMultiplier = 1;
 
+    // 收藏的属性 ID 集合
+    private final Set<String> favorites = new HashSet<>();
+
     public long getCraftingMultiplier() {
         return Math.max(1, craftingMultiplier);
     }
 
     public void setCraftingMultiplier(long value) {
         this.craftingMultiplier = Math.max(1, value);
+    }
+
+    // ========== 收藏 ==========
+
+    public boolean isFavorite(String statId) {
+        return favorites.contains(statId);
+    }
+
+    public void toggleFavorite(String statId) {
+        if (favorites.contains(statId)) favorites.remove(statId);
+        else favorites.add(statId);
+    }
+
+    public Set<String> getFavorites() {
+        return Collections.unmodifiableSet(favorites);
     }
 
     // ========== 构造器 ==========
@@ -595,6 +613,15 @@ public class PlayerStats {
         // 序列化随身熔炉状态
         tag.put("furnace", furnaceData.serializeNBT());
 
+        // 序列化收藏列表
+        ListTag favList = new ListTag();
+        for (String id : favorites) {
+            CompoundTag f = new CompoundTag();
+            f.putString("id", id);
+            favList.add(f);
+        }
+        tag.put("favorites", favList);
+
         // 序列化随身工作台倍率
         tag.putLong("craftingMultiplier", craftingMultiplier);
 
@@ -656,6 +683,15 @@ public class PlayerStats {
         // 反序列化随身熔炉状态
         if (tag.contains("furnace")) {
             furnaceData.deserializeNBT(tag.getCompound("furnace"));
+        }
+
+        // 反序列化收藏列表
+        favorites.clear();
+        if (tag.contains("favorites")) {
+            ListTag favList = tag.getList("favorites", Tag.TAG_COMPOUND);
+            for (int i = 0; i < favList.size(); i++) {
+                favorites.add(favList.getCompound(i).getString("id"));
+            }
         }
 
         // 反序列化随身工作台倍率
