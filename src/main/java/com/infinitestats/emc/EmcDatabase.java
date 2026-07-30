@@ -57,6 +57,9 @@ public final class EmcDatabase {
     /** 自动计算出的 EMC 值（含手动值） */
     private static final Map<ResourceLocation, Long> EMC_MAP = new LinkedHashMap<>();
 
+    /** 运行时通过定价器自定义的 EMC 值（优先级最高，覆盖所有其他来源） */
+    private static final Map<ResourceLocation, Long> CUSTOM_EMC = new LinkedHashMap<>();
+
     /** ProjectE 反射 */
     private static Object projecteProxy;
     private static Method projecteGetValueMethod;
@@ -714,6 +717,11 @@ public final class EmcDatabase {
     public static long getEmc(ItemStack stack) {
         if (stack.isEmpty()) return 0;
 
+        ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+        // 自定义定价优先级最高（覆盖 ProjectE 和自动计算）
+        Long custom = CUSTOM_EMC.get(id);
+        if (custom != null) return custom;
+
         if (projecteLoaded && projecteGetValueMethod != null) {
             try {
                 Object result = projecteGetValueMethod.invoke(projecteProxy, stack);
@@ -722,7 +730,6 @@ public final class EmcDatabase {
             } catch (Exception ignored) {}
         }
 
-        ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
         return EMC_MAP.getOrDefault(id, 0L);
     }
 
@@ -774,5 +781,20 @@ public final class EmcDatabase {
     public static void reload(MinecraftServer server) {
         calculated = false;
         load(server);
+    }
+
+    // ==================== 运行时定价 ====================
+
+    /** 设置自定义 EMC 值（0 表示删除） */
+    public static void setCustomEmc(ResourceLocation id, long value) {
+        if (value <= 0) {
+            CUSTOM_EMC.remove(id);
+        } else {
+            CUSTOM_EMC.put(id, value);
+        }
+    }
+
+    public static long getCustomEmc(ResourceLocation id) {
+        return CUSTOM_EMC.getOrDefault(id, 0L);
     }
 }

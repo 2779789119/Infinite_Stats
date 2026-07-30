@@ -1,5 +1,6 @@
 package com.infinitestats.client;
 
+import com.infinitestats.compat.JechCompat;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
@@ -162,15 +163,15 @@ public class DebuffFilterScreen extends Screen {
         for (MobEffect effect : allEffects) {
             String id = ForgeRegistries.MOB_EFFECTS.getKey(effect).toString();
             if (query.isEmpty() ||
-                    effect.getDisplayName().getString().toLowerCase().contains(query) ||
-                    id.toLowerCase().contains(query)) {
+                    JechCompat.matches(effect.getDisplayName().getString().toLowerCase(), query) ||
+                    JechCompat.matches(id.toLowerCase(), query)) {
                 displayedEntries.add(new FilterEntry(effect.getDisplayName().getString(), id, false));
             }
         }
 
         // 再添加自定义 ID（不重复添加已在注册表中的）
         for (String customId : customIds) {
-            if (query.isEmpty() || customId.toLowerCase().contains(query)) {
+            if (query.isEmpty() || JechCompat.matches(customId.toLowerCase(), query)) {
                 // 检查是否已在注册表条目中
                 boolean alreadyListed = allEffects.stream().anyMatch(e ->
                         ForgeRegistries.MOB_EFFECTS.getKey(e).toString().equals(customId));

@@ -20,6 +20,9 @@ public class EmcPlayerData {
     /** 已学习的物品 ID 集合 */
     private final Set<ResourceLocation> learnedItems = new LinkedHashSet<>();
 
+    /** 已学物品的 NBT 数据（仅存储有 NBT 的物品，用于提取时还原） */
+    private final Map<ResourceLocation, CompoundTag> itemNbt = new HashMap<>();
+
     // ==================== EMC 余额 ====================
 
     public long getEmcBalance() {
@@ -67,6 +70,16 @@ public class EmcPlayerData {
     }
 
     /**
+     * 学习一个物品（带 NBT 数据，用于手册等需保留标签的物品）
+     */
+    public void learnItem(ResourceLocation itemId, CompoundTag nbt) {
+        learnedItems.add(itemId);
+        if (nbt != null && !nbt.isEmpty()) {
+            itemNbt.put(itemId, nbt);
+        }
+    }
+
+    /**
      * 学习物品并返还其 EMC 值
      * @return 添加的 EMC 数量
      */
@@ -74,6 +87,25 @@ public class EmcPlayerData {
         learnedItems.add(itemId);
         addEmc(emcValue);
         return emcValue;
+    }
+
+    /**
+     * 学习物品并返还其 EMC 值（带 NBT）
+     */
+    public long learnAndConvert(ResourceLocation itemId, long emcValue, CompoundTag nbt) {
+        learnedItems.add(itemId);
+        if (nbt != null && !nbt.isEmpty()) {
+            itemNbt.put(itemId, nbt);
+        }
+        addEmc(emcValue);
+        return emcValue;
+    }
+
+    /**
+     * 获取已学物品的 NBT 数据
+     */
+    public CompoundTag getItemNbt(ResourceLocation itemId) {
+        return itemNbt.get(itemId);
     }
 
     /**
@@ -98,7 +130,13 @@ public class EmcPlayerData {
 
         ListTag learnedList = new ListTag();
         for (ResourceLocation id : learnedItems) {
-            learnedList.add(StringTag.valueOf(id.toString()));
+            CompoundTag entry = new CompoundTag();
+            entry.putString("id", id.toString());
+            CompoundTag nbt = itemNbt.get(id);
+            if (nbt != null && !nbt.isEmpty()) {
+                entry.put("nbt", nbt);
+            }
+            learnedList.add(entry);
         }
         tag.put("learnedItems", learnedList);
 
@@ -108,12 +146,17 @@ public class EmcPlayerData {
     public void deserializeNBT(CompoundTag tag) {
         emcBalance = tag.getLong("emcBalance");
         learnedItems.clear();
+        itemNbt.clear();
 
-        ListTag learnedList = tag.getList("learnedItems", Tag.TAG_STRING);
+        ListTag learnedList = tag.getList("learnedItems", Tag.TAG_COMPOUND);
         for (int i = 0; i < learnedList.size(); i++) {
-            ResourceLocation rl = ResourceLocation.tryParse(learnedList.getString(i));
+            CompoundTag entry = learnedList.getCompound(i);
+            ResourceLocation rl = ResourceLocation.tryParse(entry.getString("id"));
             if (rl != null) {
                 learnedItems.add(rl);
+                if (entry.contains("nbt")) {
+                    itemNbt.put(rl, entry.getCompound("nbt"));
+                }
             }
         }
     }
@@ -125,13 +168,15 @@ public class EmcPlayerData {
         this.emcBalance = other.emcBalance;
         this.learnedItems.clear();
         this.learnedItems.addAll(other.learnedItems);
+        this.itemNbt.clear();
+        this.itemNbt.putAll(other.itemNbt);
     }
 
     /**
      * 创建快照用于网络同步
      */
     public EmcSnapshot createSnapshot() {
-        return new EmcSnapshot(emcBalance, new ArrayList<>(learnedItems));
+        return new EmcSnapshot(emcBalance, new ArrayList<>(learnedItems), new HashMap<>(itemNbt));
     }
 
     /**
@@ -141,6 +186,8 @@ public class EmcPlayerData {
         this.emcBalance = snapshot.emcBalance;
         this.learnedItems.clear();
         this.learnedItems.addAll(snapshot.learnedItems);
+        this.itemNbt.clear();
+        this.itemNbt.putAll(snapshot.itemNbt);
     }
 
     // ==================== 快照类 ====================
@@ -148,10 +195,12 @@ public class EmcPlayerData {
     public static class EmcSnapshot {
         public final long emcBalance;
         public final List<ResourceLocation> learnedItems;
+        public final Map<ResourceLocation, CompoundTag> itemNbt;
 
-        public EmcSnapshot(long emcBalance, List<ResourceLocation> learnedItems) {
+        public EmcSnapshot(long emcBalance, List<ResourceLocation> learnedItems, Map<ResourceLocation, CompoundTag> itemNbt) {
             this.emcBalance = emcBalance;
             this.learnedItems = learnedItems;
+            this.itemNbt = itemNbt;
         }
     }
 }

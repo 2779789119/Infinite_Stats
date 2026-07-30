@@ -3,6 +3,7 @@ package com.infinitestats.emc;
 import com.infinitestats.InfiniteStats;
 import com.infinitestats.network.NetworkHandler;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
@@ -134,16 +135,20 @@ public class EmcMenu extends AbstractContainerMenu {
         private void consumeAndLearn(ServerPlayer sp, ItemStack stack) {
             ResourceLocation itemId = BuiltInRegistries.ITEM.getKey(stack.getItem());
             long emcValue = EmcDatabase.getEmc(stack);
+            CompoundTag nbt = stack.getTag();
 
             sp.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
                 if (!data.hasLearned(itemId)) {
-                    data.learnAndConvert(itemId, emcValue);
+                    data.learnAndConvert(itemId, emcValue, nbt);
                     NetworkHandler.syncEmcToClient(sp);
                     sp.displayClientMessage(
                             Component.translatable("message.infinitestats.emc.learned",
                                     stack.getHoverName(), formatEmc(emcValue)), false);
                 } else {
-                    // 已学过：仅返还 EMC（不重复标记）
+                    // 已学过：仅返还 EMC（不重复标记），更新 NBT（可能放入了不同版本的手册）
+                    if (nbt != null && !nbt.isEmpty()) {
+                        data.learnItem(itemId, nbt);
+                    }
                     data.addEmc(emcValue);
                     NetworkHandler.syncEmcToClient(sp);
                     sp.displayClientMessage(

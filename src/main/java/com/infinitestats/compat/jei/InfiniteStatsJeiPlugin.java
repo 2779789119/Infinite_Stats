@@ -21,9 +21,9 @@ public class InfiniteStatsJeiPlugin implements IModPlugin {
 
     @Override
     public void registerRecipeTransferHandlers(IRecipeTransferRegistration registration) {
-        // 使用自定义处理器：背包材料不足时，自动从存储网络（RS/AE2/BD/背包/汤姆）补充到 3×3 网格
         registration.addRecipeTransferHandler(
-                new PortableCraftingRecipeTransferHandler(),
+                new PortableCraftingRecipeTransferHandler(
+                        registration.getTransferHelper()),
                 RecipeTypes.CRAFTING);
     }
 }

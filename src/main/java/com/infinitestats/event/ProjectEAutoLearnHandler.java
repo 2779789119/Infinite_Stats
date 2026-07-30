@@ -60,15 +60,16 @@ public final class ProjectEAutoLearnHandler {
 
     /**
      * 学习一个物品（带本地缓存）。每个玩家的同一物品只向 ProjectE 提交一次。
+     * 只有 ProjectE 真正接收了该物品（返回值 true），才加入已处理集合。
      */
     private static void learn(Player player, ItemStack stack) {
         if (player == null || stack == null || stack.isEmpty()) return;
         String key = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
         Set<String> known = LEARNED.computeIfAbsent(player.getUUID(), k -> ConcurrentHashMap.newKeySet());
         if (known.contains(key)) return;
-        // 无论是否真正新增都标记为已处理，避免对已知物品反复调用 API
-        known.add(key);
-        ProjectEBridge.learn(player, stack);
+        if (ProjectEBridge.learn(player, stack)) {
+            known.add(key);
+        }
     }
 
     // ============ 即时触发事件 ============

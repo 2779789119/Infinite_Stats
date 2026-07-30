@@ -129,16 +129,29 @@ public final class BackpackNetworkBridge {
             if (!(map instanceof Map)) return;
             for (Object sh : ((Map<?, ?>) map).values()) {
                 Object stacks = sh.getClass().getMethod("getStacks").invoke(sh);
-                for (ItemStack s : asItemStackList(stacks)) {
-                    if (isBackpack(s)) {
-                        s.getCapability(ForgeCapabilities.ITEM_HANDLER).ifPresent(h -> {
-                            if (h.getSlots() > 0) handlers.add(h);
-                        });
+                // getStacks() 返回 IDynamicStackHandler（IItemHandler），按槽位遍历
+                if (stacks instanceof IItemHandler itemHandler) {
+                    for (int i = 0; i < itemHandler.getSlots(); i++) {
+                        ItemStack s = itemHandler.getStackInSlot(i);
+                        if (isBackpack(s)) {
+                            s.getCapability(ForgeCapabilities.ITEM_HANDLER).ifPresent(h -> {
+                                if (h.getSlots() > 0) handlers.add(h);
+                            });
+                        }
+                    }
+                } else {
+                    // 兼容旧版返回 List<ItemStack> 的情况
+                    for (ItemStack s : asItemStackList(stacks)) {
+                        if (isBackpack(s)) {
+                            s.getCapability(ForgeCapabilities.ITEM_HANDLER).ifPresent(h -> {
+                                if (h.getSlots() > 0) handlers.add(h);
+                            });
+                        }
                     }
                 }
             }
-        } catch (Throwable ignored) {
-            // 未安装 Curios 或 API 不兼容，忽略
+        } catch (Throwable t) {
+            LOGGER.warn("[BackpackNetworkBridge] 扫描 Curios 饰品栏失败，背包在饰品栏中将无法被检测到", t);
         }
     }
 

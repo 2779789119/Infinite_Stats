@@ -1,5 +1,6 @@
 package com.infinitestats.client;
 
+import com.infinitestats.compat.JechCompat;
 import com.infinitestats.network.AchievementInfo;
 import com.infinitestats.network.NetworkHandler;
 import net.minecraft.client.gui.GuiGraphics;
@@ -165,9 +166,9 @@ public class AchievementManagerScreen extends Screen {
                     if (filterTab == 2 && info.completed) return false;
                     // 搜索过滤
                     if (lower.isEmpty()) return true;
-                    return info.displayName.toLowerCase().contains(lower)
-                            || info.description.toLowerCase().contains(lower)
-                            || info.id.toLowerCase().contains(lower);
+                    return JechCompat.matches(info.displayName.toLowerCase(), lower)
+                            || JechCompat.matches(info.description.toLowerCase(), lower)
+                            || JechCompat.matches(info.id.toLowerCase(), lower);
                 })
                 .collect(Collectors.toList());
 

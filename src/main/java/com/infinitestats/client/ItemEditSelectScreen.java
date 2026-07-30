@@ -1,5 +1,6 @@
 package com.infinitestats.client;
 
+import com.infinitestats.compat.JechCompat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -127,7 +128,7 @@ public class ItemEditSelectScreen extends Screen {
         String q = searchText.toLowerCase().trim();
         filtered = new ArrayList<>();
         for (Candidate c : all) {
-            if (q.isEmpty() || c.display.toLowerCase().contains(q) || c.rl.toString().contains(q)) {
+            if (q.isEmpty() || JechCompat.matches(c.display.toLowerCase(), q) || JechCompat.matches(c.rl.toString().toLowerCase(), q)) {
                 filtered.add(c);
             }
         }

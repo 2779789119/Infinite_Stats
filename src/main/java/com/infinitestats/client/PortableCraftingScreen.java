@@ -1,5 +1,6 @@
 package com.infinitestats.client;
 
+import com.infinitestats.compat.jei.PortableCraftingRecipeTransferHandler;
 import com.infinitestats.crafting.PortableCraftingMenu;
 import com.infinitestats.network.NetworkHandler;
 import net.minecraft.client.gui.GuiGraphics;
@@ -32,6 +33,8 @@ public class PortableCraftingScreen extends AbstractContainerScreen<PortableCraf
     @Override
     protected void init() {
         super.init();
+        // 预加载存储网络物品列表（用于 JEI 一键转移校验）
+        PortableCraftingRecipeTransferHandler.requestNetworkItems();
         // 倍率按钮放在界面右上角，使用原版按钮画风（widgets.png 背景）
         int bx = leftPos + imageWidth - 18;
         int by = topPos + 8;

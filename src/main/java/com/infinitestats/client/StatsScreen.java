@@ -1,6 +1,7 @@
 package com.infinitestats.client;
 
 import com.infinitestats.Config;
+import com.infinitestats.compat.JechCompat;
 import com.infinitestats.compat.ProjectEBridge;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
@@ -214,6 +215,7 @@ public class StatsScreen extends Screen {
         icon("vein_miner", Items.IRON_PICKAXE);
         icon("auto_smelt", Items.FURNACE);
         icon("xp_magnet", Items.EXPERIENCE_BOTTLE);
+        icon("projectile_tracking", Items.SPECTRAL_ARROW);
         icon("no_invincibility_frames", Items.BLAZE_ROD);
         icon("double_loot", Items.CHEST_MINECART);
         icon("extra_loot_slot", Items.BUNDLE);
@@ -386,7 +388,8 @@ public class StatsScreen extends Screen {
         if (search.isEmpty()) return true;
         String name = Component.translatable(stat.getTranslationKey()).getString().toLowerCase();
         String desc = stat.getDescription() != null ? stat.getDescription().toLowerCase() : "";
-        return name.contains(search) || desc.contains(search) || stat.getId().contains(search);
+        return JechCompat.matches(name, search) || JechCompat.matches(desc, search)
+                || JechCompat.matches(stat.getId().toLowerCase(), search);
     }
 
     /**

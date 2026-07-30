@@ -10,7 +10,11 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.ExperienceOrb;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.food.FoodData;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -50,6 +54,9 @@ public class UtilityHandler implements StatEffectHandler {
             applyInvisibility(player, stats);
             applyNoInvincibilityFrames(player, stats);
         }
+
+        // 每tick处理弹射物追踪（高频以保证追踪平滑）
+        applyProjectileTracking(player, stats);
 
         // 每2秒处理呼吸、饥饿和幸运
         if (tickCount % 40 == 0) {
@@ -238,6 +245,55 @@ public class UtilityHandler implements StatEffectHandler {
     private void applyNoInvincibilityFrames(ServerPlayer player, PlayerStats stats) {
         if (stats.isToggleActive("no_invincibility_frames")) {
             player.invulnerableTime = 0;
+        }
+    }
+
+    /**
+     * 弹射物追踪 — 让玩家发射的弹射物直接转向追踪最近的敌人（无范围限制）
+     */
+    private void applyProjectileTracking(ServerPlayer player, PlayerStats stats) {
+        if (!stats.isToggleActive("projectile_tracking")) return;
+
+        // 超大范围覆盖整个维度，实现无范围限制（避免 Infinity 导致 NaN）
+        final double w = 30000000.0;
+        AABB all = new AABB(-w, -w, -w, w, w, w);
+
+        // 获取玩家发射的所有弹射物
+        List<Projectile> projectiles = player.level().getEntitiesOfClass(Projectile.class, all,
+                p -> p.getOwner() == player && !p.isRemoved());
+
+        if (projectiles.isEmpty()) return;
+
+        // 获取所有敌对生物
+        List<Mob> enemies = player.level().getEntitiesOfClass(Mob.class, all,
+                m -> m instanceof Enemy && m.isAlive() && !m.isRemoved());
+
+        if (enemies.isEmpty()) return;
+
+        for (Projectile proj : projectiles) {
+            if (proj.isRemoved()) continue;
+
+            // 找到最近的敌人
+            LivingEntity target = null;
+            double closestDist = Double.MAX_VALUE;
+            for (Mob enemy : enemies) {
+                double dist = proj.distanceToSqr(enemy);
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    target = enemy;
+                }
+            }
+
+            if (target == null) continue;
+
+            // 计算追踪方向，瞄准身体中部
+            Vec3 projPos = proj.position();
+            Vec3 targetPos = target.position().add(0, target.getBbHeight() * 0.6, 0);
+            Vec3 direction = targetPos.subtract(projPos).normalize();
+
+            // 直接重定向速度到目标方向，保持原速度
+            double currentSpeed = proj.getDeltaMovement().length();
+            proj.setDeltaMovement(direction.scale(currentSpeed));
         }
     }
 

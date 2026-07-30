@@ -25,6 +25,7 @@ import net.minecraft.world.level.Level;
 
 import com.infinitestats.compat.NetworkHandle;
 import com.infinitestats.compat.NetworkIO;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -143,10 +144,11 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
             }
         }
         // 应用随身工作台物品倍率（影响每次合成的产出数量）
+        // 限制单次合成最大产出为一组，防止Shift合成时一次性产出过多物品导致卡顿
         if (!result.isEmpty()) {
             int multiplier = (int) Math.max(1, stats.getCraftingMultiplier());
             result = result.copy();
-            result.setCount(result.getCount() * multiplier);
+            result.setCount(Math.min(result.getCount() * multiplier, result.getMaxStackSize()));
         }
         resultSlots.setItem(0, result);
         setRemoteSlot(0, result);
@@ -198,16 +200,36 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
     @Override
     public void removed(Player player) {
         super.removed(player);
+
+        List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+        List<ItemStack> overflow = new ArrayList<>();
+
         for (int i = 0; i < craftSlots.getContainerSize(); i++) {
             ItemStack stack = craftSlots.getItem(i);
-            if (!stack.isEmpty()) {
-                if (!player.getInventory().add(stack)) {
-                    player.drop(stack, false);
+            if (stack.isEmpty()) continue;
+
+            // 优先归还到存储网络（从哪取材就退回哪）
+            if (!nets.isEmpty()) {
+                ItemStack remaining = NetworkIO.insert(nets, stack.copy());
+                if (remaining.isEmpty()) continue; // 全部存入网络
+                // 网络满了 → 剩余部分放回背包
+                if (!player.getInventory().add(remaining)) {
+                    overflow.add(remaining);
+                }
+            } else {
+                // 无网络 → 放回玩家背包
+                if (!player.getInventory().add(stack.copy())) {
+                    overflow.add(stack.copy());
                 }
             }
         }
         craftSlots.clearContent();
         resultSlots.clearContent();
+
+        // 背包满了 → 掉落在地
+        for (ItemStack s : overflow) {
+            player.drop(s, false);
+        }
     }
 
     // ========== Refined Storage 联动 ==========
@@ -220,10 +242,40 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
      */
     public void fillGridFromIngredients(Ingredient[] grid) {
         if (level.isClientSide() || !(player instanceof ServerPlayer sp)) return;
-        // 存储网络只是“补充来源”，并非前置条件：未连接任何网络时，仍应允许从背包取料。
         List<NetworkHandle> nets = NetworkIO.getNetworks(player);
         boolean hasNet = !nets.isEmpty();
-        int missing = 0;
+
+        // ── 第一趟：只检查，不从背包/网络取出（避免半路失败导致材料丢失）──
+        boolean[] ok = new boolean[9];
+        for (int i = 0; i < 9; i++) {
+            Ingredient ing = grid[i];
+            if (ing == null || ing.isEmpty()) {
+                ok[i] = true;
+                continue;
+            }
+            Slot s = getSlot(i + 1);
+            ItemStack cur = s.getItem();
+            if (!cur.isEmpty() && ing.test(cur)) {
+                ok[i] = true; // 已有正确的
+                continue;
+            }
+            // 检查背包
+            if (inventoryHas(ing)) { ok[i] = true; continue; }
+            // 检查存储网络
+            if (hasNet && networkHas(nets, ing)) { ok[i] = true; continue; }
+        }
+
+        // ── 任一格子不满足 → 完全不操作，不退材料 ──
+        for (int i = 0; i < 9; i++) {
+            if (!ok[i]) {
+                sp.sendSystemMessage(Component.literal(hasNet
+                        ? "§c材料不足：背包和存储网络中缺少所需材料，配方未填充"
+                        : "§c材料不足：背包中缺少所需材料，请先连接存储网络或备齐材料"));
+                return;
+            }
+        }
+
+        // ── 第二趟：所有材料确认充足，才真正取料 ──
         for (int i = 0; i < 9; i++) {
             Slot s = getSlot(i + 1);
             Ingredient ing = grid[i];
@@ -232,35 +284,45 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
                 continue;
             }
             ItemStack cur = s.getItem();
-            if (!cur.isEmpty() && ing.test(cur)) continue; // 已是正确物品则保留
+            if (!cur.isEmpty() && ing.test(cur)) continue;
+
             ItemStack fromInv = takeFromInventory(ing, 1);
             if (fromInv == null && hasNet) {
-                ItemStack[] matches = ing.getItems();
-                if (matches.length > 0) {
-                    ItemStack got = NetworkIO.extract(nets, matches[0].copy(), 1);
-                    if (!got.isEmpty()) fromInv = got.copyWithCount(1);
+                // 标签 ingredient 可能包含多种物品（如 #minecraft:logs 含橡木/白桦木/...）
+                // 必须遍历所有匹配项，否则网络里只有非第一个物品时会被误判失败
+                for (ItemStack match : ing.getItems()) {
+                    ItemStack got = NetworkIO.extract(nets, match.copy(), 1);
+                    if (!got.isEmpty()) { fromInv = got.copyWithCount(1); break; }
                 }
             }
-            if (fromInv != null) {
-                s.set(fromInv.copyWithCount(1));
-            } else {
-                s.set(ItemStack.EMPTY);
-                missing++;
-            }
+            s.set(fromInv != null ? fromInv.copyWithCount(1) : ItemStack.EMPTY);
         }
+
         slotsChanged(craftSlots);
         player.getInventory().setChanged();
         this.broadcastChanges();
-        if (missing > 0) {
-            sp.sendSystemMessage(Component.literal(hasNet
-                    ? "§e部分材料背包与网络中均不足，已填充其余格子（缺失 " + missing + " 项）"
-                    : "§e未连接存储网络，已仅从背包填充（缺失 " + missing + " 项材料）"));
-        } else {
-            sp.sendSystemMessage(Component.literal("§a已从背包" + (hasNet ? "/网络" : "") + "补充合成材料"));
-        }
+        sp.sendSystemMessage(Component.literal("§a已从背包" + (hasNet ? "/网络" : "") + "补充合成材料"));
     }
 
-    /** 从玩家背包取出匹配 ingredient 的 count 个物品（背包优先，避免直接消耗网络）。 */
+    /** 检查背包中是否有匹配 ingredient 的物品（不实际取出）。 */
+    private boolean inventoryHas(Ingredient ing) {
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack s = player.getInventory().getItem(i);
+            if (!s.isEmpty() && ing.test(s)) return true;
+        }
+        return false;
+    }
+
+    /** 检查存储网络中是否有匹配 ingredient 的物品（不实际取出）。 */
+    private boolean networkHas(List<NetworkHandle> nets, Ingredient ing) {
+        List<ItemStack> items = NetworkIO.listItems(nets);
+        for (ItemStack netItem : items) {
+            if (!netItem.isEmpty() && ing.test(netItem)) return true;
+        }
+        return false;
+    }
+
+    /** 从玩家背包取出匹配 ingredient 的 count 个物品（真实取出，会改动背包）。 */
     private ItemStack takeFromInventory(Ingredient ing, int count) {
         for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
             ItemStack s = player.getInventory().getItem(i);
