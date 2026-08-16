@@ -16,11 +16,14 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.food.FoodData;
-import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.item.crafting.AbstractCookingRecipe;
+import net.minecraft.world.item.crafting.RecipeManager;
+import net.minecraft.world.item.crafting.RecipeType;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -52,11 +55,13 @@ public class UtilityHandler implements StatEffectHandler {
             applyItemMagnet(player, stats);
             applyXpMagnet(player, stats);
             applyInvisibility(player, stats);
-            applyNoInvincibilityFrames(player, stats);
         }
 
-        // 每tick处理弹射物追踪（高频以保证追踪平滑）
-        applyProjectileTracking(player, stats);
+        // 每 4 tick（约 5 次/秒）处理弹射物追踪：降低扫描频率即可大幅降低开销，
+        // 对追踪平滑度影响极小
+        if (tickCount % 4 == 0) {
+            applyProjectileTracking(player, stats);
+        }
 
         // 每2秒处理呼吸、饥饿和幸运
         if (tickCount % 40 == 0) {
@@ -117,7 +122,7 @@ public class UtilityHandler implements StatEffectHandler {
             // 从而绕过其他模组（如免疫类/夜视管理类）对该事件的 DENY 拦截。
             // 每 tick 调用一次，保证效果被中途清除时立即补回、无闪烁。
             player.forceAddEffect(new MobEffectInstance(MobEffects.NIGHT_VISION,
-                    MobEffectInstance.INFINITE_DURATION, 0, false, true, true), player);
+                    MobEffectInstance.INFINITE_DURATION, 0, false, false, true), player);
             stats.setProviding("night_vision", true);
         } else if (weProvided) {
             player.removeEffect(MobEffects.NIGHT_VISION);
@@ -240,34 +245,28 @@ public class UtilityHandler implements StatEffectHandler {
     }
 
     /**
-     * 取消无敌帧
-     */
-    private void applyNoInvincibilityFrames(ServerPlayer player, PlayerStats stats) {
-        if (stats.isToggleActive("no_invincibility_frames")) {
-            player.invulnerableTime = 0;
-        }
-    }
-
-    /**
-     * 弹射物追踪 — 让玩家发射的弹射物直接转向追踪最近的敌人（无范围限制）
+     * 弹射物追踪 — 让玩家发射的弹射物自动转向追踪最近的敌人。
+     * 性能优化：仅在玩家周围「配置半径」范围内扫描（避免全维度实体遍历），
+     * 调用频率由 onTick 节流为每 4 tick 一次。
      */
     private void applyProjectileTracking(ServerPlayer player, PlayerStats stats) {
         if (!stats.isToggleActive("projectile_tracking")) return;
 
-        // 超大范围覆盖整个维度，实现无范围限制（避免 Infinity 导致 NaN）
-        final double w = 30000000.0;
-        AABB all = new AABB(-w, -w, -w, w, w, w);
+        Level level = player.level();
+        double range = Config.PROJECTILE_TRACKING_RANGE.get();
+        // 以玩家为中心的有限扫描范围，避免对全维度实体做 O(实体数) 遍历
+        AABB area = new AABB(
+                player.getX() - range, player.getY() - range, player.getZ() - range,
+                player.getX() + range, player.getY() + range, player.getZ() + range);
 
-        // 获取玩家发射的所有弹射物
-        List<Projectile> projectiles = player.level().getEntitiesOfClass(Projectile.class, all,
+        // 获取玩家发射的弹射物（限定在扫描范围内）
+        List<Projectile> projectiles = level.getEntitiesOfClass(Projectile.class, area,
                 p -> p.getOwner() == player && !p.isRemoved());
-
         if (projectiles.isEmpty()) return;
 
-        // 获取所有敌对生物
-        List<Mob> enemies = player.level().getEntitiesOfClass(Mob.class, all,
+        // 获取扫描范围内的敌对生物
+        List<Mob> enemies = level.getEntitiesOfClass(Mob.class, area,
                 m -> m instanceof Enemy && m.isAlive() && !m.isRemoved());
-
         if (enemies.isEmpty()) return;
 
         for (Projectile proj : projectiles) {
@@ -322,31 +321,26 @@ public class UtilityHandler implements StatEffectHandler {
 
     // ========== 连锁挖掘 & 自动冶炼 ==========
 
-    private static final Map<Item, Item> SMELT_MAP = new HashMap<>();
+    /**
+     * 查询某个掉落物的熔炼结果（数据驱动，兼容任意模组矿石）。
+     * 优先匹配高炉（Blasting）配方，其次回退普通熔炉（Smelting）配方。
+     * 所有注册了熔炼配方的矿物（包括模组矿、深层变体等）都会被正确冶炼。
+     */
+    private static ItemStack getSmeltResult(ItemStack stack, ServerLevel level) {
+        if (stack.isEmpty()) return ItemStack.EMPTY;
 
-    static {
-        SMELT_MAP.put(Items.RAW_IRON, Items.IRON_INGOT);
-        SMELT_MAP.put(Items.RAW_GOLD, Items.GOLD_INGOT);
-        SMELT_MAP.put(Items.RAW_COPPER, Items.COPPER_INGOT);
-        SMELT_MAP.put(Items.IRON_ORE, Items.IRON_INGOT);
-        SMELT_MAP.put(Items.DEEPSLATE_IRON_ORE, Items.IRON_INGOT);
-        SMELT_MAP.put(Items.GOLD_ORE, Items.GOLD_INGOT);
-        SMELT_MAP.put(Items.DEEPSLATE_GOLD_ORE, Items.GOLD_INGOT);
-        SMELT_MAP.put(Items.COPPER_ORE, Items.COPPER_INGOT);
-        SMELT_MAP.put(Items.DEEPSLATE_COPPER_ORE, Items.COPPER_INGOT);
-        SMELT_MAP.put(Items.ANCIENT_DEBRIS, Items.NETHERITE_SCRAP);
-        SMELT_MAP.put(Items.NETHER_GOLD_ORE, Items.GOLD_INGOT);
-        SMELT_MAP.put(Items.DIAMOND_ORE, Items.DIAMOND);
-        SMELT_MAP.put(Items.DEEPSLATE_DIAMOND_ORE, Items.DIAMOND);
-        SMELT_MAP.put(Items.EMERALD_ORE, Items.EMERALD);
-        SMELT_MAP.put(Items.DEEPSLATE_EMERALD_ORE, Items.EMERALD);
-        SMELT_MAP.put(Items.LAPIS_ORE, Items.LAPIS_LAZULI);
-        SMELT_MAP.put(Items.DEEPSLATE_LAPIS_ORE, Items.LAPIS_LAZULI);
-        SMELT_MAP.put(Items.REDSTONE_ORE, Items.REDSTONE);
-        SMELT_MAP.put(Items.DEEPSLATE_REDSTONE_ORE, Items.REDSTONE);
-        SMELT_MAP.put(Items.COAL_ORE, Items.COAL);
-        SMELT_MAP.put(Items.DEEPSLATE_COAL_ORE, Items.COAL);
-        SMELT_MAP.put(Items.NETHER_QUARTZ_ORE, Items.QUARTZ);
+        SimpleContainer inv = new SimpleContainer(1);
+        inv.setItem(0, stack);
+
+        RecipeManager rm = level.getRecipeManager();
+        AbstractCookingRecipe recipe = rm.getRecipeFor(RecipeType.BLASTING, inv, level).orElse(null);
+        if (recipe == null) {
+            recipe = rm.getRecipeFor(RecipeType.SMELTING, inv, level).orElse(null);
+        }
+        if (recipe == null) return ItemStack.EMPTY;
+
+        ItemStack result = recipe.getResultItem(level.registryAccess());
+        return result == null ? ItemStack.EMPTY : result;
     }
 
     /**
@@ -368,7 +362,7 @@ public class UtilityHandler implements StatEffectHandler {
 
         // 自动冶炼主方块掉落物
         if (autoSmelt) {
-            smeltDrops(drops);
+            smeltDrops(drops, level);
         }
 
         // 连锁挖掘
@@ -396,7 +390,7 @@ public class UtilityHandler implements StatEffectHandler {
                                             level.getBlockEntity(neighbor), player, tool);
                                     level.destroyBlock(neighbor, false, player);
                                     if (autoSmelt) {
-                                        smeltDrops(nDrops);
+                                        smeltDrops(nDrops, level);
                                     }
                                     for (ItemStack d : nDrops) {
                                         Block.popResource(level, neighbor, d);
@@ -419,11 +413,15 @@ public class UtilityHandler implements StatEffectHandler {
         }
     }
 
-    private static void smeltDrops(List<ItemStack> drops) {
+    private static void smeltDrops(List<ItemStack> drops, ServerLevel level) {
         for (int i = 0; i < drops.size(); i++) {
-            Item smeltResult = SMELT_MAP.get(drops.get(i).getItem());
-            if (smeltResult != null) {
-                drops.set(i, new ItemStack(smeltResult, drops.get(i).getCount()));
+            ItemStack stack = drops.get(i);
+            ItemStack result = getSmeltResult(stack, level);
+            if (!result.isEmpty()) {
+                // 保持原掉落数量，并按配方产出倍数放大（多数配方产出为 1）
+                ItemStack out = result.copy();
+                out.setCount(result.getCount() * stack.getCount());
+                drops.set(i, out);
             }
         }
     }

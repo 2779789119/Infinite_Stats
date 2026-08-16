@@ -1,10 +1,15 @@
 package com.infinitestats.furnace;
 
 import net.minecraft.core.NonNullList;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.StringTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.Container;
 import net.minecraft.world.ContainerHelper;
+import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.AbstractCookingRecipe;
@@ -17,7 +22,10 @@ import com.infinitestats.compat.NetworkIO;
 import net.minecraft.network.chat.Component;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 随身熔炉的持久化状态，挂在玩家 PlayerStats 上随存档保存。
@@ -76,6 +84,41 @@ public class PlayerFurnaceData {
     /** 获取矿石储备箱每格数量数组（无上限堆叠）。 */
     public long[] getInputAmounts() {
         return inputAmounts;
+    }
+
+    /**
+     * 矿石优先顺序：按物品注册名（如 "minecraft:iron_ore"）有序排列。
+     * 列表靠前的矿石在输入槽为空时会被优先从矿石储备箱取出放入，
+     * 列表之外的矿石按缓冲槽顺序排在其后。仅作为排序依据，不影响熔炼逻辑。
+     */
+    private final List<String> orePriority = new ArrayList<>();
+
+    /** 取某物品栈的物品注册名（用于优先顺序的匹配与持久化）。 */
+    public static String idOf(ItemStack s) {
+        return BuiltInRegistries.ITEM.getKey(s.getItem()).toString();
+    }
+
+    /** 返回当前矿石优先顺序（副本）。 */
+    public List<String> getOrePriorityIds() {
+        return new ArrayList<>(orePriority);
+    }
+
+    /** 设置矿石优先顺序（仅保留真实存在的物品注册名）。 */
+    public void setOrePriorityIds(List<String> ids) {
+        orePriority.clear();
+        if (ids == null) return;
+        for (String id : ids) {
+            if (id == null) continue;
+            ResourceLocation rl = ResourceLocation.tryParse(id);
+            if (rl != null && BuiltInRegistries.ITEM.containsKey(rl)) {
+                orePriority.add(id);
+            }
+        }
+    }
+
+    /** 清空矿石优先顺序（恢复为按缓冲槽顺序放入）。 */
+    public void clearOrePriority() {
+        orePriority.clear();
     }
 
     /**
@@ -431,29 +474,39 @@ public class PlayerFurnaceData {
 
     /**
      * 从矿石储备箱（箱子）中自动取出第一种矿石放入输入槽。
-     * <p>规则：仅当输入槽为空，或与储备箱当前物品同类时才合并；遇到被其他种类
-     * 占用的格子则跳过继续向后找，保证“一种熔完了再放下一个”的队列语义。
+     * <p>规则：按 {@code orePriority} 优先顺序挑选，列表内的矿石靠前优先放入；
+     * 列表之外的矿石按缓冲槽顺序排在其后。保证“一种熔完了再放下一个”的队列语义。
      *
      * @return 是否成功取出
      */
     public boolean pullInputFromBuffer() {
+        // 先按优先顺序列表构造候选顺序，再补充未被列入的缓冲槽
+        List<Integer> order = new ArrayList<>();
+        Set<String> covered = new HashSet<>();
+        for (String id : orePriority) {
+            for (int i = 0; i < INPUT_BUFFER_SLOTS; i++) {
+                ItemStack s = inputBuffer.get(i);
+                if (s.isEmpty() || inputAmounts[i] <= 0) continue;
+                if (idOf(s).equals(id)) {
+                    order.add(i);
+                    covered.add(id);
+                    break;
+                }
+            }
+        }
         for (int i = 0; i < INPUT_BUFFER_SLOTS; i++) {
             ItemStack s = inputBuffer.get(i);
             if (s.isEmpty() || inputAmounts[i] <= 0) continue;
-            int slot = inputSlot(0);
-            long cur = amounts[slot];
-            if (cur <= 0) {
-                items.set(slot, s.copyWithCount(1));
-                amounts[slot] = inputAmounts[i];
-            } else if (ItemStack.isSameItemSameTags(items.get(slot), s)) {
-                long combined = cur + inputAmounts[i];
-                if (combined > UNBOUNDED) combined = UNBOUNDED;
-                amounts[slot] = combined;
-            } else {
-                continue;
-            }
-            inputBuffer.set(i, ItemStack.EMPTY);
-            inputAmounts[i] = 0;
+            if (!covered.contains(idOf(s))) order.add(i);
+        }
+        int slot = inputSlot(0);
+        for (int idx : order) {
+            ItemStack s = inputBuffer.get(idx);
+            if (s.isEmpty() || inputAmounts[idx] <= 0) continue;
+            items.set(slot, s.copyWithCount(1));
+            amounts[slot] = inputAmounts[idx];
+            inputBuffer.set(idx, ItemStack.EMPTY);
+            inputAmounts[idx] = 0;
             return true;
         }
         return false;
@@ -509,6 +562,14 @@ public class PlayerFurnaceData {
         return outAmount + result.getCount() <= UNBOUNDED;
     }
 
+    /** 判断某物品是否能通过高炉或普通熔炉熔炼（用于优先顺序界面的“可加入矿石”筛选）。 */
+    public static boolean hasSmeltRecipe(Level level, ItemStack in) {
+        if (in.isEmpty()) return false;
+        Container c = new SimpleContainer(in);
+        return level.getRecipeManager().getRecipeFor(RecipeType.BLASTING, c, level).isPresent()
+                || level.getRecipeManager().getRecipeFor(RecipeType.SMELTING, c, level).isPresent();
+    }
+
     /** 仅供配方查询的只读单物品容器视图。 */
     private static Container singleItemView(ItemStack stack) {
         return new Container() {
@@ -538,6 +599,8 @@ public class PlayerFurnaceData {
             outputBuffer.set(i, other.outputBuffer.get(i).copy());
         }
         System.arraycopy(other.outputAmounts, 0, outputAmounts, 0, outputAmounts.length);
+        orePriority.clear();
+        orePriority.addAll(other.orePriority);
     }
 
     public CompoundTag serializeNBT() {
@@ -552,6 +615,10 @@ public class PlayerFurnaceData {
         // 成品储备箱
         tag.put("OutputBuffer", ContainerHelper.saveAllItems(new CompoundTag(), outputBuffer));
         tag.putLongArray("OutputAmounts", outputAmounts);
+        // 矿石优先顺序（仅存物品注册名列表）
+        ListTag prio = new ListTag();
+        for (String id : orePriority) prio.add(StringTag.valueOf(id));
+        tag.put("OrePriority", prio);
         return tag;
     }
 
@@ -620,6 +687,11 @@ public class PlayerFurnaceData {
                     outputAmounts[i] = 0;
                 }
             }
+        }
+        if (tag.contains("OrePriority", Tag.TAG_LIST)) {
+            ListTag prio = tag.getList("OrePriority", Tag.TAG_STRING);
+            orePriority.clear();
+            for (int i = 0; i < prio.size(); i++) orePriority.add(prio.getString(i));
         }
     }
 }

@@ -3,18 +3,42 @@ package com.infinitestats.handler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.StatCategory;
 import com.infinitestats.stats.StatType;
+import net.minecraft.core.Holder;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageType;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.phys.AABB;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 攻击类属性处理器
  * 处理：暴击、护甲穿透、弹射物伤害、生命偷取、范围吸血、法力窃取
  */
 public class AttackHandler implements StatEffectHandler {
+
+    /**
+     * 本模组“直接伤害”（范围/真实/降上限）使用的自定义伤害类型。
+     * bypasses_armor=true 保留“无视护甲”语义；以玩家为来源实体，
+     * 使击杀经由 die(playerSource) 正确归属玩家（掉落物 + 成就/进度/FTB任务）。
+     */
+    public static final ResourceKey<DamageType> DIRECT_DAMAGE =
+            ResourceKey.create(Registries.DAMAGE_TYPE, new ResourceLocation("infinitestats", "direct_damage"));
+
+    /**
+     * 判断伤害来源是否为本模组的“直接伤害”，用于防止范围/真实伤害二次
+     * 触发 StatEventHandler 的玩家攻击逻辑造成递归与无限循环。
+     */
+    public static boolean isDirectDamageSource(DamageSource src) {
+        return "infinite_stats.direct_damage".equals(src.getMsgId());
+    }
 
     @Override
     public String getId() {
@@ -119,7 +143,10 @@ public class AttackHandler implements StatEffectHandler {
         float totalAoeDamage = 0;
         for (LivingEntity nearbyMob : nearby) {
             float aoeDmg = damageAmount * aoeSteal * 0.3f;
-            nearbyMob.hurt(player.level().damageSources().playerAttack(player), aoeDmg);
+            // 使用本模组“直接伤害”类型：因其 message_id 命中 isDirectDamageSource，
+            // 受击实体再次进入 onLivingHurt 时会被拦截，避免对周围实体造成 playerAttack
+            // 伤害后反复重入攻击分支形成同步无限递归（最终 StackOverflow 并崩溃）。
+            applyDirectDamage(player, nearbyMob, aoeDmg);
             totalAoeDamage += aoeDmg;
         }
 
@@ -154,20 +181,41 @@ public class AttackHandler implements StatEffectHandler {
     }
 
     /**
-     * 直接削减生命值（无视护甲/减伤），并处理击杀归属与死亡触发
+     * 直接削减生命值（无视护甲/减伤），并让击杀正确归属玩家。
+     *
+     * 注意：必须走正式的 hurt() 流程，而不是直接 setHealth()。
+     * 原因：
+     *  - setHealth 不会触发 die(玩家伤害来源)，导致死亡来源不是玩家，
+     *    成就/进度（FTB kill 任务、L2Hostility 难度判定）不触发；
+     *  - setHealth 不会设置 lastHurtByPlayerTime，而掉落物靠该字段判断是否
+     *    归玩家所有，所以直接扣血杀死的怪不会掉落物品（表现为“有时不掉”）。
+     * 这里使用 bypasses_armor 的自定义伤害类型，既保留“无视护甲”语义，
+     * 又让死亡经由 die(playerSource) 正确归属玩家（掉落 + 成就都正常）。
      */
     private static void applyDirectDamage(ServerPlayer player, LivingEntity target, float amount) {
-        target.setLastHurtByMob(player);
-        // 同时设置玩家击杀归属，使经验、掉落归属、击杀统计、FTB kill 任务、
-        // L2Hostility 难度判定等都将此击杀算作玩家（否则仅 lastHurtByMob 不触发 player 击杀路径）
-        target.setLastHurtByPlayer(player);
-        // 直接削减血量：无视护盾/护甲吸收，health<=0 时由 setHealth 触发死亡流程
-        target.setHealth(target.getHealth() - amount);
+        if (amount <= 0) return;
+        DamageSource src;
+        var holder = player.level().registryAccess().registryOrThrow(Registries.DAMAGE_TYPE).getHolder(DIRECT_DAMAGE);
+        if (holder.isPresent()) {
+            // directEntity 与 causingEntity 都设为玩家，确保 die() 把击杀归属玩家
+            // （掉落物、成就/进度、FTB kill 任务、L2Hostility 难度判定均按玩家击杀处理）
+            src = new DamageSource(holder.get(), player, player);
+        } else {
+            // 兜底：极端情况下数据注册表未加载该伤害类型时，退化为普通玩家攻击
+            // （仍能正确归属掉落与成就，只是不再无视护甲）
+            src = player.level().damageSources().playerAttack(player);
+        }
+        target.hurt(src, amount);
     }
 
+    /** 本模组“攻击减血上限”使用的累计负修饰符 UUID，直接削减 MAX_HEALTH 总值（含其他模组加成） */
+    private static final UUID REDUCE_MAX_HEALTH_UUID =
+            UUID.fromString("a1b2c3d4-0000-4e5f-8a9b-0c1d2e3f4a5b");
+
     /**
-     * 应用攻击减血量上限：每次攻击降低目标最大生命值（最低保留 1 点）
-     * 兼容其他模组的生命加成：读取总值和基础值的差值作为修饰符，计算新基础值时扣除修饰符部分
+     * 应用攻击减血量上限：每次攻击降低目标最大生命“总值”（每点 -1 点，最低保留 1 点）
+     * 通过本模组的负 ADDITION 修饰符累计削减，会把其他模组（Apotheosis 词缀/宝石/盔甲/饰品等）
+     * 的加成也一同削掉——即真正削减“总值”，而非只削基础值。触底（总值=1）后停止，不再造成额外伤害。
      */
     public static void applyReduceMaxHealth(ServerPlayer player, PlayerStats stats, LivingEntity target) {
         float reduce = stats.getStatValue(StatType.fromId("reduce_max_health"));
@@ -176,16 +224,47 @@ public class AttackHandler implements StatEffectHandler {
         var maxHp = target.getAttribute(Attributes.MAX_HEALTH);
         if (maxHp == null) return;
 
-        double curMax = maxHp.getValue();
-        double curBase = maxHp.getBaseValue();
-        double modifiers = curMax - curBase; // 其他模组加成部分
-        double newMax = Math.max(1.0, curMax - Math.min(reduce, curMax - 1.0));
-        if (newMax < curMax - 0.001) {
-            double lose = curMax - newMax;
-            double newBase = Math.max(1.0, newMax - modifiers);
-            maxHp.setBaseValue(newBase);
-            applyDirectDamage(player, target, (float) lose);
+        // 乘算倍率折算：Minecraft 属性公式中 ADDITION 修饰符先加进基数、再被
+        // MULTIPLY_BASE / MULTIPLY_TOTAL 乘算放大。L2Hostility（莱特兰）给高等级怪
+        // 提血量用的正是乘算修饰符——若不折算，本模组 -1 的 ADDITION 会被放大为
+        // -1 × 倍率，表现为“莱特兰等级越高、削减越多，无等级时削减正常”。
+        double multBase = 1.0, multTotal = 1.0;
+        for (AttributeModifier m : maxHp.getModifiers()) {
+            AttributeModifier.Operation op = m.getOperation();
+            if (op == AttributeModifier.Operation.MULTIPLY_BASE) multBase += m.getAmount();
+            else if (op == AttributeModifier.Operation.MULTIPLY_TOTAL) multTotal *= 1.0 + m.getAmount();
         }
+        double scale = Math.max(multBase * multTotal, 1e-6);     // 防御非法倍率（0/负值）
+
+        double curTotal = maxHp.getValue();                       // 当前总值（含所有加成）
+        double targetTotal = Math.max(1.0, curTotal - reduce);   // 目标总值
+        double actualReduce = curTotal - targetTotal;            // 本次实际削减量，触底时为 0
+        if (actualReduce <= 0.001) return;
+
+        double oldHealth = target.getHealth();                   // 削减上限前的当前血量
+
+        // 累计本模组已削减量，用单个负修饰符体现，避免每次攻击新增一个 modifier
+        // 注意：修饰符量按“未放大”的 ADDITION 值累计，实际削减 = 量 × 倍率，
+        // 因此每刀把 actualReduce 除以倍率折算，保证任何等级下每刀恰好减 reduce 点。
+        double alreadyReduced = 0.0;
+        AttributeModifier existing = maxHp.getModifier(REDUCE_MAX_HEALTH_UUID);
+        if (existing != null) alreadyReduced = -existing.getAmount();
+        double newReduced = alreadyReduced + actualReduce / scale;
+
+        maxHp.removeModifier(REDUCE_MAX_HEALTH_UUID);
+        maxHp.addTransientModifier(new AttributeModifier(
+                REDUCE_MAX_HEALTH_UUID,
+                "infinitestats.reduce_max_health",
+                -newReduced,
+                AttributeModifier.Operation.ADDITION
+        ));
+
+        // 仅下调生命上限：把当前血量夹取到新上限之下。
+        // 若原血量高于新上限，则自然跟随下降（不高于新上限）；
+        // 若原血量已低于新上限，则保持不变——本属性只负责“降低上限”，不额外造成一次伤害。
+        // 不再调用 applyDirectDamage：否则一次攻击会同时出现“主伤害 + 降上限伤害”两个伤害实例，
+        // 玩家观感为“多重伤害”（1.9.10 仅修了满血目标的双倍，未满血目标仍会多挨一次）。
+        target.setHealth((float) Math.min(oldHealth, maxHp.getValue()));
     }
 
     /**

@@ -626,7 +626,7 @@ public final class StatType {
 
             create("projectile_tracking").category(StatCategory.UTILITY)
                 .behavior(StatBehavior.TOGGLE).maxLevel(5).perPointValue(0)
-                .description("解锁后发射的弹射物（箭矢、雪球、三叉戟等）会追踪最近的敌人，无范围限制")
+                .description("解锁后你发射的弹射物（箭矢、雪球、三叉戟等）会自动转向追踪最近的敌人。仅在配置半径内（默认64格，可在配置中调整）生效，性能开销远小于无范围限制版本。")
                 .build(),
 
             create("no_invincibility_frames").category(StatCategory.UTILITY)

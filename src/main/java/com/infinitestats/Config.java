@@ -53,6 +53,9 @@ public final class Config {
     public static ForgeConfigSpec.IntValue MAGNET_RANGE;
     public static ForgeConfigSpec.IntValue VEIN_MINER_MAX_BLOCKS;
 
+    // 弹射物追踪扫描半径（方块），以玩家为中心
+    public static ForgeConfigSpec.IntValue PROJECTILE_TRACKING_RANGE;
+
     // ========== GUI 设置 ==========
 
     public static ForgeConfigSpec.BooleanValue SHOW_HIDDEN_STATS;
@@ -68,6 +71,9 @@ public final class Config {
 
     // 等价交换（ProjectE）联动：仅当检测到 projecte 模组时才有实际作用
     public static ForgeConfigSpec.BooleanValue PE_AUTO_LEARN;
+
+    // 未知物品（无配方 / 锚点 / ProjectE 知识）的兜底 EMC 值；0 = 关闭（保持原行为）
+    public static ForgeConfigSpec.LongValue EMC_FALLBACK_VALUE;
 
     // ========== 时间加速设置（加速属性） ==========
 
@@ -144,6 +150,11 @@ public final class Config {
         VEIN_MINER_MAX_BLOCKS = builder
                 .comment("连锁挖掘最大方块数")
                 .defineInRange("veinMinerMaxBlocks", 64, 8, 256);
+        PROJECTILE_TRACKING_RANGE = builder
+                .comment("弹射物追踪的扫描半径（方块）。以玩家为中心，水平与垂直方向同半径。",
+                         "追踪会在该范围内寻找玩家发射的弹射物与最近的敌人，",
+                         "避免对全维度实体做遍历扫描以优化性能。数值越大追踪范围越广但开销越高。")
+                .defineInRange("projectileTrackingRange", 64, 8, 256);
         builder.pop();
 
         // GUI 设置
@@ -183,6 +194,12 @@ public final class Config {
                          "解锁后拾取 / 合成的物品会自动加入 ProjectE 转化知识库。",
                          "关闭此开关则所有玩家（无论是否加点）的自动学习全部禁用。")
                 .define("autoLearnProjectE", true);
+        EMC_FALLBACK_VALUE = builder
+                .comment("未知物品（无任何配方 / 锚点 / ProjectE 知识）的兜底 EMC 值。",
+                         "设为 0（默认）表示保持原行为：无来源的物品不获得 EMC，无法被学习 / 转化。",
+                         "设为大于 0 的值（如 1）后，所有物品至少拥有该 EMC，从而可在 EMC 屏中统一被学习 / 转化。",
+                         "注意：此值会覆盖原矿等本应 0 EMC 的黑名单物品，可能改变平衡，请谨慎设置。")
+                .defineInRange("emcFallbackValue", 0L, 0L, 1_000_000_000_000L);
         builder.pop();
 
         // 时间加速设置

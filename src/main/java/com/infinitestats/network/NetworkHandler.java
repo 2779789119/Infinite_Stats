@@ -7,7 +7,9 @@ import com.infinitestats.emc.EmcMenu;
 import com.infinitestats.emc.EmcPlayerData;
 import com.infinitestats.emc.EmcPlayerDataProvider;
 import com.infinitestats.furnace.FurnaceFuelBufferMenu;
+import com.infinitestats.furnace.FurnaceOrePriorityMenu;
 import com.infinitestats.furnace.FurnaceProductBufferMenu;
+import com.infinitestats.furnace.PlayerFurnaceData;
 import com.infinitestats.furnace.PortableFurnaceMenu;
 import com.infinitestats.Config;
 import com.infinitestats.stats.PlayerStats;
@@ -18,6 +20,7 @@ import com.infinitestats.util.TeleportUtil;
 import com.infinitestats.handler.HandlerRegistry;
 import com.infinitestats.client.CrossDimScreen;
 import net.minecraft.advancements.Advancement;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
@@ -31,6 +34,10 @@ import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.item.crafting.Recipe;
+import net.minecraft.world.item.crafting.RecipeManager;
+import net.minecraft.world.item.crafting.RecipeType;
+import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraft.world.level.Level;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.resources.ResourceKey;
@@ -223,6 +230,30 @@ public final class NetworkHandler {
                 FurnaceSpeedPacket::encode,
                 FurnaceSpeedPacket::decode,
                 FurnaceSpeedPacket::handle);
+
+        // 矿石优先顺序界面打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, FurnaceOrePriorityOpenPacket.class,
+                FurnaceOrePriorityOpenPacket::encode,
+                FurnaceOrePriorityOpenPacket::decode,
+                FurnaceOrePriorityOpenPacket::handle);
+
+        // 矿石优先顺序请求数据包（客户端 → 服务器）：拉取当前优先顺序与可加入矿石
+        CHANNEL.registerMessage(packetId++, FurnaceOrePriorityRequestPacket.class,
+                FurnaceOrePriorityRequestPacket::encode,
+                FurnaceOrePriorityRequestPacket::decode,
+                FurnaceOrePriorityRequestPacket::handle);
+
+        // 矿石优先顺序同步数据包（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, FurnaceOrePrioritySyncPacket.class,
+                FurnaceOrePrioritySyncPacket::encode,
+                FurnaceOrePrioritySyncPacket::decode,
+                FurnaceOrePrioritySyncPacket::handle);
+
+        // 矿石优先顺序更新数据包（客户端 → 服务器）：提交新的优先顺序列表
+        CHANNEL.registerMessage(packetId++, FurnaceOrePriorityUpdatePacket.class,
+                FurnaceOrePriorityUpdatePacket::encode,
+                FurnaceOrePriorityUpdatePacket::decode,
+                FurnaceOrePriorityUpdatePacket::handle);
 
         // 随身工作台倍率调节数据包（客户端 → 服务器，消耗/返还可分配点数）
         CHANNEL.registerMessage(packetId++, CraftingMultiplierPacket.class,
@@ -556,8 +587,6 @@ public final class NetworkHandler {
                 if (itemId == null) return;
 
                 Item item = BuiltInRegistries.ITEM.get(itemId);
-                long emcValue = EmcDatabase.getEmc(new ItemStack(item));
-                if (emcValue <= 0) return;
 
                 player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
                     // 只卖出光标上实际持有的那一份（避免误删背包中其它同类物品且不同步其槽位）
@@ -570,13 +599,14 @@ public final class NetworkHandler {
                     if (!carried.isEmpty() && carried.getItem() == item) {
                         count += carried.getCount();
                         itemNbt = carried.getTag();
+                        // 用实际手持（含 NBT）计算 EMC，避免附魔书等带 NBT 物品单价误判为 0
+                        long emcValue = EmcDatabase.getEmc(carried);
+                        if (emcValue <= 0) return;
                         openMenu.setCarried(ItemStack.EMPTY);
                         player.connection.send(new ClientboundContainerSetSlotPacket(
                                 openMenu.containerId,
                                 openMenu.getStateId(), -1, ItemStack.EMPTY));
                         openMenu.broadcastChanges();
-                    }
-                    if (count > 0) {
                         // 学习物品并返还 数量×EMC，保留 NBT
                         data.learnAndConvert(itemId, emcValue * count, itemNbt);
                         syncEmcToClient(player);
@@ -619,14 +649,19 @@ public final class NetworkHandler {
                 Item item = BuiltInRegistries.ITEM.get(itemId);
                 if (item == null) return;
 
-                long emcPerItem = EmcDatabase.getEmc(new ItemStack(item));
-                if (emcPerItem <= 0) return;
-
                 player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
                     if (!data.hasLearned(itemId)) return;
 
-                    // 获取已存储的 NBT 数据（用于手册等需保留标签的物品）
+                    // 获取已存储的 NBT 数据（手册/附魔书等需保留标签的物品）
                     CompoundTag storedNbt = data.getItemNbt(itemId);
+
+                    // 用与产出一致的模板堆（含已存 NBT）计算单价，避免书等带 NBT 物品 EMC 误判为 0
+                    ItemStack template = new ItemStack(item);
+                    if (storedNbt != null) {
+                        template.setTag(storedNbt.copy());
+                    }
+                    long emcPerItem = EmcDatabase.getEmc(template);
+                    if (emcPerItem <= 0) return;
 
                     int maxStack = item.getMaxStackSize();
                     if (msg.count < 0) {
@@ -918,6 +953,175 @@ public final class NetworkHandler {
                 });
             });
             ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 打开“矿石优先顺序”界面（客户端 → 服务器）。 */
+    public static final class FurnaceOrePriorityOpenPacket {
+        public FurnaceOrePriorityOpenPacket() {}
+
+        public static void encode(FurnaceOrePriorityOpenPacket msg, FriendlyByteBuf buf) {}
+
+        public static FurnaceOrePriorityOpenPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceOrePriorityOpenPacket();
+        }
+
+        public static void handle(FurnaceOrePriorityOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_furnace")) return;
+                    NetworkHooks.openScreen(player,
+                            new SimpleMenuProvider(
+                                    (windowId, inv, p) -> new FurnaceOrePriorityMenu(windowId, inv),
+                                    Component.translatable("gui.infinitestats.furnace.ore_priority.title")),
+                            BlockPos.ZERO);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求当前矿石优先顺序与可加入矿石列表（客户端 → 服务器）。 */
+    public static final class FurnaceOrePriorityRequestPacket {
+        public FurnaceOrePriorityRequestPacket() {}
+
+        public static void encode(FurnaceOrePriorityRequestPacket msg, FriendlyByteBuf buf) {}
+
+        public static FurnaceOrePriorityRequestPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceOrePriorityRequestPacket();
+        }
+
+        public static void handle(FurnaceOrePriorityRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                PlayerFurnaceData furnace = stats.getFurnaceData();
+                List<String> priority = furnace.getOrePriorityIds();
+                List<String> available = computeAvailable(player, priority);
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                        new FurnaceOrePrioritySyncPacket(available, priority));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 服务器将矿石优先顺序与可加入矿石列表同步到客户端（服务器 → 客户端）。 */
+    public static final class FurnaceOrePrioritySyncPacket {
+        public static class SyncData {
+            public final List<String> available;
+            public final List<String> priority;
+
+            public SyncData(List<String> available, List<String> priority) {
+                this.available = available;
+                this.priority = priority;
+            }
+        }
+
+        /** 最近一次同步的数据，供界面读取（仅单玩家单界面，使用静态字段足够）。 */
+        public static volatile SyncData latest;
+        /** 每次同步自增，界面据此判断是否需要重建控件。 */
+        public static int version = 0;
+
+        public final List<String> available;
+        public final List<String> priority;
+
+        public FurnaceOrePrioritySyncPacket(List<String> available, List<String> priority) {
+            this.available = available;
+            this.priority = priority;
+        }
+
+        public static void encode(FurnaceOrePrioritySyncPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.priority.size());
+            for (String id : msg.priority) buf.writeUtf(id);
+            buf.writeVarInt(msg.available.size());
+            for (String id : msg.available) buf.writeUtf(id);
+        }
+
+        public static FurnaceOrePrioritySyncPacket decode(FriendlyByteBuf buf) {
+            int n = buf.readVarInt();
+            List<String> priority = new ArrayList<>();
+            for (int i = 0; i < n; i++) priority.add(buf.readUtf());
+            int m = buf.readVarInt();
+            List<String> available = new ArrayList<>();
+            for (int i = 0; i < m; i++) available.add(buf.readUtf());
+            return new FurnaceOrePrioritySyncPacket(available, priority);
+        }
+
+        public static void handle(FurnaceOrePrioritySyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                latest = new SyncData(msg.available, msg.priority);
+                version++;
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端提交新的矿石优先顺序列表（客户端 → 服务器）。 */
+    public static final class FurnaceOrePriorityUpdatePacket {
+        public final List<String> priority;
+
+        public FurnaceOrePriorityUpdatePacket(List<String> priority) {
+            this.priority = priority;
+        }
+
+        public static void encode(FurnaceOrePriorityUpdatePacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.priority.size());
+            for (String id : msg.priority) buf.writeUtf(id);
+        }
+
+        public static FurnaceOrePriorityUpdatePacket decode(FriendlyByteBuf buf) {
+            int n = buf.readVarInt();
+            List<String> priority = new ArrayList<>();
+            for (int i = 0; i < n; i++) priority.add(buf.readUtf());
+            return new FurnaceOrePriorityUpdatePacket(priority);
+        }
+
+        public static void handle(FurnaceOrePriorityUpdatePacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                PlayerFurnaceData furnace = stats.getFurnaceData();
+                furnace.setOrePriorityIds(msg.priority);
+                List<String> available = computeAvailable(player, furnace.getOrePriorityIds());
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                        new FurnaceOrePrioritySyncPacket(available, furnace.getOrePriorityIds()));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 计算“可加入的矿石”列表：游戏内所有拥有熔炼/高炉配方的物品（排除已在优先列表中的）。
+     * 不再依赖矿石储备箱是否已有存货，保证界面永远有内容可选。
+     */
+    private static List<String> computeAvailable(ServerPlayer player, List<String> priority) {
+        Set<String> inPrio = new HashSet<>(priority);
+        Set<String> ids = new LinkedHashSet<>();
+        RecipeManager rm = player.level().getRecipeManager();
+        collect(rm, RecipeType.SMELTING, ids);
+        collect(rm, RecipeType.BLASTING, ids);
+        List<String> available = new ArrayList<>();
+        for (String id : ids) {
+            if (!inPrio.contains(id)) available.add(id);
+        }
+        return available;
+    }
+
+    private static void collect(RecipeManager rm, RecipeType<?> type, Set<String> ids) {
+        for (Recipe<?> recipe : rm.getRecipes()) {
+            if (recipe.getType() == type) {
+                for (Ingredient ing : recipe.getIngredients()) {
+                    for (ItemStack s : ing.getItems()) {
+                        if (!s.isEmpty()) ids.add(ForgeRegistries.ITEMS.getKey(s.getItem()).toString());
+                    }
+                }
+            }
         }
     }
 

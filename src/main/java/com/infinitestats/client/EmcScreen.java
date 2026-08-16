@@ -17,6 +17,8 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.gui.narration.NarratedElementType;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -143,6 +145,9 @@ public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
                 case "text_field" -> {
                     EditBox eb = new EditBox(this.font, x, y, w, h, Component.empty());
                     eb.setMaxLength(256);
+                    if ("sou_suo".equals(e.name)) {
+                        eb.setHint(Component.literal("搜索 @模组 #标签"));
+                    }
                     eb.setValue(e.text == null ? "" : e.text);
                     eb.setResponder(v -> onTextFieldChanged(e.name, v));
                     textFields.put(e.name, eb);
@@ -472,7 +477,7 @@ public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
             if (!f.isEmpty()) {
                 ItemStack s = new ItemStack(item);
                 String name = s.getHoverName().getString().toLowerCase();
-                if (!JechCompat.matches(id.toString().toLowerCase(), f) && !JechCompat.matches(name, f)) continue;
+                if (!matchesSearch(id, s, name, f)) continue;
             }
             ItemStack s = new ItemStack(item);
             // 还原已存储的 NBT（手册等物品需要标签才能正确渲染）
@@ -485,6 +490,43 @@ public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
             out.add(s);
         }
         return out;
+    }
+
+    /**
+     * 搜索匹配，支持 JEI 风格的前缀：
+     * - 以 @ 开头：按来源模组匹配（@modid 前缀匹配 namespace）
+     * - 以 # 开头：按物品标签匹配（#modid:tag 或 #tag 子串匹配）
+     * - 否则：物品 ID / 显示名的子串匹配（含 JEC 拼音）
+     *
+     * @param id   物品注册 ID（小写）
+     * @param s    用于读取显示名/标签的 ItemStack
+     * @param name 已转小写的显示名
+     * @param f    已转小写的搜索关键词
+     */
+    private boolean matchesSearch(ResourceLocation id, ItemStack s, String name, String f) {
+        if (f.startsWith("@")) {
+            String mod = f.substring(1);
+            return mod.isEmpty() || id.getNamespace().contains(mod);
+        }
+        if (f.startsWith("#")) {
+            String tagQuery = f.substring(1);
+            return !tagQuery.isEmpty() && itemHasTag(id, tagQuery);
+        }
+        return JechCompat.matches(id.toString(), f) || JechCompat.matches(name, f);
+    }
+
+    /**
+     * 判断物品是否拥有匹配查询的标签。
+     * tagQuery 为空时由调用方保证不会进入；此处做包含匹配，
+     * 支持 #modid:tag 全名或 #tag 局部名。
+     */
+    private boolean itemHasTag(ResourceLocation id, String tagQuery) {
+        var holder = BuiltInRegistries.ITEM.getHolder(ResourceKey.create(Registries.ITEM, id));
+        if (holder.isEmpty()) return false;
+        return holder.get().tags().anyMatch(tk -> {
+            String tag = tk.location().toString(); // 形如 modid:path
+            return tag.contains(tagQuery);
+        });
     }
 
     private void renderLearnedList(GuiGraphics g, int mx, int my) {

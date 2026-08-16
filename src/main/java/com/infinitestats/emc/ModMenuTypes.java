@@ -3,6 +3,7 @@ package com.infinitestats.emc;
 import com.infinitestats.InfiniteStats;
 import com.infinitestats.crafting.PortableCraftingMenu;
 import com.infinitestats.furnace.FurnaceFuelBufferMenu;
+import com.infinitestats.furnace.FurnaceOrePriorityMenu;
 import com.infinitestats.furnace.FurnaceProductBufferMenu;
 import com.infinitestats.furnace.PortableFurnaceMenu;
 import net.minecraft.world.inventory.MenuType;
@@ -31,6 +32,10 @@ public final class ModMenuTypes {
     public static final RegistryObject<MenuType<FurnaceProductBufferMenu>> FURNACE_PRODUCT_BUFFER_MENU =
             MENU_TYPES.register("furnace_product_buffer_menu", () -> IForgeMenuType.create(
                     (windowId, inv, data) -> new FurnaceProductBufferMenu(windowId, inv)));
+
+    public static final RegistryObject<MenuType<FurnaceOrePriorityMenu>> FURNACE_ORE_PRIORITY_MENU =
+            MENU_TYPES.register("furnace_ore_priority_menu", () -> IForgeMenuType.create(
+                    (windowId, inv, data) -> new FurnaceOrePriorityMenu(windowId, inv)));
 
     public static final RegistryObject<MenuType<PortableCraftingMenu>> PORTABLE_CRAFTING_MENU =
             MENU_TYPES.register("portable_crafting_menu", () -> IForgeMenuType.create(

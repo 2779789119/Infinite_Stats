@@ -28,6 +28,7 @@ public class PortableFurnaceScreen extends AbstractContainerScreen<PortableFurna
     private Button speedDownButton;
     private Button fuelBufferButton;
     private Button productBufferButton;
+    private Button priorityButton;
 
     public PortableFurnaceScreen(PortableFurnaceMenu menu, Inventory inv, Component title) {
         super(menu, inv, title);
@@ -59,6 +60,14 @@ public class PortableFurnaceScreen extends AbstractContainerScreen<PortableFurna
                         Component.translatable("gui.infinitestats.furnace.product_buffer"),
                         b -> openProductBuffer())
                 .pos(leftPos + 138, topPos + 42).size(36, 16).build());
+
+        // 矿石优先顺序 —— 点击打开设置界面，指定自动放入输入槽时哪些矿石优先
+        this.priorityButton = this.addRenderableWidget(Button.builder(
+                        Component.translatable("gui.infinitestats.furnace.ore_priority"),
+                        b -> openOrePriority())
+                .pos(leftPos + 138, topPos + 60).size(36, 16)
+                .tooltip(Tooltip.create(Component.translatable("gui.infinitestats.furnace.ore_priority_tip")))
+                .build());
 
         // RS 联动按钮（需持有 RS 无线终端）：网络取矿 / 网络取燃料 / 成品存网 —— 放在左侧空白区
         int rx = leftPos + 6;
@@ -92,6 +101,10 @@ public class PortableFurnaceScreen extends AbstractContainerScreen<PortableFurna
 
     private void openProductBuffer() {
         NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceProductOpenPacket());
+    }
+
+    private void openOrePriority() {
+        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceOrePriorityOpenPacket());
     }
 
     private void onSpeed(boolean increase) {
@@ -160,6 +173,10 @@ public class PortableFurnaceScreen extends AbstractContainerScreen<PortableFurna
         } else if (productBufferButton != null && productBufferButton.isMouseOver(mouseX, mouseY)) {
             graphics.renderTooltip(font,
                     Component.translatable("gui.infinitestats.furnace.product_buffer_tip"),
+                    mouseX, mouseY);
+        } else if (priorityButton != null && priorityButton.isMouseOver(mouseX, mouseY)) {
+            graphics.renderTooltip(font,
+                    Component.translatable("gui.infinitestats.furnace.ore_priority_tip"),
                     mouseX, mouseY);
         }
     }

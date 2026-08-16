@@ -6,7 +6,9 @@ import com.infinitestats.emc.ModMenuTypes;
 import com.infinitestats.crafting.PortableCraftingMenu;
 import com.infinitestats.furnace.PortableFurnaceMenu;
 import com.infinitestats.furnace.FurnaceFuelBufferMenu;
+import com.infinitestats.furnace.FurnaceOrePriorityMenu;
 import com.infinitestats.client.PortableFurnaceScreen;
+import com.infinitestats.client.FurnaceOrePriorityScreen;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
@@ -143,7 +145,7 @@ public final class ClientEventHandler {
             if (stats.isToggleActive("night_vision")) {
                 map.put(MobEffects.NIGHT_VISION, new MobEffectInstance(
                         MobEffects.NIGHT_VISION,
-                        MobEffectInstance.INFINITE_DURATION, 0, false, true, true));
+                        MobEffectInstance.INFINITE_DURATION, 0, false, false, true));
                 // 移除黑暗效果，防止其压制夜视视觉
                 map.remove(MobEffects.DARKNESS);
             } else {
@@ -173,6 +175,7 @@ public final class ClientEventHandler {
                 MenuScreens.register(ModMenuTypes.PORTABLE_FURNACE_MENU.get(), PortableFurnaceScreen::new);
                 MenuScreens.register(ModMenuTypes.FURNACE_FUEL_BUFFER_MENU.get(), FurnaceFuelBufferScreen::new);
                 MenuScreens.register(ModMenuTypes.FURNACE_PRODUCT_BUFFER_MENU.get(), FurnaceProductBufferScreen::new);
+                MenuScreens.register(ModMenuTypes.FURNACE_ORE_PRIORITY_MENU.get(), FurnaceOrePriorityScreen::new);
                 MenuScreens.register(ModMenuTypes.PORTABLE_CRAFTING_MENU.get(), PortableCraftingScreen::new);
             });
         }

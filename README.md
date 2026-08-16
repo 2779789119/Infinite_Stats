@@ -4,7 +4,7 @@
 > 通过打怪与挂机获取经验升级，获得可自由分配的属性点，打造属于你自己的 Build。
 
 - **Mod ID**：`infinitestats`
-- **当前版本**：`1.6.0`（见 `gradle.properties` → `mod_version`）
+- **当前版本**：`1.8.0`（见 `gradle.properties` → `mod_version`）
 - **运行环境**：Minecraft `1.20.1` / Forge `47.4.x+`
 - **许可证**：MIT
 
@@ -108,6 +108,7 @@
 | `passiveEffects.manaRegenInterval` | `40` | 法力恢复间隔（tick） |
 | `passiveEffects.magnetRange` | `10` | 物品/经验磁铁吸引范围 |
 | `passiveEffects.veinMinerMaxBlocks` | `64` | 连锁挖掘最大方块数 |
+| `passiveEffects.projectileTrackingRange` | `64` | 弹射物追踪扫描半径（方块），范围 8-256，默认 64 |
 | `gui.showHiddenStats` | `false` | 是否显示隐藏属性（如无敌），改后重开面板生效 |
 | `compatibility.enableAttributeDiscovery` | `true` | 自动发现其他模组属性（**需重启**） |
 | `emc.emcEnabled` | `true` | 是否启用 EMC 系统 |
@@ -120,7 +121,7 @@
 
 ## 🧬 内置属性一览
 
-> 共 **78** 个内置属性。标注 **[开关]** 的为功能型开关，激活后即时生效，可随时开启/关闭。
+> 共 **80** 个内置属性。标注 **[开关]** 的为功能型开关，激活后即时生效，可随时开启/关闭。
 
 ### ⚔️ 攻击（15）
 
@@ -136,7 +137,7 @@
 
 ### 🧰 功能（29，含多个开关）
 
-`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 战利品幸运 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `item_magnet` 物品磁铁 · `invisibility` **[开关]** 隐身 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `xp_magnet` 经验磁铁 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `double_loot` 双倍战利品 · `teleport_distance` 传送距离 · `crafting_bonus` 合成加成 · `bow_draw_speed` 拉弓速度 · `use_speed` 使用速度 · `auto_repair` **[开关]** 自动修复 · `repair_amount` 修复量 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `portable_crafting` **[开关]** 内置工作台 · `portable_furnace` **[开关]** 内置熔炉
+`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 战利品幸运 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `item_magnet` 物品磁铁 · `invisibility` **[开关]** 隐身 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `xp_magnet` 经验磁铁 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `double_loot` 双倍战利品 · `teleport_distance` 传送距离 · `crafting_bonus` 合成加成 · `bow_draw_speed` 拉弓速度 · `use_speed` 使用速度 · `auto_repair` **[开关]** 自动修复 · `repair_amount` 修复量 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `portable_crafting` **[开关]** 内置工作台 · `portable_furnace` **[开关]** 内置熔炉 · `projectile_tracking` 弹射物追踪 **[开关]**
 
 ### 🔮 魔法（8）
 

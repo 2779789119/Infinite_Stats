@@ -15,8 +15,10 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.CrossbowItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.item.TieredItem;
 import net.minecraft.world.item.TridentItem;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraftforge.common.TierSortingRegistry;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
@@ -40,6 +42,14 @@ import net.minecraftforge.fml.common.Mod;
  */
 @Mod.EventBusSubscriber(modid = InfiniteStats.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class StatEventHandler {
+
+    /**
+     * 重入锁：攻击分支对次级受击（范围/真实/降上限直接伤害）会同步再次进入本方法，
+     * 若此时再执行攻击逻辑则形成同步无限递归（StackOverflow → 被 log4j 类加载冲突放大为服务端崩溃）。
+     * 用 ThreadLocal 锁保证“一次攻击链”中攻击分支只执行一次，与 direct_damage 伤害类型是否解析无关，
+     * 即便 applyDirectDamage 回退为普通玩家攻击也能彻底杜绝递归。
+     */
+    private static final ThreadLocal<Boolean> ATTACK_BRANCH_ACTIVE = ThreadLocal.withInitial(() -> false);
 
     // ========== 死亡事件 ==========
 
@@ -168,10 +178,15 @@ public final class StatEventHandler {
 
     @SubscribeEvent(priority = EventPriority.LOW)
     public static void onLivingHurt(LivingHurtEvent event) {
+        try {
         // 玩家攻击（覆盖近战、弓箭/三叉戟等玩家拥有的抛射物，
         // 避免“伤害来源实体不是玩家”导致范围伤害等攻击效果时灵时不灵）
         ServerPlayer player = getPlayerAttacker(event);
-        if (player != null) {
+        // 重入锁：次级受击（直接伤害）进入本方法时跳过攻击分支，彻底杜绝同步无限递归。
+        if (player != null && !ATTACK_BRANCH_ACTIVE.get()) {
+            ATTACK_BRANCH_ACTIVE.set(true);
+            try {
+            if (!AttackHandler.isDirectDamageSource(event.getSource())) {
             player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
                 float amount = event.getAmount();
 
@@ -221,7 +236,17 @@ public final class StatEventHandler {
 
                 // 范围攻击：波及周围敌人
                 AttackHandler.applyScopeAttack(player, stats, event.getAmount(), event.getEntity());
+
+                // 取消无敌帧：攻击非玩家实体时取消目标的受伤无敌帧，提高攻击频率
+                if (stats.isToggleActive("no_invincibility_frames")
+                        && !(event.getEntity() instanceof ServerPlayer)) {
+                    event.getEntity().invulnerableTime = 0;
+                }
             });
+            }
+            } finally {
+                ATTACK_BRANCH_ACTIVE.set(false);
+            }
         }
 
         // 玩家受伤
@@ -292,6 +317,13 @@ public final class StatEventHandler {
                     DefenseHandler.applyDamageReflection(hurtPlayer, stats, event.getAmount(), attacker);
                 }
             });
+        }
+        } catch (Throwable t) {
+            // 任何异常都不应冒泡到 Forge 事件总线：EventBus.handleException 在记录日志时
+            // 会撞上 log4j 类加载冲突（LinkageError），直接拖垮整个服务端。
+            // 这里就地捕获并打印真实堆栈，既保住服务器，也把根因暴露到控制台/日志。
+            System.err.println("[infinitestats] StatEventHandler.onLivingHurt 抛出异常（已抑制，避免服务端崩溃）：");
+            t.printStackTrace();
         }
     }
 
@@ -385,7 +417,19 @@ public final class StatEventHandler {
         event.getEntity().getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             float bonus = UtilityHandler.getMiningSpeedMultiplier(stats);
             if (bonus > 1) {
-                event.setNewSpeed(event.getOriginalSpeed() * bonus);
+                float effectiveBonus = bonus;
+                // 原版 getDigSpeed 在此事件后对「不在地面」执行 ÷5 惩罚。
+                // 提前 ×5 补偿以消除飞行/跳跃对挖掘速度的严重影响。
+                if (!event.getEntity().onGround()) {
+                    effectiveBonus *= 5.0f;
+                }
+                // 水下无「水下速掘」附魔时同样有 ÷5 惩罚（水上附魔则 ÷25）。
+                // 仅在玩家没有 Aqua Affinity 时补偿，避免与附魔叠加出 5 倍速。
+                if (event.getEntity().isEyeInFluid(FluidTags.WATER)
+                        && !EnchantmentHelper.hasAquaAffinity(event.getEntity())) {
+                    effectiveBonus *= 5.0f;
+                }
+                event.setNewSpeed(event.getOriginalSpeed() * effectiveBonus);
             }
         });
     }
@@ -418,7 +462,11 @@ public final class StatEventHandler {
 
             ItemStack tool = event.getEntity().getMainHandItem();
             int toolIndex = getToolTierIndex(tool);
-            if (toolIndex < 0) return;
+
+            // 空手或手持非工具时，视为最低等级（索引 0），使挖掘等级加成能生效
+            if (toolIndex < 0) {
+                toolIndex = 0;
+            }
 
             java.util.List<net.minecraft.world.item.Tier> sortedTiers =
                     TierSortingRegistry.getSortedTiers();

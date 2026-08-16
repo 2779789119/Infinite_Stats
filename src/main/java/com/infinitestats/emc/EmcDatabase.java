@@ -1,6 +1,7 @@
 package com.infinitestats.emc;
 
 import com.google.gson.*;
+import com.infinitestats.Config;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
@@ -722,15 +723,24 @@ public final class EmcDatabase {
         Long custom = CUSTOM_EMC.get(id);
         if (custom != null) return custom;
 
+        long emc;
         if (projecteLoaded && projecteGetValueMethod != null) {
             try {
                 Object result = projecteGetValueMethod.invoke(projecteProxy, stack);
-                if (result instanceof Long) return (Long) result;
-                if (result instanceof Number) return ((Number) result).longValue();
-            } catch (Exception ignored) {}
+                emc = (result instanceof Number) ? ((Number) result).longValue() : 0L;
+            } catch (Exception ignored) {
+                emc = 0L;
+            }
+        } else {
+            emc = EMC_MAP.getOrDefault(id, 0L);
         }
 
-        return EMC_MAP.getOrDefault(id, 0L);
+        // 兜底：本应 0 EMC 的未知物品，按配置赋予最小值，使其可被学习 / 转化
+        if (emc <= 0) {
+            long fallback = Config.EMC_FALLBACK_VALUE.get();
+            if (fallback > 0) emc = fallback;
+        }
+        return emc;
     }
 
     public static boolean hasEmc(ItemStack stack) {

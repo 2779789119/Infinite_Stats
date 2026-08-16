@@ -1481,8 +1481,9 @@ public class StatsScreen extends Screen {
             int sliderH = Math.max(20, (int) ((float) MAX_VISIBLE / (maxScroll + MAX_VISIBLE) * sh));
             int dragRange = sh - sliderH;
             if (dragRange > 0) {
-                float progress = (float) ((py - contentTop - sliderH / 2.0 - scrollbarDragStartY) / dragRange
-                        + (float) scrollbarDragStartOffset / maxScroll);
+                // 鼠标位移量（像素）→ 滚动位移量，再加上点击时的基准偏移
+                float delta = (float)(py - scrollbarDragStartY) / dragRange;
+                float progress = delta + (float) scrollbarDragStartOffset / maxScroll;
                 scrollOffset = Mth.clamp((int) (progress * maxScroll + 0.5), 0, maxScroll);
                 rebuildAllWidgets();
             }
