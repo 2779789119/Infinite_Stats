@@ -87,6 +87,10 @@
 | `/infstats craft` | 打开随身工作台 | 内置工作台 |
 | `/infstats furnace` | 打开随身熔炉 | 内置熔炉 |
 
+随身熔炉支持 **Shift 连续放料**：燃料优先放入燃料槽，可熔炼材料先补入当前输入，不同材料进入待炼仓排队。手动将木头放入材料槽或待炼仓可烧木炭。主界面和成品仓都能一键收取，背包放不下的成品继续留仓。空闲时保留余热，缺燃料时保留进度；仓库内按 Esc 可返回熔炉。物品悬停显示精确库存数量。
+
+本次熔炉改动的验证状态见 [优化与验证记录](docs/portable-furnace-optimization.md)。
+
 ---
 
 ## ⚙️ 配置
@@ -137,11 +141,11 @@
 
 ### 🧰 功能（29，含多个开关）
 
-`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 战利品幸运 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `item_magnet` 物品磁铁 · `invisibility` **[开关]** 隐身 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `xp_magnet` 经验磁铁 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `double_loot` 双倍战利品 · `teleport_distance` 传送距离 · `crafting_bonus` 合成加成 · `bow_draw_speed` 拉弓速度 · `use_speed` 使用速度 · `auto_repair` **[开关]** 自动修复 · `repair_amount` 修复量 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `portable_crafting` **[开关]** 内置工作台 · `portable_furnace` **[开关]** 内置熔炉 · `projectile_tracking` 弹射物追踪 **[开关]**
+`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 战利品幸运 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `item_magnet` 物品磁铁 · `invisibility` **[开关]** 隐身 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `xp_magnet` 经验磁铁 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `double_loot` 双倍战利品 · `crafting_bonus` 合成加成 · `bow_draw_speed` 拉弓速度 · `use_speed` 使用速度 · `auto_repair` **[开关]** 自动修复 · `repair_amount` 修复量 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `portable_crafting` **[开关]** 内置工作台 · `portable_furnace` **[开关]** 内置熔炉 · `projectile_tracking` 弹射物追踪 **[开关]**
 
 ### 🔮 魔法（8）
 
-`max_mana` 最大法力 · `mana_regen` 法力恢复 · `magic_damage` 魔法伤害 · `cooldown_reduction` 冷却缩减 · `mana_shield` 法力护盾 · `mana_steal` 法力偷取 · `spell_power` 法术强度 · `mana_on_kill` 击杀回蓝
+`max_mana` 最大法力 · `mana_regen` 法力恢复 · `magic_damage` 魔法伤害 · `mana_shield` 法力护盾 · `mana_steal` 法力偷取 · `mana_on_kill` 击杀回蓝
 
 ### 🌐 外部属性（动态）
 
