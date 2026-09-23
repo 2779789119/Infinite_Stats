@@ -11,6 +11,7 @@ import net.minecraft.world.Container;
 import net.minecraft.world.ContainerHelper;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.AbstractCookingRecipe;
 import net.minecraft.world.item.crafting.RecipeType;
@@ -242,6 +243,11 @@ public class PlayerFurnaceData {
             clearSlot(i);
             return;
         }
+        if (i >= inputSlot(0) && i < outputSlot(0)
+                && !ItemStack.isSameItemSameTags(items.get(i), stack)) {
+            setCook(i - inputSlot(0), 0);
+            setCookTotal(i - inputSlot(0), 0);
+        }
         items.set(i, stack.copyWithCount(1));
         amounts[i] = stack.getCount();
     }
@@ -273,6 +279,10 @@ public class PlayerFurnaceData {
     public void clearSlot(int i) {
         items.set(i, ItemStack.EMPTY);
         amounts[i] = 0;
+        if (i >= inputSlot(0) && i < outputSlot(0)) {
+            setCook(i - inputSlot(0), 0);
+            setCookTotal(i - inputSlot(0), 0);
+        }
     }
 
     public int[] getData() {
@@ -333,12 +343,12 @@ public class PlayerFurnaceData {
 
     /** 当前熔炼速度倍率（加速等级 + 1）。 */
     public int getSpeedMultiplier() {
-        return 1 + getSpeedLevel();
+        return (int) Math.min(Integer.MAX_VALUE, 1L + getSpeedLevel());
     }
 
     /** 设置加速等级（自动钳制为非负）。 */
     public void setSpeedLevel(int level) {
-        data[speedIdx()] = Math.max(0, level);
+        data[speedIdx()] = Math.max(0, Math.min(Integer.MAX_VALUE - 1, level));
     }
 
     /** 每 tick 驱动一次冶炼。level 为 null 或客户端直接跳过。 */
@@ -367,14 +377,12 @@ public class PlayerFurnaceData {
         }
 
         if (!anyWork) {
-            // 无活可干：熄火并清空所有冶炼进度
-            if (data[0] > 0) data[0] = 0;
-            for (int i = 0; i < INPUT_COUNT; i++) setCook(i, 0);
+            // 暂时无材料或输出受阻时保留余热，避免每一批都浪费剩余燃料。
+            for (int i = 0; i < INPUT_COUNT; i++) {
+                if (!hasSmeltRecipe(level, items.get(inputSlot(i)))) setCook(i, 0);
+            }
             return;
         }
-
-        // 燃料计时递减
-        if (data[0] > 0) data[0]--;
 
         // 燃料烧尽时尝试重新点火（需要仍有可冶炼的输入；燃料需玩家手动放入燃料槽）
         if (data[0] <= 0) {
@@ -402,33 +410,23 @@ public class PlayerFurnaceData {
                     continue;
                 }
                 ItemStack result = recipe.getResultItem(level.registryAccess());
-                int total = recipe.getCookingTime();
+                int total = Math.max(1, recipe.getCookingTime());
                 setCookTotal(i, total);
-                addCook(i, mult);
-                if (getCook(i) >= total) {
-                    ItemStack output = items.get(outputSlot(i));
-                    if (output.isEmpty()) {
-                        items.set(outputSlot(i), result.copy());
-                        amounts[outputSlot(i)] = result.getCount();
-                    } else if (ItemStack.isSameItemSameTags(output, result)) {
-                        long combined = amounts[outputSlot(i)] + result.getCount();
-                        if (combined <= UNBOUNDED) {
-                            amounts[outputSlot(i)] = combined;
-                        }
-                    }
-                    // 消耗一份输入
-                    if (amounts[inputSlot(i)] > 1) {
-                        amounts[inputSlot(i)]--;
-                    } else {
-                        items.set(inputSlot(i), ItemStack.EMPTY);
-                        amounts[inputSlot(i)] = 0;
-                    }
-                    setCook(i, 0);
+                // 以 long 计算整批产出，保留不足一件的进度；高倍率也不循环数十亿次。
+                long progress = (long) getCook(i) + mult;
+                long crafts = Math.min(progress / total, amounts[inputSlot(i)]);
+                crafts = Math.min(crafts, (UNBOUNDED - amounts[outputSlot(i)]) / result.getCount());
+                if (crafts > 0) {
+                    items.set(outputSlot(i), result.copyWithCount(1));
+                    amounts[outputSlot(i)] += crafts * result.getCount();
+                    setAmountOnly(inputSlot(i), amounts[inputSlot(i)] - crafts);
                 }
+                setCook(i, amounts[inputSlot(i)] > 0 ? (int) (progress % total) : 0);
             }
-        } else {
-            for (int i = 0; i < INPUT_COUNT; i++) setCook(i, 0);
+            data[0]--;
         }
+        // 缺燃料时保留已完成的进度；成品在同一 tick 入仓，收取时无需追逐输出槽。
+        pushOutputToBuffer();
     }
 
     /** 某输入槽当前能否冶炼（有输入、有配方、输出可接收）。 */
@@ -480,6 +478,7 @@ public class PlayerFurnaceData {
      * @return 是否成功取出
      */
     public boolean pullInputFromBuffer() {
+        if (amounts[inputSlot(0)] > 0) return false;
         // 先按优先顺序列表构造候选顺序，再补充未被列入的缓冲槽
         List<Integer> order = new ArrayList<>();
         Set<String> covered = new HashSet<>();
@@ -510,6 +509,68 @@ public class PlayerFurnaceData {
             return true;
         }
         return false;
+    }
+
+    /** 将已检查配方的待炼物品并入队列；只消耗实际存入的数量。 */
+    public void enqueueInput(ItemStack stack) {
+        for (int pass = 0; pass < 2 && !stack.isEmpty(); pass++) {
+            for (int i = 0; i < INPUT_BUFFER_SLOTS && !stack.isEmpty(); i++) {
+                ItemStack stored = inputBuffer.get(i);
+                if (pass == 0 ? stored.isEmpty() || !ItemStack.isSameItemSameTags(stored, stack)
+                        : !stored.isEmpty()) continue;
+                int moved = (int) Math.min(stack.getCount(), Math.max(0, UNBOUNDED - inputAmounts[i]));
+                if (moved <= 0) continue;
+                inputBuffer.set(i, stack.copyWithCount(1));
+                inputAmounts[i] += moved;
+                stack.shrink(moved);
+            }
+        }
+    }
+
+    /** 一键收取：先补已有堆叠，再填空位，背包满时余量留仓（创造模式亦不吞物品）。 */
+    public long collectProducts(Inventory inventory) {
+        long collected = 0;
+        int output = outputSlot(0);
+        long moved = moveIntoInventory(inventory, items.get(output), amounts[output]);
+        setAmountOnly(output, amounts[output] - moved);
+        collected += moved;
+        for (int i = 0; i < OUTPUT_BUFFER_SLOTS; i++) {
+            moved = moveIntoInventory(inventory, outputBuffer.get(i), outputAmounts[i]);
+            outputAmounts[i] -= moved;
+            collected += moved;
+            if (outputAmounts[i] == 0) outputBuffer.set(i, ItemStack.EMPTY);
+        }
+        if (collected > 0) inventory.setChanged();
+        return collected;
+    }
+
+    private static long moveIntoInventory(Inventory inventory, ItemStack template, long amount) {
+        if (template.isEmpty() || amount <= 0) return 0;
+        long remaining = amount;
+        int limit = Math.min(inventory.getMaxStackSize(), template.getMaxStackSize());
+        for (int pass = 0; pass < 2 && remaining > 0; pass++) {
+            for (int i = 0; i < inventory.items.size() && remaining > 0; i++) {
+                ItemStack current = inventory.items.get(i);
+                if (pass == 0 ? current.isEmpty() || !ItemStack.isSameItemSameTags(current, template)
+                        : !current.isEmpty()) continue;
+                int count = (int) Math.min(remaining, Math.max(0, limit - current.getCount()));
+                if (count == 0) continue;
+                if (current.isEmpty()) inventory.items.set(i, template.copyWithCount(count));
+                else current.grow(count);
+                remaining -= count;
+            }
+        }
+        return amount - remaining;
+    }
+
+    /** 服务端工作状态，菜单同步后客户端无需猜测停炉原因。 */
+    public int getWorkStatus(Level level) {
+        ItemStack input = items.get(inputSlot(0));
+        if (input.isEmpty() || amounts[inputSlot(0)] <= 0) return 0;
+        if (!hasSmeltRecipe(level, input)) return 3;
+        if (!canSmeltInput(level, 0)) return 4;
+        if (!isLit() && ForgeHooks.getBurnTime(items.get(FUEL_SLOT), RecipeType.SMELTING) <= 0) return 2;
+        return 1;
     }
 
     /**

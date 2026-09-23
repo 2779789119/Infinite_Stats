@@ -30,6 +30,7 @@ public final class SyncStatsPacket {
     private boolean buffUseBlacklist;
     private Set<String> buffFilterList;
     private Map<String, Waypoint> waypoints;
+    private Set<String> favorites;
 
     /**
      * 从快照创建
@@ -45,6 +46,7 @@ public final class SyncStatsPacket {
         this.buffUseBlacklist = snapshot.buffUseBlacklist;
         this.buffFilterList = snapshot.buffFilterList;
         this.waypoints = snapshot.waypoints;
+        this.favorites = snapshot.favorites;
     }
 
     /**
@@ -89,6 +91,9 @@ public final class SyncStatsPacket {
             float pitch = buf.readFloat();
             waypoints.put(name, new Waypoint(dimension, x, y, z, yaw, pitch));
         }
+        favorites = new HashSet<>();
+        int favoriteCount = buf.readVarInt();
+        for (int i = 0; i < favoriteCount; i++) favorites.add(buf.readUtf());
     }
 
     /**
@@ -130,6 +135,8 @@ public final class SyncStatsPacket {
             buf.writeFloat(wp.yaw);
             buf.writeFloat(wp.pitch);
         }
+        buf.writeVarInt(msg.favorites.size());
+        for (String id : msg.favorites) buf.writeUtf(id);
     }
 
     /**
@@ -159,7 +166,8 @@ public final class SyncStatsPacket {
                         msg.buffUseBlacklist,
                         msg.buffFilterList,
                         msg.waypoints,
-                        msg.reviveInvulnUntilTick
+                        msg.reviveInvulnUntilTick,
+                        msg.favorites
                 );
                 stats.restoreFromSnapshot(snapshot);
             });
@@ -179,7 +187,8 @@ public final class SyncStatsPacket {
                 buffUseBlacklist,
                 buffFilterList,
                 waypoints,
-                reviveInvulnUntilTick
+                reviveInvulnUntilTick,
+                favorites
         );
     }
 }

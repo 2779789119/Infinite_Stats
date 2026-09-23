@@ -22,6 +22,7 @@ public class PlayerStats {
     private long lastReviveTime = 0;
     private long reviveInvulnUntilTick = 0;
     private float currentMana = 0;
+    private float shieldAbsorption = 0;
 
     // 使用 Map 存储属性点数 - 支持动态属性发现
     // statId → points
@@ -145,8 +146,10 @@ public class PlayerStats {
      */
     public void recalculateAvailablePoints() {
         long totalEarned = (level - 1) * (long) Config.POINTS_PER_LEVEL.get();
-        long totalAllocated = allocatedPoints.values().stream().mapToLong(Long::longValue).sum();
-        this.availablePoints = totalEarned - totalAllocated;
+        long totalAllocated = getTotalAllocatedPoints();
+        long upgrades = (long) furnaceData.getSpeedLevel() * Config.FURNACE_SPEED_COST.get()
+                + (getCraftingMultiplier() - 1) * Config.CRAFTING_MULTIPLIER_COST.get();
+        this.availablePoints = totalEarned - totalAllocated - upgrades;
     }
 
     // ========== 复活 ==========
@@ -180,6 +183,14 @@ public class PlayerStats {
 
     public float getMaxMana() {
         return getStatValue("max_mana");
+    }
+
+    public float getShieldAbsorption() {
+        return shieldAbsorption;
+    }
+
+    public void setShieldAbsorption(float value) {
+        shieldAbsorption = Math.max(0, value);
     }
 
     // ========== 被动经验计数器 ==========
@@ -458,10 +469,10 @@ public class PlayerStats {
      * 重置所有属性点
      */
     public void resetAllPoints() {
-        long totalAllocated = allocatedPoints.values().stream().mapToLong(Long::longValue).sum();
+        long totalAllocated = getTotalAllocatedPoints();
         allocatedPoints.clear();
         availablePoints += totalAllocated;
-        clearAllProvided();
+        // 保留提供记录，供各处理器在下一 tick 撤销旧能力。
         invalidateCache();
     }
 
@@ -471,11 +482,8 @@ public class PlayerStats {
     public void resetStat(StatType stat) {
         long points = allocatedPoints.getOrDefault(stat.getId(), 0L);
         if (points != 0) {
-            availablePoints += points; // 负数时 also adjusts availablePoints
+            availablePoints += Math.abs(points);
             allocatedPoints.remove(stat.getId());
-            if (stat.isToggle()) {
-                providedAbilities.remove(stat.getId());
-            }
             invalidateCache();
         }
     }
@@ -519,7 +527,7 @@ public class PlayerStats {
      * 获取所有已分配属性的总点数
      */
     public long getTotalAllocatedPoints() {
-        return allocatedPoints.values().stream().mapToLong(Long::longValue).sum();
+        return allocatedPoints.values().stream().mapToLong(points -> Math.abs(points)).sum();
     }
 
     /**
@@ -530,7 +538,7 @@ public class PlayerStats {
         for (Map.Entry<String, Long> entry : allocatedPoints.entrySet()) {
             StatType stat = StatType.fromId(entry.getKey());
             if (stat != null && stat.getCategory() == category) {
-                total += entry.getValue();
+                total += Math.abs(entry.getValue());
             }
         }
         return total;
@@ -568,6 +576,7 @@ public class PlayerStats {
         tag.putLong("lastReviveTime", lastReviveTime);
         tag.putLong("reviveInvulnUntilTick", reviveInvulnUntilTick);
         tag.putFloat("currentMana", currentMana);
+        tag.putFloat("shieldAbsorption", shieldAbsorption);
 
         // 使用 ID 格式存储属性点数（支持负值）
         ListTag pointsList = new ListTag();
@@ -635,6 +644,7 @@ public class PlayerStats {
         lastReviveTime = tag.getLong("lastReviveTime");
         reviveInvulnUntilTick = tag.getLong("reviveInvulnUntilTick");
         currentMana = tag.getFloat("currentMana");
+        shieldAbsorption = tag.contains("shieldAbsorption") ? tag.getFloat("shieldAbsorption") : -1;
 
         // 重置所有属性点
         allocatedPoints.clear();
@@ -690,7 +700,8 @@ public class PlayerStats {
         if (tag.contains("favorites")) {
             ListTag favList = tag.getList("favorites", Tag.TAG_COMPOUND);
             for (int i = 0; i < favList.size(); i++) {
-                favorites.add(favList.getCompound(i).getString("id"));
+                String id = favList.getCompound(i).getString("id");
+                if (StatType.fromId(id) != null) favorites.add(id);
             }
         }
 
@@ -724,6 +735,8 @@ public class PlayerStats {
         this.waypoints.putAll(other.waypoints);
         this.furnaceData.copyFrom(other.furnaceData);
         this.craftingMultiplier = other.craftingMultiplier;
+        this.favorites.clear();
+        this.favorites.addAll(other.favorites);
         invalidateCache();
     }
 
@@ -738,7 +751,8 @@ public class PlayerStats {
                 buffUseBlacklist,
                 new HashSet<>(buffFilterList),
                 new HashMap<>(waypoints),
-                reviveInvulnUntilTick
+                reviveInvulnUntilTick,
+                new HashSet<>(favorites)
         );
     }
 
@@ -760,6 +774,8 @@ public class PlayerStats {
         this.buffFilterList.addAll(snapshot.buffFilterList);
         this.waypoints.clear();
         this.waypoints.putAll(snapshot.waypoints);
+        this.favorites.clear();
+        this.favorites.addAll(snapshot.favorites);
         invalidateCache();
     }
 
@@ -777,12 +793,13 @@ public class PlayerStats {
         public final Set<String> buffFilterList;
         public final Map<String, Waypoint> waypoints;
         public final long reviveInvulnUntilTick;
+        public final Set<String> favorites;
 
         public StatsSnapshot(long level, long experience, long availablePoints,
                 long lastReviveTime, float currentMana, int passiveTickCounter,
                 Map<String, Long> allocatedPoints,
                 boolean buffUseBlacklist, Set<String> buffFilterList,
-                Map<String, Waypoint> waypoints, long reviveInvulnUntilTick) {
+                Map<String, Waypoint> waypoints, long reviveInvulnUntilTick, Set<String> favorites) {
             this.level = level;
             this.experience = experience;
             this.availablePoints = availablePoints;
@@ -794,6 +811,7 @@ public class PlayerStats {
             this.buffFilterList = buffFilterList;
             this.waypoints = waypoints;
             this.reviveInvulnUntilTick = reviveInvulnUntilTick;
+            this.favorites = favorites;
         }
     }
 }

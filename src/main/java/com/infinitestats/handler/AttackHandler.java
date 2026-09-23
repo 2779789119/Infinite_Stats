@@ -9,6 +9,9 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.CombatRules;
+import net.minecraft.tags.DamageTypeTags;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.damagesource.DamageType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
@@ -37,8 +40,11 @@ public class AttackHandler implements StatEffectHandler {
      * 触发 StatEventHandler 的玩家攻击逻辑造成递归与无限循环。
      */
     public static boolean isDirectDamageSource(DamageSource src) {
-        return "infinite_stats.direct_damage".equals(src.getMsgId());
+        return src.is(DIRECT_DAMAGE);
     }
+
+    public static final TagKey<DamageType> MAGIC_DAMAGE = TagKey.create(
+            Registries.DAMAGE_TYPE, new ResourceLocation("infinitestats", "magic"));
 
     @Override
     public String getId() {
@@ -93,9 +99,27 @@ public class AttackHandler implements StatEffectHandler {
     /**
      * 计算护甲穿透增伤
      */
-    public static float calculatePenetrationBonus(PlayerStats stats) {
-        float penetration = stats.getStatValue(StatType.fromId("armor_penetration"));
-        return penetration > 0 ? 1.0f + penetration * 0.5f : 1.0f;
+    public static float applyArmorPenetration(PlayerStats stats, LivingEntity target,
+                                             DamageSource source, float amount) {
+        float penetration = Math.min(1, Math.max(0, stats.getStatValue("armor_penetration")));
+        if (penetration == 0 || amount <= 0 || source.is(DamageTypeTags.BYPASSES_ARMOR)) return amount;
+        return compensateArmor(amount, target.getArmorValue(),
+                (float) target.getAttributeValue(Attributes.ARMOR_TOUGHNESS), penetration);
+    }
+
+    public static float compensateArmor(float amount, float armor, float toughness, float penetration) {
+        if (armor <= 0 || penetration <= 0 || !Float.isFinite(amount)) return amount;
+        float desired = CombatRules.getDamageAfterAbsorb(amount,
+                armor * (1 - Math.min(1, penetration)), toughness);
+        // LivingHurt 在原版护甲结算之前发生，反求输入以得到穿透后的实际伤害。
+        float low = amount;
+        float high = Math.max(amount, desired * 5);
+        for (int i = 0; i < 32; i++) {
+            float mid = low + (high - low) * 0.5f;
+            if (CombatRules.getDamageAfterAbsorb(mid, armor, toughness) < desired) low = mid;
+            else high = mid;
+        }
+        return high;
     }
 
     /**
@@ -109,8 +133,8 @@ public class AttackHandler implements StatEffectHandler {
     /**
      * 计算魔法伤害增伤
      */
-    public static float calculateMagicBonus(PlayerStats stats, boolean isIndirect) {
-        if (!isIndirect) return 1.0f;
+    public static float calculateMagicBonus(PlayerStats stats, boolean isMagic) {
+        if (!isMagic) return 1.0f;
         return 1.0f + stats.getStatValue(StatType.fromId("magic_damage"));
     }
 
@@ -194,17 +218,9 @@ public class AttackHandler implements StatEffectHandler {
      */
     private static void applyDirectDamage(ServerPlayer player, LivingEntity target, float amount) {
         if (amount <= 0) return;
-        DamageSource src;
-        var holder = player.level().registryAccess().registryOrThrow(Registries.DAMAGE_TYPE).getHolder(DIRECT_DAMAGE);
-        if (holder.isPresent()) {
-            // directEntity 与 causingEntity 都设为玩家，确保 die() 把击杀归属玩家
-            // （掉落物、成就/进度、FTB kill 任务、L2Hostility 难度判定均按玩家击杀处理）
-            src = new DamageSource(holder.get(), player, player);
-        } else {
-            // 兜底：极端情况下数据注册表未加载该伤害类型时，退化为普通玩家攻击
-            // （仍能正确归属掉落与成就，只是不再无视护甲）
-            src = player.level().damageSources().playerAttack(player);
-        }
+        var holder = player.level().registryAccess().registryOrThrow(Registries.DAMAGE_TYPE)
+                .getHolderOrThrow(DIRECT_DAMAGE);
+        DamageSource src = new DamageSource(holder, player, player);
         target.hurt(src, amount);
     }
 

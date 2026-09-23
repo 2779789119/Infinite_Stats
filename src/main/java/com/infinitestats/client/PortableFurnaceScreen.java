@@ -2,7 +2,6 @@ package com.infinitestats.client;
 
 import com.infinitestats.furnace.PortableFurnaceMenu;
 import com.infinitestats.network.NetworkHandler;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
@@ -11,173 +10,140 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.Slot;
 
+/** 熔炼与背包在左侧，仓库、加速和网络操作集中在右侧。 */
 public class PortableFurnaceScreen extends AbstractContainerScreen<PortableFurnaceMenu> {
-
-    @Override
-    public boolean isPauseScreen() {
-        // 非暂停界面：打开熔炉时世界继续运行，冶炼进度与火焰动画实时更新，
-        // 否则单人模式下世界被冻结，火焰不再变化、进度条不动，看起来像“没在烧”。
-        return false;
-    }
-
-    private static final ResourceLocation FURNACE_LOCATION =
+    private static final ResourceLocation FURNACE =
             new ResourceLocation("minecraft", "textures/gui/container/furnace.png");
-
-    private Button speedUpButton;
-    private Button speedDownButton;
-    private Button fuelBufferButton;
-    private Button productBufferButton;
-    private Button priorityButton;
+    private Button speedUp;
+    private Button speedDown;
+    private Button collect;
+    private Button queue;
+    private Button products;
 
     public PortableFurnaceScreen(PortableFurnaceMenu menu, Inventory inv, Component title) {
         super(menu, inv, title);
-        this.imageWidth = 176;
-        this.imageHeight = 166; // 与原版熔炉一致
+        imageWidth = 300;
+        imageHeight = 222;
+        inventoryLabelY = 124;
+    }
+
+    @Override
+    public boolean isPauseScreen() { return false; }
+
+    private Component text(String key, Object... args) {
+        return Component.translatable("gui.infinitestats.furnace." + key, args);
+    }
+
+    private Button button(Component label, int x, int y, int width, Runnable action, Component tip) {
+        return addRenderableWidget(Button.builder(label, b -> action.run())
+                .bounds(leftPos + x, topPos + y, width, 18)
+                .tooltip(Tooltip.create(tip)).build());
     }
 
     @Override
     protected void init() {
         super.init();
-        // 加快速度（消耗点数）—— 顶部右侧两个并排按钮（原版画风）
-        this.speedUpButton = this.addRenderableWidget(Button.builder(
-                        Component.literal("+"),
-                        b -> onSpeed(true))
-                .pos(leftPos + 140, topPos + 6).size(16, 16).build());
-        this.speedDownButton = this.addRenderableWidget(Button.builder(
-                        Component.literal("-"),
-                        b -> onSpeed(false))
-                .pos(leftPos + 158, topPos + 6).size(16, 16).build());
-
-        // 矿石储备箱 —— 点击打开类似箱子的 GUI，输入槽为空时自动取下一种矿石
-        this.fuelBufferButton = this.addRenderableWidget(Button.builder(
-                        Component.translatable("gui.infinitestats.furnace.fuel_buffer"),
-                        b -> openFuelBuffer())
-                .pos(leftPos + 138, topPos + 24).size(36, 16).build());
-
-        // 成品储备箱 —— 点击打开类似箱子的 GUI，熔炉输出槽产出的成品会自动转入其中
-        this.productBufferButton = this.addRenderableWidget(Button.builder(
-                        Component.translatable("gui.infinitestats.furnace.product_buffer"),
-                        b -> openProductBuffer())
-                .pos(leftPos + 138, topPos + 42).size(36, 16).build());
-
-        // 矿石优先顺序 —— 点击打开设置界面，指定自动放入输入槽时哪些矿石优先
-        this.priorityButton = this.addRenderableWidget(Button.builder(
-                        Component.translatable("gui.infinitestats.furnace.ore_priority"),
-                        b -> openOrePriority())
-                .pos(leftPos + 138, topPos + 60).size(36, 16)
-                .tooltip(Tooltip.create(Component.translatable("gui.infinitestats.furnace.ore_priority_tip")))
-                .build());
-
-        // RS 联动按钮（需持有 RS 无线终端）：网络取矿 / 网络取燃料 / 成品存网 —— 放在左侧空白区
-        int rx = leftPos + 6;
-        int ry = topPos + 18;
-        this.addRenderableWidget(Button.builder(
-                        Component.translatable("gui.infinitestats.furnace.rs_ore"),
-                        b -> NetworkHandler.CHANNEL.sendToServer(
-                                new NetworkHandler.FurnaceRSRefillOrePacket()))
-                .pos(rx, ry).size(36, 16)
-                .tooltip(Tooltip.create(Component.translatable("gui.infinitestats.furnace.rs_ore_tip")))
-                .build());
-        this.addRenderableWidget(Button.builder(
-                        Component.translatable("gui.infinitestats.furnace.rs_fuel"),
-                        b -> NetworkHandler.CHANNEL.sendToServer(
-                                new NetworkHandler.FurnaceRSRefillFuelPacket()))
-                .pos(rx, ry + 18).size(36, 16)
-                .tooltip(Tooltip.create(Component.translatable("gui.infinitestats.furnace.rs_fuel_tip")))
-                .build());
-        this.addRenderableWidget(Button.builder(
-                        Component.translatable("gui.infinitestats.furnace.rs_deposit"),
-                        b -> NetworkHandler.CHANNEL.sendToServer(
-                                new NetworkHandler.FurnaceRSDepositPacket()))
-                .pos(rx, ry + 36).size(36, 16)
-                .tooltip(Tooltip.create(Component.translatable("gui.infinitestats.furnace.rs_deposit_tip")))
-                .build());
+        collect = button(text("collect"), 8, 102, 160, () -> {
+            if (minecraft != null && minecraft.gameMode != null) {
+                minecraft.gameMode.handleInventoryButtonClick(menu.containerId, PortableFurnaceMenu.COLLECT_PRODUCTS);
+            }
+        }, text("collect_tip"));
+        queue = button(text("fuel_buffer"), 184, 20, 106,
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceFuelOpenPacket()), text("fuel_buffer_tip"));
+        products = button(text("product_buffer"), 184, 42, 106,
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceProductOpenPacket()), text("product_buffer_tip"));
+        button(text("ore_priority"), 184, 64, 106,
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceOrePriorityOpenPacket()), text("ore_priority_tip"));
+        speedDown = button(Component.literal("-"), 184, 108, 24,
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceSpeedPacket(false)), text("refund_tip", menu.getSpeedCost()));
+        speedUp = button(Component.literal("+"), 266, 108, 24,
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceSpeedPacket(true)), text("cost_tip", menu.getSpeedCost()));
+        button(text("network_ore"), 184, 154, 106,
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceRSRefillOrePacket()), text("rs_ore_tip"));
+        button(text("network_fuel"), 184, 175, 106,
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceRSRefillFuelPacket()), text("rs_fuel_tip"));
+        button(text("network_deposit"), 184, 196, 106,
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceRSDepositPacket()), text("rs_deposit_tip"));
     }
 
-    private void openFuelBuffer() {
-        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceFuelOpenPacket());
+    @Override
+    protected void containerTick() {
+        super.containerTick();
+        speedUp.active = menu.canUpgrade();
+        speedDown.active = menu.getSpeedLevel() > 0;
+        speedUp.setTooltip(Tooltip.create(text(menu.canUpgrade() ? "cost_tip" : "upgrade_unavailable", menu.getSpeedCost())));
+        speedDown.setTooltip(Tooltip.create(text("refund_tip", menu.getSpeedCost())));
+        collect.active = menu.getProductSlots() > 0 || menu.getBulkAmount(2) > 0;
+        queue.setMessage(text("queue_count", menu.getQueuedSlots()));
+        products.setMessage(text("products_count", menu.getProductSlots()));
     }
 
-    private void openProductBuffer() {
-        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceProductOpenPacket());
-    }
-
-    private void openOrePriority() {
-        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceOrePriorityOpenPacket());
-    }
-
-    private void onSpeed(boolean increase) {
-        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceSpeedPacket(increase));
+    @Override
+    protected java.util.List<Component> getTooltipFromContainerItem(net.minecraft.world.item.ItemStack stack) {
+        return BulkCountRenderer.withAmount(super.getTooltipFromContainerItem(stack), menu, hoveredSlot);
     }
 
     @Override
     protected void renderBg(GuiGraphics gfx, float partialTick, int mouseX, int mouseY) {
-        int x = leftPos;
-        int y = topPos;
-
-        // 直接 blit 完整 furnace.png 作为背景（高度 166，与原版一致）
-        gfx.blit(FURNACE_LOCATION, x, y, 0, 0, imageWidth, imageHeight);
-
-        // 火焰（燃料燃烧进度）—— 原版 FurnaceScreen 位置
+        gfx.fill(leftPos, topPos, leftPos + imageWidth, topPos + imageHeight, 0xFF373737);
+        gfx.fill(leftPos + 1, topPos + 1, leftPos + imageWidth - 1, topPos + imageHeight - 1, 0xFFFFFFFF);
+        gfx.fill(leftPos + 3, topPos + 3, leftPos + imageWidth - 3, topPos + imageHeight - 3, 0xFFC6C6C6);
+        gfx.fill(leftPos + 176, topPos + 7, leftPos + 177, topPos + imageHeight - 7, 0xFF909090);
+        for (Slot slot : menu.slots) {
+            int x = leftPos + slot.x;
+            int y = topPos + slot.y;
+            gfx.fill(x - 1, y - 1, x + 17, y + 17, 0xFFFFFFFF);
+            gfx.fill(x - 1, y - 1, x + 16, y + 16, 0xFF373737);
+            gfx.fill(x, y, x + 16, y + 16, 0xFF8B8B8B);
+        }
+        gfx.blit(FURNACE, leftPos + 78, topPos + 49, 79, 34, 24, 17);
+        int progress = Mth.clamp((int) (24 * menu.getCookProgress(0)), 0, 24);
+        if (progress > 0) gfx.blit(FURNACE, leftPos + 78, topPos + 49, 176, 14, progress, 16);
+        gfx.blit(FURNACE, leftPos + 47, topPos + 50, 56, 36, 14, 14);
         if (menu.isLit()) {
-            int l = (int) (14 * menu.getLitProgress());
-            // 轻微抖动，强调“正在燃烧”，避免燃料耐久长时火焰高度几乎不变而误以为没在烧
-            long tick = Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getGameTime() : 0;
-            int flicker = (tick % 8 < 4) ? 0 : 1;
-            l = Mth.clamp(l + flicker, 1, 14);
-            if (l > 0) {
-                gfx.blit(FURNACE_LOCATION, x + 56, y + 36 + 12 - l, 176, 12 - l, 14, l + 1);
-            }
+            int flame = Mth.clamp((int) (14 * menu.getLitProgress()), 1, 14);
+            gfx.blit(FURNACE, leftPos + 47, topPos + 64 - flame, 176, 14 - flame, 14, flame);
         }
+    }
 
-        // 进度箭头 —— 原版 FurnaceScreen 位置（单输入）
-        int i = (int) (24 * menu.getCookProgress(0));
-        if (i > 0) {
-            gfx.blit(FURNACE_LOCATION, x + 79, y + 34, 176, 14, i + 1, 16);
-        }
+    private void label(GuiGraphics gfx, Component label, int x, int y, int width, int color) {
+        gfx.drawString(font, font.plainSubstrByWidth(label.getString(), width), x, y, color, false);
     }
 
     @Override
     protected void renderLabels(GuiGraphics gfx, int mouseX, int mouseY) {
-        // 原版标题
-        gfx.drawString(font, Component.translatable("container.furnace"), 8, 6, 4210752, false);
-        // 原版物品栏标签
-        gfx.drawString(font, Component.translatable("container.inventory"), 8, this.imageHeight - 96 + 2, 4210752, false);
-
-        // 加速状态（一行紧凑显示，放在标题右侧、按钮左侧）
-        int spd = menu.getSpeedMultiplier();
-        int lvl = menu.getSpeedLevel();
-        int cost = menu.getSpeedCost();
-        String status = "x" + spd + "  Lv." + lvl + "  " + cost + "点/级";
-        gfx.drawString(font, Component.literal(status), 40, 6, 0x404040, false);
+        label(gfx, title, 8, 8, 160, 0x404040);
+        label(gfx, text("input"), 8, 35, 35, 0x404040);
+        label(gfx, text("fuel"), 8, 71, 35, 0x404040);
+        label(gfx, text("output"), 105, 34, 60, 0x404040);
+        label(gfx, text("auto_store"), 77, 73, 93, 0x666666);
+        int status = menu.getWorkStatus();
+        String state = switch (status) {
+            case 1 -> "working";
+            case 2 -> "no_fuel";
+            case 3 -> "invalid_input";
+            case 4 -> "output_full";
+            default -> "idle";
+        };
+        label(gfx, text("state." + state), 8, 90, 160, status == 1 ? 0x25652C : status > 1 ? 0x963A1D : 0x555555);
+        label(gfx, playerInventoryTitle, 8, inventoryLabelY, 160, 0x404040);
+        label(gfx, text("storage"), 184, 8, 106, 0x404040);
+        label(gfx, text("speed", menu.getSpeedMultiplier()), 184, 94, 106, 0x404040);
+        label(gfx, text("level", menu.getSpeedLevel()), 212, 113, 50, 0x404040);
+        label(gfx, text("cost", menu.getSpeedCost()), 184, 130, 106, 0x666666);
+        label(gfx, text("network"), 184, 143, 106, 0x404040);
+        BulkCountRenderer.render(gfx, font, menu);
     }
 
     @Override
-    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        super.render(graphics, mouseX, mouseY, partialTick);
-
-        // 按钮悬停时显示详细 tooltip
-        if (speedUpButton != null && speedUpButton.isMouseOver(mouseX, mouseY)) {
-            graphics.renderTooltip(font,
-                    Component.translatable("gui.infinitestats.furnace.cost_tip", menu.getSpeedCost()),
-                    mouseX, mouseY);
-        } else if (speedDownButton != null && speedDownButton.isMouseOver(mouseX, mouseY)) {
-            graphics.renderTooltip(font,
-                    Component.translatable("gui.infinitestats.furnace.refund_tip", menu.getSpeedCost()),
-                    mouseX, mouseY);
-        } else if (fuelBufferButton != null && fuelBufferButton.isMouseOver(mouseX, mouseY)) {
-            graphics.renderTooltip(font,
-                    Component.translatable("gui.infinitestats.furnace.fuel_buffer_tip"),
-                    mouseX, mouseY);
-        } else if (productBufferButton != null && productBufferButton.isMouseOver(mouseX, mouseY)) {
-            graphics.renderTooltip(font,
-                    Component.translatable("gui.infinitestats.furnace.product_buffer_tip"),
-                    mouseX, mouseY);
-        } else if (priorityButton != null && priorityButton.isMouseOver(mouseX, mouseY)) {
-            graphics.renderTooltip(font,
-                    Component.translatable("gui.infinitestats.furnace.ore_priority_tip"),
-                    mouseX, mouseY);
+    public void render(GuiGraphics gfx, int mouseX, int mouseY, float partialTick) {
+        renderBackground(gfx);
+        super.render(gfx, mouseX, mouseY, partialTick);
+        renderTooltip(gfx, mouseX, mouseY);
+        if (isHovering(8, 90, 160, 10, mouseX, mouseY)) {
+            gfx.renderTooltip(font, text("workflow_tip", menu.getQueuedSlots(), menu.getProductSlots()), mouseX, mouseY);
         }
     }
 }

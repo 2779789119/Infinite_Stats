@@ -13,7 +13,6 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 
@@ -22,9 +21,9 @@ import net.minecraft.world.item.ItemStack;
  * 熔炉输出槽一旦产出成品，会被自动转入此箱（见 PlayerFurnaceData.pushOutputToBuffer），
  * 玩家可在此统一收集成品。
  *
- * 格子布局 3 行 × 9 列（与外部箱子 UI 一致），每个槽位为普通堆叠上限（64）。
+ * 格子布局 3 行 × 9 列，数量通过 BulkStorageMenu 单独同步。
  */
-public class FurnaceProductBufferMenu extends AbstractContainerMenu {
+public class FurnaceProductBufferMenu extends BulkStorageMenu {
 
     /** 储备箱行 / 列数（与外部箱子一致）。 */
     public static final int ROWS = 3;
@@ -49,7 +48,9 @@ public class FurnaceProductBufferMenu extends AbstractContainerMenu {
         this.player = inv.player;
         this.furnaceData = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
                 .orElseGet(PlayerStats::new).getFurnaceData();
-        this.buffer = new ProductBufferContainer(furnaceData.getOutputBuffer(), furnaceData.getOutputAmounts());
+        this.buffer = new ProductBufferContainer(furnaceData.getOutputBuffer(), furnaceData.getOutputAmounts(), player.level().isClientSide());
+
+        trackBulkAmounts(furnaceData.getOutputAmounts());
 
         // 成品仓格子（3 行 × 9 列），接受任何物品，单格堆叠无上限
         for (int row = 0; row < ROWS; row++) {
@@ -74,48 +75,18 @@ public class FurnaceProductBufferMenu extends AbstractContainerMenu {
     }
 
     @Override
-    public ItemStack quickMoveStack(Player player, int index) {
-        Slot slot = this.slots.get(index);
-        if (slot == null || !slot.hasItem()) return ItemStack.EMPTY;
-
-        if (index < BUFFER_SLOTS) {
-            // 成品仓 -> 玩家背包：把该格物品尽量分到背包格子（每格上限 64）
-            ItemStack buf = slot.getItem().copy();
-            int total = buf.getCount();
-            if (total <= 0) return ItemStack.EMPTY;
-            for (int i = BUFFER_SLOTS; i < this.slots.size() && !buf.isEmpty(); i++) {
-                Slot ps = this.slots.get(i);
-                if (!ps.mayPlace(buf)) continue;
-                ItemStack cur = ps.getItem();
-                int max = Math.min(64, ps.getMaxStackSize());
-                if (cur.isEmpty()) {
-                    int put = Math.min(max, buf.getCount());
-                    ps.set(buf.split(put));
-                } else if (ItemStack.isSameItemSameTags(cur, buf)) {
-                    int space = max - cur.getCount();
-                    if (space > 0) {
-                        int put = Math.min(space, buf.getCount());
-                        cur.grow(put);
-                        buf.shrink(put);
-                        ps.set(cur);
-                    }
-                }
-            }
-            int taken = total - buf.getCount();
-            if (taken > 0) slot.remove(taken);
-        } else {
-            // 玩家背包 -> 成品仓（接受所有物品，单格堆叠无上限）
-            ItemStack src = slot.getItem().copy();
-            if (src.isEmpty()) return ItemStack.EMPTY;
-            ItemStack left = buffer.deposit(src);
-            int taken = src.getCount() - left.getCount();
-            if (taken > 0) slot.remove(taken);
-        }
-        return ItemStack.EMPTY;
+    public boolean stillValid(Player player) {
+        return true;
     }
 
     @Override
-    public boolean stillValid(Player player) {
+    public boolean clickMenuButton(Player player, int id) {
+        if (player != this.player || player.level().isClientSide()
+                || id != PortableFurnaceMenu.COLLECT_PRODUCTS) return false;
+        long collected = furnaceData.collectProducts(player.getInventory());
+        player.displayClientMessage(Component.translatable(collected > 0
+                ? "gui.infinitestats.furnace.collected" : "gui.infinitestats.furnace.collect_none", collected), true);
+        broadcastChanges();
         return true;
     }
 
@@ -135,10 +106,12 @@ public class FurnaceProductBufferMenu extends AbstractContainerMenu {
     private static class ProductBufferContainer implements Container {
         private final NonNullList<ItemStack> list;
         private final long[] amounts;
+        private final boolean clientSide;
 
-        ProductBufferContainer(NonNullList<ItemStack> list, long[] amounts) {
+        ProductBufferContainer(NonNullList<ItemStack> list, long[] amounts, boolean clientSide) {
             this.list = list;
             this.amounts = amounts;
+            this.clientSide = clientSide;
         }
 
         @Override
@@ -159,7 +132,7 @@ public class FurnaceProductBufferMenu extends AbstractContainerMenu {
             ItemStack t = list.get(i);
             if (t.isEmpty()) return ItemStack.EMPTY;
             ItemStack s = t.copy();
-            PlayerFurnaceData.rawSetCount(s, (int) Math.min(amounts[i], PlayerFurnaceData.UNBOUNDED));
+            s.setCount(1);
             return s;
         }
 
@@ -191,6 +164,10 @@ public class FurnaceProductBufferMenu extends AbstractContainerMenu {
 
         @Override
         public void setItem(int i, ItemStack stack) {
+            if (clientSide) {
+                list.set(i, stack.copyWithCount(1));
+                return;
+            }
             if (stack.isEmpty()) {
                 list.set(i, ItemStack.EMPTY);
                 amounts[i] = 0;

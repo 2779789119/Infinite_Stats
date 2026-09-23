@@ -38,7 +38,7 @@ public class EmcPlayerData {
      */
     public void addEmc(long amount) {
         if (amount > 0) {
-            this.emcBalance += amount;
+            this.emcBalance += Math.min(amount, Long.MAX_VALUE - this.emcBalance);
         }
     }
 
@@ -75,7 +75,7 @@ public class EmcPlayerData {
     public void learnItem(ResourceLocation itemId, CompoundTag nbt) {
         learnedItems.add(itemId);
         if (nbt != null && !nbt.isEmpty()) {
-            itemNbt.put(itemId, nbt);
+            itemNbt.put(itemId, nbt.copy());
         }
     }
 
@@ -95,7 +95,7 @@ public class EmcPlayerData {
     public long learnAndConvert(ResourceLocation itemId, long emcValue, CompoundTag nbt) {
         learnedItems.add(itemId);
         if (nbt != null && !nbt.isEmpty()) {
-            itemNbt.put(itemId, nbt);
+            itemNbt.put(itemId, nbt.copy());
         }
         addEmc(emcValue);
         return emcValue;
@@ -144,7 +144,7 @@ public class EmcPlayerData {
     }
 
     public void deserializeNBT(CompoundTag tag) {
-        emcBalance = tag.getLong("emcBalance");
+        emcBalance = Math.max(0, tag.getLong("emcBalance"));
         learnedItems.clear();
         itemNbt.clear();
 

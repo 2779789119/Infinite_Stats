@@ -62,6 +62,7 @@ public class MobilityHandler implements StatEffectHandler {
      * FLY toggle ON → 始终确保 mayfly=true；OFF → 仅当由本模组提供时才关闭
      */
     private void updateFlight(ServerPlayer player, PlayerStats stats) {
+        updateFlightSpeed(player, stats);
         if (player.isCreative() || player.isSpectator()) return;
 
         boolean wantFly = stats.isToggleActive("fly");
@@ -78,8 +79,27 @@ public class MobilityHandler implements StatEffectHandler {
             player.onUpdateAbilities();
         }
 
-        // fly_speed 已映射到 minecraft:generic.flying_speed attribute，
-        // 由 AttributeHandler 自动处理，此处无需额外代码
+
+    }
+
+    private void updateFlightSpeed(ServerPlayer player, PlayerStats stats) {
+        float bonus = stats.getStatValue("fly_speed");
+        String key = "infinitestats.base_fly_speed";
+        var data = player.getPersistentData();
+        if (bonus != 0) {
+            if (!data.contains(key)) data.putFloat(key, player.getAbilities().getFlyingSpeed());
+            float speed = Math.max(0, data.getFloat(key) * (1.0f + bonus));
+            if (player.getAbilities().getFlyingSpeed() != speed) {
+                player.getAbilities().setFlyingSpeed(speed);
+                player.onUpdateAbilities();
+            }
+            stats.setProviding("fly_speed", true);
+        } else if (stats.isProviding("fly_speed")) {
+            player.getAbilities().setFlyingSpeed(data.contains(key) ? data.getFloat(key) : 0.05f);
+            data.remove(key);
+            stats.setProviding("fly_speed", false);
+            player.onUpdateAbilities();
+        }
     }
 
     /**

@@ -76,6 +76,8 @@ public final class EmcDatabase {
      * @param server MinecraftServer 实例（用于获取 RecipeManager）
      */
     public static void load(MinecraftServer server) {
+        CUSTOM_EMC.clear();
+        loadCustomPrices();
         EMC_MAP.clear();
         MANUAL_EMC.clear();
         AFTER_OVERRIDE_EMC.clear();
@@ -716,7 +718,7 @@ public final class EmcDatabase {
     // ==================== 查询接口 ====================
 
     public static long getEmc(ItemStack stack) {
-        if (stack.isEmpty()) return 0;
+        if (!Config.EMC_ENABLED.get() || stack.isEmpty()) return 0;
 
         ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
         // 自定义定价优先级最高（覆盖 ProjectE 和自动计算）
@@ -741,6 +743,15 @@ public final class EmcDatabase {
             if (fallback > 0) emc = fallback;
         }
         return emc;
+    }
+
+    public static long getSellValue(ItemStack stack, int count) {
+        if (count <= 0) return 0;
+        return java.math.BigDecimal.valueOf(getEmc(stack))
+                .multiply(java.math.BigDecimal.valueOf(count))
+                .multiply(java.math.BigDecimal.ONE.subtract(java.math.BigDecimal.valueOf(Config.EMC_LOSS_RATE.get())))
+                .setScale(0, java.math.RoundingMode.FLOOR)
+                .min(java.math.BigDecimal.valueOf(Long.MAX_VALUE)).longValue();
     }
 
     public static boolean hasEmc(ItemStack stack) {
@@ -796,11 +807,49 @@ public final class EmcDatabase {
     // ==================== 运行时定价 ====================
 
     /** 设置自定义 EMC 值（0 表示删除） */
-    public static void setCustomEmc(ResourceLocation id, long value) {
-        if (value <= 0) {
-            CUSTOM_EMC.remove(id);
-        } else {
-            CUSTOM_EMC.put(id, value);
+    private static Path customPricePath() {
+        return FMLPaths.CONFIGDIR.get().resolve("infinitestats").resolve("custom_emc_values.json");
+    }
+
+    private static void loadCustomPrices() {
+        Path path = customPricePath();
+        if (!Files.isRegularFile(path)) return;
+        try (Reader reader = Files.newBufferedReader(path)) {
+            JsonObject values = GSON.fromJson(reader, JsonObject.class);
+            if (values == null) return;
+            for (var entry : values.entrySet()) {
+                ResourceLocation id = ResourceLocation.tryParse(entry.getKey());
+                long value = entry.getValue().getAsLong();
+                if (id != null && value > 0) CUSTOM_EMC.put(id, value);
+            }
+        } catch (IOException | RuntimeException e) {
+            throw new IllegalStateException("Cannot load custom EMC prices: " + path, e);
+        }
+    }
+
+    public static boolean setCustomEmc(ResourceLocation id, long value) {
+        Map<ResourceLocation, Long> updated = new LinkedHashMap<>(CUSTOM_EMC);
+        if (value <= 0) updated.remove(id);
+        else updated.put(id, value);
+        JsonObject json = new JsonObject();
+        updated.forEach((key, price) -> json.addProperty(key.toString(), price));
+        Path path = customPricePath();
+        Path temp = path.resolveSibling(path.getFileName() + ".tmp");
+        try {
+            Files.createDirectories(path.getParent());
+            Files.writeString(temp, GSON.toJson(json), java.nio.charset.StandardCharsets.UTF_8);
+            try {
+                Files.move(temp, path, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(temp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            CUSTOM_EMC.clear();
+            CUSTOM_EMC.putAll(updated);
+            return true;
+        } catch (IOException e) {
+            System.err.println("[InfiniteStats-EMC] Cannot save custom prices: " + e.getMessage());
+            return false;
         }
     }
 

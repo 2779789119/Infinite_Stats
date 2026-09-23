@@ -224,6 +224,9 @@ public final class StatType {
         for (Map.Entry<net.minecraft.resources.ResourceKey<Attribute>, Attribute> entry : ForgeRegistries.ATTRIBUTES.getEntries()) {
             ResourceLocation rl = entry.getKey().location();
             String attrName = rl.toString();
+            // 玩家不消费生物的追踪范围，避免删除后又作为外部属性出现。
+            if ("minecraft:generic.follow_range".equals(attrName)
+                    || "minecraft:generic.flying_speed".equals(attrName)) continue;
 
             // 跳过已覆盖的属性
             if (COVERED_ATTRIBUTES.contains(attrName)) continue;
@@ -534,7 +537,6 @@ public final class StatType {
                 .build(),
 
             create("fly_speed").category(StatCategory.MOBILITY)
-                .attribute("minecraft:generic.flying_speed")
                 .percentage()
                 .perPointValue(0.002f)
                 .build(),
@@ -549,11 +551,6 @@ public final class StatType {
 
             create("auto_step").category(StatCategory.MOBILITY)
                 .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
-                .build(),
-
-            create("follow_range").category(StatCategory.MOBILITY)
-                .attribute("minecraft:generic.follow_range")
-                .perPointValue(0.5f)
                 .build(),
 
             // ===== 功能属性 =====
@@ -638,10 +635,6 @@ public final class StatType {
                 .perPointValue(0.005f)
                 .build(),
 
-            create("teleport_distance").category(StatCategory.UTILITY)
-                .perPointValue(5.0f)
-                .build(),
-
             create("crafting_bonus").category(StatCategory.UTILITY)
                 .percentage()
                 .perPointValue(0.005f)
@@ -719,11 +712,6 @@ public final class StatType {
                 .perPointValue(0.03f)
                 .build(),
 
-            create("cooldown_reduction").category(StatCategory.MAGIC)
-                .percentage()
-                .perPointValue(0.003f)
-                .build(),
-
             create("mana_shield").category(StatCategory.MAGIC)
                 .percentage()
                 .perPointValue(0.01f)
@@ -732,11 +720,6 @@ public final class StatType {
             create("mana_steal").category(StatCategory.MAGIC)
                 .percentage()
                 .perPointValue(0.01f)
-                .build(),
-
-            create("spell_power").category(StatCategory.MAGIC)
-                .percentage()
-                .perPointValue(0.025f)
                 .build(),
 
             create("mana_on_kill").category(StatCategory.MAGIC)

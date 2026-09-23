@@ -29,6 +29,7 @@ import net.minecraftforge.event.entity.living.LivingDropsEvent;
 import net.minecraftforge.event.entity.living.LivingEntityUseItemEvent;
 import net.minecraftforge.event.entity.living.LivingEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
+import net.minecraftforge.event.entity.living.LivingDamageEvent;
 import net.minecraftforge.event.entity.living.MobEffectEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.level.BlockEvent;
@@ -194,17 +195,13 @@ public final class StatEventHandler {
                 boolean isFullAttack = player.getAttackStrengthScale(0.5f) > 0.9f;
                 amount *= AttackHandler.calculateCritMultiplier(player, stats, isFullAttack);
 
-                // 护甲穿透
-                amount *= AttackHandler.calculatePenetrationBonus(stats);
-
                 // 弹射物伤害
                 boolean isProjectile = event.getSource().getDirectEntity() instanceof net.minecraft.world.entity.projectile.Projectile;
                 amount *= AttackHandler.calculateProjectileBonus(stats, isProjectile);
 
                 // 魔法伤害
-                boolean isIndirect = event.getSource().getEntity() != null
-                        && event.getSource().getEntity() != event.getSource().getDirectEntity();
-                amount *= AttackHandler.calculateMagicBonus(stats, isIndirect);
+                amount *= AttackHandler.calculateMagicBonus(stats,
+                        event.getSource().is(AttackHandler.MAGIC_DAMAGE));
 
                 event.setAmount(amount);
 
@@ -237,6 +234,9 @@ public final class StatEventHandler {
                 // 范围攻击：波及周围敌人
                 AttackHandler.applyScopeAttack(player, stats, event.getAmount(), event.getEntity());
 
+                event.setAmount(AttackHandler.applyArmorPenetration(stats, event.getEntity(),
+                        event.getSource(), event.getAmount()));
+
                 // 取消无敌帧：攻击非玩家实体时取消目标的受伤无敌帧，提高攻击频率
                 if (stats.isToggleActive("no_invincibility_frames")
                         && !(event.getEntity() instanceof ServerPlayer)) {
@@ -265,6 +265,9 @@ public final class StatEventHandler {
                     event.setCanceled(true);
                     return;
                 }
+
+                // 真实伤害遵循伤害类型的绕过效果标签，不再被本模组减伤或法力护盾削减。
+                if (event.getSource().is(net.minecraft.tags.DamageTypeTags.BYPASSES_EFFECTS)) return;
 
                 // 检查免疫
                 if (DefenseHandler.isImmune(stats, event.getSource(), hurtPlayer)) {
@@ -324,6 +327,14 @@ public final class StatEventHandler {
             // 这里就地捕获并打印真实堆栈，既保住服务器，也把根因暴露到控制台/日志。
             System.err.println("[infinitestats] StatEventHandler.onLivingHurt 抛出异常（已抑制，避免服务端崩溃）：");
             t.printStackTrace();
+        }
+    }
+
+    @SubscribeEvent(priority = EventPriority.LOWEST)
+    public static void onLivingDamage(LivingDamageEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(
+                    stats -> DefenseHandler.trackAbsorptionUse(player, stats));
         }
     }
 

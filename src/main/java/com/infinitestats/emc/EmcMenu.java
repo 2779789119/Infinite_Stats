@@ -1,6 +1,7 @@
 package com.infinitestats.emc;
 
 import com.infinitestats.InfiniteStats;
+import com.infinitestats.Config;
 import com.infinitestats.network.NetworkHandler;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
@@ -91,7 +92,13 @@ public class EmcMenu extends AbstractContainerMenu {
 
     @Override
     public boolean stillValid(Player player) {
-        return true;
+        return Config.EMC_ENABLED.get();
+    }
+
+    @Override
+    public void removed(Player player) {
+        super.removed(player);
+        if (!player.level().isClientSide()) clearContainer(player, learnContainer);
     }
 
     // ==================== 学习槽 ====================
@@ -134,7 +141,11 @@ public class EmcMenu extends AbstractContainerMenu {
 
         private void consumeAndLearn(ServerPlayer sp, ItemStack stack) {
             ResourceLocation itemId = BuiltInRegistries.ITEM.getKey(stack.getItem());
-            long emcValue = EmcDatabase.getEmc(stack);
+            if (!Config.EMC_ENABLED.get() || EmcDatabase.getEmc(stack) <= 0) {
+                super.set(stack);
+                return;
+            }
+            long emcValue = EmcDatabase.getSellValue(stack, stack.getCount());
             CompoundTag nbt = stack.getTag();
 
             sp.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {

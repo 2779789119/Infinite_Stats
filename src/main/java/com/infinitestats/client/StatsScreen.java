@@ -199,7 +199,6 @@ public class StatsScreen extends Screen {
         icon("no_fall_damage", Items.FEATHER);
         icon("auto_step", Items.OAK_STAIRS);
         icon("dash_cooldown", Items.CLOCK);
-        icon("follow_range", Items.SPYGLASS);
 
         // ═══════ 功能 ═══════
         icon("luck", Items.RABBIT_FOOT);
@@ -219,7 +218,6 @@ public class StatsScreen extends Screen {
         icon("no_invincibility_frames", Items.BLAZE_ROD);
         icon("double_loot", Items.CHEST_MINECART);
         icon("extra_loot_slot", Items.BUNDLE);
-        icon("teleport_distance", Items.ENDER_PEARL);
         icon("mining_level", Items.NETHERITE_PICKAXE);
         icon("entity_reach", Items.LEAD);
         icon("crafting_bonus", Items.CRAFTING_TABLE);
@@ -239,10 +237,8 @@ public class StatsScreen extends Screen {
         icon("max_mana", Items.ENCHANTING_TABLE);
         icon("mana_regen", Items.BOOK);
         icon("magic_damage", Items.BLAZE_ROD);
-        icon("cooldown_reduction", Items.CLOCK);
         icon("mana_shield", Items.END_CRYSTAL);
         icon("mana_steal", Items.WITHER_ROSE);
-        icon("spell_power", Items.ENCHANTED_BOOK);
         icon("mana_on_kill", Items.EXPERIENCE_BOTTLE);
     }
 

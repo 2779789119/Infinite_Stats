@@ -58,7 +58,7 @@ import java.util.function.Supplier;
  */
 public final class NetworkHandler {
 
-    private static final String PROTOCOL_VERSION = "2";
+    private static final String PROTOCOL_VERSION = "5";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -67,6 +67,11 @@ public final class NetworkHandler {
     );
 
     private static int packetId = 0;
+    private static final Map<ResourceLocation, Long> CLIENT_EMC_PRICES = new HashMap<>();
+
+    public static long getClientEmc(ResourceLocation id) {
+        return CLIENT_EMC_PRICES.getOrDefault(id, 0L);
+    }
 
     /** 待处理的成就同步数据（由 SyncAdvancementsPacket 写入，AchievementManagerScreen 读取） */
     public static List<AchievementInfo> pendingAdvancements = null;
@@ -511,9 +516,22 @@ public final class NetworkHandler {
      */
     public static final class EmcSyncPacket {
         private final EmcPlayerData.EmcSnapshot snapshot;
+        private final Map<ResourceLocation, Long> prices;
 
         public EmcSyncPacket(EmcPlayerData.EmcSnapshot snapshot) {
             this.snapshot = snapshot;
+            this.prices = new HashMap<>();
+            for (ResourceLocation id : snapshot.learnedItems) {
+                ItemStack template = new ItemStack(BuiltInRegistries.ITEM.get(id));
+                CompoundTag tag = snapshot.itemNbt.get(id);
+                if (tag != null) template.setTag(tag.copy());
+                prices.put(id, EmcDatabase.getEmc(template));
+            }
+        }
+
+        private EmcSyncPacket(EmcPlayerData.EmcSnapshot snapshot, Map<ResourceLocation, Long> prices) {
+            this.snapshot = snapshot;
+            this.prices = prices;
         }
 
         public static void encode(EmcSyncPacket msg, FriendlyByteBuf buf) {
@@ -526,6 +544,7 @@ public final class NetworkHandler {
                 if (nbt != null && !nbt.isEmpty()) {
                     buf.writeNbt(nbt);
                 }
+                buf.writeVarLong(msg.prices.getOrDefault(id, 0L));
             }
         }
 
@@ -534,21 +553,24 @@ public final class NetworkHandler {
             int count = buf.readVarInt();
             List<ResourceLocation> items = new ArrayList<>();
             Map<ResourceLocation, CompoundTag> nbtMap = new HashMap<>();
+            Map<ResourceLocation, Long> prices = new HashMap<>();
             for (int i = 0; i < count; i++) {
                 ResourceLocation rl = ResourceLocation.tryParse(buf.readUtf());
+                CompoundTag nbt = buf.readBoolean() ? buf.readNbt() : null;
+                long price = buf.readVarLong();
                 if (rl != null) {
                     items.add(rl);
-                    boolean hasNbt = buf.readBoolean();
-                    if (hasNbt) {
-                        nbtMap.put(rl, buf.readNbt());
-                    }
+                    if (nbt != null) nbtMap.put(rl, nbt);
+                    prices.put(rl, price);
                 }
             }
-            return new EmcSyncPacket(new EmcPlayerData.EmcSnapshot(balance, items, nbtMap));
+            return new EmcSyncPacket(new EmcPlayerData.EmcSnapshot(balance, items, nbtMap), prices);
         }
 
         public static void handle(EmcSyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
+                CLIENT_EMC_PRICES.clear();
+                CLIENT_EMC_PRICES.putAll(msg.prices);
                 var player = net.minecraft.client.Minecraft.getInstance().player;
                 if (player != null) {
                     player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
@@ -581,7 +603,7 @@ public final class NetworkHandler {
         public static void handle(EmcLearnPacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
                 ServerPlayer player = ctx.get().getSender();
-                if (player == null) return;
+                if (player == null || !Config.EMC_ENABLED.get()) return;
 
                 ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
                 if (itemId == null) return;
@@ -600,15 +622,12 @@ public final class NetworkHandler {
                         count += carried.getCount();
                         itemNbt = carried.getTag();
                         // 用实际手持（含 NBT）计算 EMC，避免附魔书等带 NBT 物品单价误判为 0
-                        long emcValue = EmcDatabase.getEmc(carried);
-                        if (emcValue <= 0) return;
+                        if (EmcDatabase.getEmc(carried) <= 0) return;
+                        long sale = EmcDatabase.getSellValue(carried, count);
                         openMenu.setCarried(ItemStack.EMPTY);
-                        player.connection.send(new ClientboundContainerSetSlotPacket(
-                                openMenu.containerId,
-                                openMenu.getStateId(), -1, ItemStack.EMPTY));
                         openMenu.broadcastChanges();
                         // 学习物品并返还 数量×EMC，保留 NBT
-                        data.learnAndConvert(itemId, emcValue * count, itemNbt);
+                        data.learnAndConvert(itemId, sale, itemNbt);
                         syncEmcToClient(player);
                     }
                 });
@@ -641,7 +660,7 @@ public final class NetworkHandler {
         public static void handle(EmcExtractPacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
                 ServerPlayer player = ctx.get().getSender();
-                if (player == null) return;
+                if (player == null || !Config.EMC_ENABLED.get()) return;
 
                 ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
                 if (itemId == null) return;
@@ -650,58 +669,7 @@ public final class NetworkHandler {
                 if (item == null) return;
 
                 player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
-                    if (!data.hasLearned(itemId)) return;
-
-                    // 获取已存储的 NBT 数据（手册/附魔书等需保留标签的物品）
-                    CompoundTag storedNbt = data.getItemNbt(itemId);
-
-                    // 用与产出一致的模板堆（含已存 NBT）计算单价，避免书等带 NBT 物品 EMC 误判为 0
-                    ItemStack template = new ItemStack(item);
-                    if (storedNbt != null) {
-                        template.setTag(storedNbt.copy());
-                    }
-                    long emcPerItem = EmcDatabase.getEmc(template);
-                    if (emcPerItem <= 0) return;
-
-                    int maxStack = item.getMaxStackSize();
-                    if (msg.count < 0) {
-                        // 快捷买入「买满」：用尽 EMC，按堆叠上限分批给入背包
-                        long affordable = data.getEmcBalance() / emcPerItem;
-                        while (affordable > 0) {
-                            int give = (int) Math.min(affordable, maxStack);
-                            long cost = (long) give * emcPerItem;
-                            if (!data.consumeEmc(cost)) break;
-                            ItemStack result = new ItemStack(item, give);
-                            if (storedNbt != null) {
-                                result.setTag(storedNbt.copy());
-                            }
-                            if (!player.getInventory().add(result)) {
-                                data.addEmc(cost); // 背包已满，退还 EMC
-                                break;
-                            }
-                            affordable -= give;
-                        }
-                    } else {
-                        int maxGive = Math.min(msg.count, maxStack);
-                        long totalCost = emcPerItem * maxGive;
-                        if (!data.consumeEmc(totalCost)) {
-                            // 余额不足，给尽可能多的
-                            long affordable = data.getEmcBalance() / emcPerItem;
-                            if (affordable <= 0) return;
-                            maxGive = (int) Math.min(affordable, maxStack);
-                            totalCost = emcPerItem * maxGive;
-                            data.consumeEmc(totalCost);
-                        }
-                        if (maxGive > 0) {
-                            ItemStack result = new ItemStack(item, maxGive);
-                            if (storedNbt != null) {
-                                result.setTag(storedNbt.copy());
-                            }
-                            if (!player.getInventory().add(result)) {
-                                player.drop(result, false);
-                            }
-                        }
-                    }
+                    com.infinitestats.emc.EmcTransactions.extract(player, data, itemId, msg.count);
 
                     syncEmcToClient(player);
                     // 提取后刷新当前容器菜单（含背包槽位）使客户端立即显示
@@ -732,7 +700,7 @@ public final class NetworkHandler {
         public static void handle(EmcSellAllPacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
                 ServerPlayer player = ctx.get().getSender();
-                if (player == null) return;
+                if (player == null || !Config.EMC_ENABLED.get()) return;
 
                 player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
                     long total = 0;
@@ -745,7 +713,8 @@ public final class NetworkHandler {
                         if (!data.hasLearned(id)) continue;     // 只卖已学物品
                         long emc = EmcDatabase.getEmc(s);
                         if (emc <= 0) continue;
-                        total += emc * s.getCount();
+                        long sale = EmcDatabase.getSellValue(s, s.getCount());
+                        total += Math.min(sale, Long.MAX_VALUE - total);
                         inv.setItem(i, ItemStack.EMPTY);
                     }
                     if (total > 0) {
@@ -780,7 +749,7 @@ public final class NetworkHandler {
         public static void handle(EmcOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
                 ServerPlayer player = ctx.get().getSender();
-                if (player == null) return;
+                if (player == null || !Config.EMC_ENABLED.get()) return;
                 NetworkHooks.openScreen(player,
                         new SimpleMenuProvider(
                                 (id, inv, p) -> new EmcMenu(id, inv),
@@ -931,8 +900,9 @@ public final class NetworkHandler {
                                     "§c可分配点数不足，提升一级速度需 " + cost + " 点"));
                             return;
                         }
-                        stats.setAvailablePoints(stats.getAvailablePoints() - cost);
+                        if (furnace.getSpeedLevel() >= Integer.MAX_VALUE - 1) return;
                         furnace.setSpeedLevel(furnace.getSpeedLevel() + 1);
+                        stats.recalculateAvailablePoints();
                         player.sendSystemMessage(Component.literal(
                                 "§a熔炉加速至 §f×" + furnace.getSpeedMultiplier()
                                         + "§a（消耗 " + cost + " 点）"));
@@ -942,7 +912,7 @@ public final class NetworkHandler {
                             return;
                         }
                         furnace.setSpeedLevel(furnace.getSpeedLevel() - 1);
-                        stats.setAvailablePoints(stats.getAvailablePoints() + cost);
+                        stats.recalculateAvailablePoints();
                         player.sendSystemMessage(Component.literal(
                                 "§a熔炉减速至 §f×" + furnace.getSpeedMultiplier()
                                         + "§a（返还 " + cost + " 点）"));
@@ -997,27 +967,27 @@ public final class NetworkHandler {
             ctx.get().enqueueWork(() -> {
                 ServerPlayer player = ctx.get().getSender();
                 if (player == null) return;
-                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                PlayerFurnaceData furnace = stats.getFurnaceData();
-                List<String> priority = furnace.getOrePriorityIds();
-                List<String> available = computeAvailable(player, priority);
-                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
-                        new FurnaceOrePrioritySyncPacket(available, priority));
-                });
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
+                        sendOrePrioritySync(player, stats.getFurnaceData()));
             });
             ctx.get().setPacketHandled(true);
         }
     }
 
-    /** 服务器将矿石优先顺序与可加入矿石列表同步到客户端（服务器 → 客户端）。 */
+    /** 服务器将矿石优先顺序、可加入矿石与待炼仓矿石同步到客户端（服务器 → 客户端）。 */
     public static final class FurnaceOrePrioritySyncPacket {
         public static class SyncData {
             public final List<String> available;
             public final List<String> priority;
+            public final List<String> reserveIds;
+            public final List<Long> reserveAmounts;
 
-            public SyncData(List<String> available, List<String> priority) {
+            public SyncData(List<String> available, List<String> priority,
+                            List<String> reserveIds, List<Long> reserveAmounts) {
                 this.available = available;
                 this.priority = priority;
+                this.reserveIds = reserveIds;
+                this.reserveAmounts = reserveAmounts;
             }
         }
 
@@ -1028,10 +998,15 @@ public final class NetworkHandler {
 
         public final List<String> available;
         public final List<String> priority;
+        public final List<String> reserveIds;
+        public final List<Long> reserveAmounts;
 
-        public FurnaceOrePrioritySyncPacket(List<String> available, List<String> priority) {
+        public FurnaceOrePrioritySyncPacket(List<String> available, List<String> priority,
+                                            List<String> reserveIds, List<Long> reserveAmounts) {
             this.available = available;
             this.priority = priority;
+            this.reserveIds = reserveIds;
+            this.reserveAmounts = reserveAmounts;
         }
 
         public static void encode(FurnaceOrePrioritySyncPacket msg, FriendlyByteBuf buf) {
@@ -1039,6 +1014,11 @@ public final class NetworkHandler {
             for (String id : msg.priority) buf.writeUtf(id);
             buf.writeVarInt(msg.available.size());
             for (String id : msg.available) buf.writeUtf(id);
+            buf.writeVarInt(msg.reserveIds.size());
+            for (int i = 0; i < msg.reserveIds.size(); i++) {
+                buf.writeUtf(msg.reserveIds.get(i));
+                buf.writeVarLong(msg.reserveAmounts.get(i));
+            }
         }
 
         public static FurnaceOrePrioritySyncPacket decode(FriendlyByteBuf buf) {
@@ -1048,12 +1028,19 @@ public final class NetworkHandler {
             int m = buf.readVarInt();
             List<String> available = new ArrayList<>();
             for (int i = 0; i < m; i++) available.add(buf.readUtf());
-            return new FurnaceOrePrioritySyncPacket(available, priority);
+            int k = buf.readVarInt();
+            List<String> reserveIds = new ArrayList<>();
+            List<Long> reserveAmounts = new ArrayList<>();
+            for (int i = 0; i < k; i++) {
+                reserveIds.add(buf.readUtf());
+                reserveAmounts.add(buf.readVarLong());
+            }
+            return new FurnaceOrePrioritySyncPacket(available, priority, reserveIds, reserveAmounts);
         }
 
         public static void handle(FurnaceOrePrioritySyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
-                latest = new SyncData(msg.available, msg.priority);
+                latest = new SyncData(msg.available, msg.priority, msg.reserveIds, msg.reserveAmounts);
                 version++;
             });
             ctx.get().setPacketHandled(true);
@@ -1085,11 +1072,9 @@ public final class NetworkHandler {
                 ServerPlayer player = ctx.get().getSender();
                 if (player == null) return;
                 player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                PlayerFurnaceData furnace = stats.getFurnaceData();
-                furnace.setOrePriorityIds(msg.priority);
-                List<String> available = computeAvailable(player, furnace.getOrePriorityIds());
-                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
-                        new FurnaceOrePrioritySyncPacket(available, furnace.getOrePriorityIds()));
+                    PlayerFurnaceData furnace = stats.getFurnaceData();
+                    furnace.setOrePriorityIds(msg.priority);
+                    sendOrePrioritySync(player, furnace);
                 });
             });
             ctx.get().setPacketHandled(true);
@@ -1097,19 +1082,45 @@ public final class NetworkHandler {
     }
 
     /**
-     * 计算“可加入的矿石”列表：游戏内所有拥有熔炼/高炉配方的物品（排除已在优先列表中的）。
-     * 不再依赖矿石储备箱是否已有存货，保证界面永远有内容可选。
+     * 收集待炼仓（矿石储备箱）当前有货的矿石，并把「优先顺序 + 可加入列表 + 仓内矿石」一并同步给客户端。
      */
-    private static List<String> computeAvailable(ServerPlayer player, List<String> priority) {
+    private static void sendOrePrioritySync(ServerPlayer player, PlayerFurnaceData furnace) {
+        List<String> priority = furnace.getOrePriorityIds();
+        List<String> reserveIds = new ArrayList<>();
+        List<Long> reserveAmounts = new ArrayList<>();
+        for (int i = 0; i < furnace.getInputBuffer().size(); i++) {
+            ItemStack s = furnace.getInputBuffer().get(i);
+            if (s.isEmpty() || furnace.getInputAmounts()[i] <= 0) continue;
+            reserveIds.add(ForgeRegistries.ITEMS.getKey(s.getItem()).toString());
+            reserveAmounts.add(furnace.getInputAmounts()[i]);
+        }
+        List<String> available = computeAvailable(player, priority, reserveIds);
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new FurnaceOrePrioritySyncPacket(available, priority, reserveIds, reserveAmounts));
+    }
+
+    /**
+     * 计算“可加入的矿石”列表：游戏内所有拥有熔炼/高炉配方的物品（排除已在优先列表中的）。
+     * 待炼仓里已有存货的矿石排在最前面，其余按注册名字典序排列，方便玩家一眼找到仓内矿石。
+     */
+    private static List<String> computeAvailable(ServerPlayer player, List<String> priority, List<String> reserveIds) {
         Set<String> inPrio = new HashSet<>(priority);
         Set<String> ids = new LinkedHashSet<>();
         RecipeManager rm = player.level().getRecipeManager();
         collect(rm, RecipeType.SMELTING, ids);
         collect(rm, RecipeType.BLASTING, ids);
         List<String> available = new ArrayList<>();
-        for (String id : ids) {
-            if (!inPrio.contains(id)) available.add(id);
+        for (String id : reserveIds) {
+            if (!inPrio.contains(id) && ids.contains(id) && !available.contains(id)) {
+                available.add(id);
+            }
         }
+        List<String> rest = new ArrayList<>();
+        for (String id : ids) {
+            if (!inPrio.contains(id) && !available.contains(id)) rest.add(id);
+        }
+        rest.sort(String::compareTo);
+        available.addAll(rest);
         return available;
     }
 
@@ -1164,8 +1175,8 @@ public final class NetworkHandler {
                                     "§c可分配点数不足，提升一级倍率需 " + cost + " 点"));
                             return;
                         }
-                        stats.setAvailablePoints(stats.getAvailablePoints() - cost);
                         stats.setCraftingMultiplier(mult + 1);
+                        stats.recalculateAvailablePoints();
                         player.sendSystemMessage(Component.literal(
                                 "§a工作台倍率提升至 §f×" + stats.getCraftingMultiplier()
                                         + "§a（消耗 " + cost + " 点）"));
@@ -1175,14 +1186,18 @@ public final class NetworkHandler {
                             return;
                         }
                         stats.setCraftingMultiplier(mult - 1);
-                        stats.setAvailablePoints(stats.getAvailablePoints() + cost);
+                        stats.recalculateAvailablePoints();
                         player.sendSystemMessage(Component.literal(
                                 "§a工作台倍率降至 §f×" + stats.getCraftingMultiplier()
                                         + "§a（返还 " + cost + " 点）"));
                     }
 
-                    // 同步点数与倍率变动到客户端
+                    // 同步点数与倍率，并立即重算已摆放配方的产物。
                     syncToClient(player);
+                    if (player.containerMenu instanceof PortableCraftingMenu menu) {
+                        menu.refreshResult();
+                        menu.broadcastChanges();
+                    }
                 });
             });
             ctx.get().setPacketHandled(true);
@@ -1629,7 +1644,11 @@ public final class NetworkHandler {
                 ServerPlayer player = ctx.get().getSender();
                 if (player == null) return;
                 player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(
-                        stats -> stats.toggleFavorite(msg.statId));
+                        stats -> {
+                            if (StatType.fromId(msg.statId) == null) return;
+                            stats.toggleFavorite(msg.statId);
+                            syncToClient(player);
+                        });
             });
             ctx.get().setPacketHandled(true);
         }
@@ -1743,7 +1762,7 @@ public final class NetworkHandler {
         public static void handle(EmcSellSlotPacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
                 ServerPlayer player = ctx.get().getSender();
-                if (player == null) return;
+                if (player == null || !Config.EMC_ENABLED.get()) return;
 
                 var menu = player.containerMenu;
                 if (!(menu instanceof EmcMenu)) return;
@@ -1759,7 +1778,7 @@ public final class NetworkHandler {
 
                 ResourceLocation itemId = BuiltInRegistries.ITEM.getKey(stack.getItem());
                 int count = stack.getCount();
-                long totalEmc = emcValue * count;
+                long totalEmc = EmcDatabase.getSellValue(stack, count);
 
                 player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
                     if (!data.hasLearned(itemId)) {
@@ -1810,7 +1829,7 @@ public final class NetworkHandler {
         public static void handle(EmcSetPricePacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
                 ServerPlayer player = ctx.get().getSender();
-                if (player == null) return;
+                if (player == null || !Config.EMC_ENABLED.get()) return;
 
                 ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
                 if (itemId == null) return;
@@ -1818,13 +1837,18 @@ public final class NetworkHandler {
                 Item item = BuiltInRegistries.ITEM.get(itemId);
                 if (item == null) return;
 
-                EmcDatabase.setCustomEmc(itemId, msg.emc);
+                if (!BuiltInRegistries.ITEM.containsKey(itemId) || item == net.minecraft.world.item.Items.AIR) return;
+                if (!EmcDatabase.setCustomEmc(itemId, msg.emc)) {
+                    player.sendSystemMessage(Component.literal("§cEMC 定价保存失败，请查看服务端日志"));
+                    return;
+                }
                 player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
                     if (msg.emc > 0) {
                         data.learnItem(itemId);
                         syncEmcToClient(player);
                     }
                 });
+                player.server.getPlayerList().getPlayers().forEach(NetworkHandler::syncEmcToClient);
                 if (msg.emc > 0) {
                     player.displayClientMessage(
                             Component.translatable("message.infinitestats.emc.priced",

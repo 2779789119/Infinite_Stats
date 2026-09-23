@@ -1,6 +1,7 @@
 package com.infinitestats.emc;
 
 import com.infinitestats.InfiniteStats;
+import com.infinitestats.Config;
 import com.infinitestats.network.NetworkHandler;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -93,6 +94,7 @@ public final class EmcEvents {
         public static void onRegisterCommands(RegisterCommandsEvent event) {
             event.getDispatcher().register(
                 Commands.literal("emc")
+                    .requires(s -> Config.EMC_ENABLED.get())
                     // /emc — 查看自己的 EMC
                     .executes(ctx -> {
                         if (ctx.getSource().getEntity() instanceof ServerPlayer player) {
@@ -149,6 +151,7 @@ public final class EmcEvents {
                         .requires(s -> s.hasPermission(2))
                         .executes(ctx -> {
                             EmcDatabase.reload(ctx.getSource().getServer());
+                            ctx.getSource().getServer().getPlayerList().getPlayers().forEach(NetworkHandler::syncEmcToClient);
                             ctx.getSource().sendSuccess(() ->
                                 Component.literal("EMC 数据库已重载 (" + EmcDatabase.getTotalItems() + " 个物品)"), true);
                             return 1;
@@ -176,11 +179,13 @@ public final class EmcEvents {
                     source.sendFailure(Component.literal("你已经学习过该物品了"));
                     return;
                 }
+                long sale = EmcDatabase.getSellValue(held, 1);
+                data.learnAndConvert(itemId, sale, held.getTag());
+                Component name = held.getHoverName();
                 held.shrink(1);
-                data.learnAndConvert(itemId, emcValue);
                 NetworkHandler.syncEmcToClient(player);
-                source.sendSuccess(() -> Component.literal("已学习: " + held.getDisplayName().getString()
-                    + " (+" + formatEmc(emcValue) + " EMC)"), false);
+                source.sendSuccess(() -> Component.literal("已学习: " + name.getString()
+                    + " (+" + formatEmc(sale) + " EMC)"), false);
             });
         }
 
@@ -198,11 +203,11 @@ public final class EmcEvents {
                     long emcValue = EmcDatabase.getEmc(stack);
                     if (emcValue <= 0) continue;
 
-                    data.learnItem(itemId);
-                    data.addEmc(emcValue);
+                    long sale = EmcDatabase.getSellValue(stack, 1);
+                    data.learnAndConvert(itemId, sale, stack.getTag());
                     stack.shrink(1);
                     learned.incrementAndGet();
-                    totalEmc.addAndGet(emcValue);
+                    totalEmc.updateAndGet(total -> total + Math.min(sale, Long.MAX_VALUE - total));
                 }
                 int finalLearned = learned.get();
                 long finalTotalEmc = totalEmc.get();

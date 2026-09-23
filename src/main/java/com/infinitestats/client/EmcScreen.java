@@ -389,7 +389,9 @@ public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
             }
         }
         // 背包/物品栏：转发给真实菜单，实现拾取/放下/交换
-        menu.clicked(m, 0, ClickType.PICKUP, mc.player);
+        if (mc.gameMode != null) {
+            mc.gameMode.handleInventoryMouseClick(menu.containerId, m, 0, ClickType.PICKUP, mc.player);
+        }
     }
 
     protected void onTextFieldChanged(String name, String value) {
@@ -559,7 +561,7 @@ public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
             if (hover) hoveredLearned = s;
 
             // EMC（右侧，缩放显示）
-            long emc = EmcDatabase.getEmc(s);
+            long emc = NetworkHandler.getClientEmc(BuiltInRegistries.ITEM.getKey(s.getItem()));
             String emcStr = formatEmcShort(emc);
             int ew = this.font.width(emcStr);
             int actualX = Math.max(x + 18, x + L.cellW - 2 - ew / 2);

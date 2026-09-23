@@ -7,20 +7,18 @@ import net.minecraft.core.NonNullList;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.RecipeType;
 import net.minecraft.world.level.Level;
-import net.minecraftforge.common.ForgeHooks;
 
 /**
  * 矿石储备箱菜单：一个类似箱子的 GUI，用于存放“待熔炼的矿石/物品”。
  * 箱子里的矿石会在随身熔炉的输入槽为空时，按格子顺序自动被取出放入输入槽。
  *
- * 格子布局 3 行 × 9 列（与外部箱子 UI 一致），每个槽位为普通堆叠上限（64）。
+ * 格子布局 3 行 × 9 列，数量通过 BulkStorageMenu 单独同步。
  */
-public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
+public class FurnaceFuelBufferMenu extends BulkStorageMenu {
 
     /** 储备箱行 / 列数（与外部箱子一致）。 */
     public static final int ROWS = 3;
@@ -46,7 +44,9 @@ public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
         this.furnaceData = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
                 .orElseGet(PlayerStats::new).getFurnaceData();
         this.level = player.level();
-        this.buffer = new InputBufferContainer(furnaceData.getInputBuffer(), furnaceData.getInputAmounts());
+        this.buffer = new InputBufferContainer(furnaceData.getInputBuffer(), furnaceData.getInputAmounts(), level.isClientSide());
+
+        trackBulkAmounts(furnaceData.getInputAmounts());
 
         // 储备箱格子（3 行 × 9 列），仅接受可被熔炼的物品（矿石等）
         for (int row = 0; row < ROWS; row++) {
@@ -71,56 +71,13 @@ public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
     }
 
     @Override
-    public ItemStack quickMoveStack(Player player, int index) {
-        Slot slot = this.slots.get(index);
-        if (slot == null || !slot.hasItem()) return ItemStack.EMPTY;
-
-        if (index < BUFFER_SLOTS) {
-            // 储备箱 -> 玩家背包：把该格物品尽量分到背包格子（每格上限 64）
-            ItemStack buf = slot.getItem().copy();
-            int total = buf.getCount();
-            if (total <= 0) return ItemStack.EMPTY;
-            for (int i = BUFFER_SLOTS; i < this.slots.size() && !buf.isEmpty(); i++) {
-                Slot ps = this.slots.get(i);
-                if (!ps.mayPlace(buf)) continue;
-                ItemStack cur = ps.getItem();
-                int max = Math.min(64, ps.getMaxStackSize());
-                if (cur.isEmpty()) {
-                    int put = Math.min(max, buf.getCount());
-                    ps.set(buf.split(put));
-                } else if (ItemStack.isSameItemSameTags(cur, buf)) {
-                    int space = max - cur.getCount();
-                    if (space > 0) {
-                        int put = Math.min(space, buf.getCount());
-                        cur.grow(put);
-                        buf.shrink(put);
-                        ps.set(cur);
-                    }
-                }
-            }
-            int taken = total - buf.getCount();
-            if (taken > 0) slot.remove(taken);
-        } else {
-            // 玩家背包 -> 储备箱（仅可熔炼物品可入，单格堆叠无上限）
-            ItemStack src = slot.getItem().copy();
-            if (src.isEmpty() || !isSmeltable(level, src)) return ItemStack.EMPTY;
-            ItemStack left = buffer.deposit(src);
-            int taken = src.getCount() - left.getCount();
-            if (taken > 0) slot.remove(taken);
-        }
-        return ItemStack.EMPTY;
-    }
-
-    @Override
     public boolean stillValid(Player player) {
         return true;
     }
 
-    /** 判断某物品是否为“可被熔炼的输入”（有熔炼/高炉配方且本身不是燃料）。 */
+    /** 手动入仓按配方判断；木头既可当燃料，也可以排队烧成木炭。 */
     private static boolean isSmeltable(Level level, ItemStack stack) {
         if (stack.isEmpty()) return false;
-        // 燃料不算“被熔炼的矿石”
-        if (ForgeHooks.getBurnTime(stack, RecipeType.SMELTING) > 0) return false;
         Container view = new Container() {
             @Override public int getContainerSize() { return 1; }
             @Override public boolean isEmpty() { return stack.isEmpty(); }
@@ -140,10 +97,12 @@ public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
     private static class InputBufferContainer implements Container {
         private final NonNullList<ItemStack> list;
         private final long[] amounts;
+        private final boolean clientSide;
 
-        InputBufferContainer(NonNullList<ItemStack> list, long[] amounts) {
+        InputBufferContainer(NonNullList<ItemStack> list, long[] amounts, boolean clientSide) {
             this.list = list;
             this.amounts = amounts;
+            this.clientSide = clientSide;
         }
 
         @Override
@@ -164,7 +123,7 @@ public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
             ItemStack t = list.get(i);
             if (t.isEmpty()) return ItemStack.EMPTY;
             ItemStack s = t.copy();
-            PlayerFurnaceData.rawSetCount(s, (int) Math.min(amounts[i], PlayerFurnaceData.UNBOUNDED));
+            s.setCount(1);
             return s;
         }
 
@@ -196,6 +155,10 @@ public class FurnaceFuelBufferMenu extends AbstractContainerMenu {
 
         @Override
         public void setItem(int i, ItemStack stack) {
+            if (clientSide) {
+                list.set(i, stack.copyWithCount(1));
+                return;
+            }
             if (stack.isEmpty()) {
                 list.set(i, ItemStack.EMPTY);
                 amounts[i] = 0;

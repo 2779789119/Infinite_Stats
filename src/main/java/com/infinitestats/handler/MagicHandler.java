@@ -1,5 +1,6 @@
 package com.infinitestats.handler;
 
+import com.infinitestats.Config;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.StatCategory;
 import com.infinitestats.stats.StatType;
@@ -7,7 +8,7 @@ import net.minecraft.server.level.ServerPlayer;
 
 /**
  * 魔法类属性处理器
- * 处理：法力值、法力恢复、法力护盾、冷却缩减
+ * 处理：法力值、法力恢复、法力护盾
  */
 public class MagicHandler implements StatEffectHandler {
 
@@ -23,8 +24,8 @@ public class MagicHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
-        // 每2秒处理法力恢复
-        if (tickCount % 40 == 0) {
+        // 按配置间隔处理法力恢复
+        if (tickCount % Config.MANA_REGEN_INTERVAL.get() == 0) {
             regenerateMana(stats);
         }
     }
@@ -93,26 +94,4 @@ public class MagicHandler implements StatEffectHandler {
         return Math.max(0, remaining);
     }
 
-    /**
-     * 计算冷却缩减后的冷却时间
-     */
-    public static int applyCooldownReduction(PlayerStats stats, int baseCooldown) {
-        float reduction = stats.getStatValue(StatType.fromId("cooldown_reduction"));
-        if (reduction <= 0) return baseCooldown;
-        return Math.max(1, (int) (baseCooldown * (1.0f - reduction)));
-    }
-
-    /**
-     * 计算魔法伤害增伤
-     */
-    public static float getMagicDamageMultiplier(PlayerStats stats) {
-        return 1.0f + stats.getStatValue(StatType.fromId("magic_damage"));
-    }
-
-    /**
-     * 计算法术强度
-     */
-    public static float getSpellPowerMultiplier(PlayerStats stats) {
-        return 1.0f + stats.getStatValue(StatType.fromId("spell_power"));
-    }
 }

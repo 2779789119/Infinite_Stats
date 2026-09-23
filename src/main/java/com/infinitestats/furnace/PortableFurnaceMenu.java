@@ -8,63 +8,84 @@ import net.minecraft.world.Container;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.ContainerData;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.common.ForgeHooks;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.crafting.RecipeType;
-import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.level.Level;
 
 import com.infinitestats.compat.NetworkHandle;
 import com.infinitestats.compat.NetworkIO;
 import java.util.List;
+import java.util.function.Predicate;
 
 /**
  * 随身熔炉菜单。
  * 所有物品与燃烧/冶炼进度都存在玩家 PlayerStats 的 PlayerFurnaceData 中，
  * 因此关闭界面后状态不会丢失，且冶炼在后台持续进行。
  *
- * 支持 {@link PlayerFurnaceData#INPUT_COUNT} 个并行输入槽，每个输入槽对应一个
- * 输出槽，可同时熔炼多种矿物，共享同一份燃料。
+ * 单输入、单燃料槽，其他材料通过待炼仓排队；成品自动收纳到成品仓。
  */
-public class PortableFurnaceMenu extends AbstractContainerMenu {
+public class PortableFurnaceMenu extends BulkStorageMenu {
 
     private final PlayerFurnaceData furnaceData;
     private final FurnaceContainer furnace;
     private final ContainerData data;
+    private final ContainerData controls;
     private final Player player;
+    public static final int COLLECT_PRODUCTS = 0;
 
     public PortableFurnaceMenu(int windowId, Inventory inv) {
         super(ModMenuTypes.PORTABLE_FURNACE_MENU.get(), windowId);
 
         Player player = inv.player;
         this.player = player;
-        this.furnaceData = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
-                .orElseGet(PlayerStats::new).getFurnaceData();
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElseGet(PlayerStats::new);
+        this.furnaceData = stats.getFurnaceData();
 
-        this.furnace = new FurnaceContainer(furnaceData);
+        this.furnace = new FurnaceContainer(furnaceData, player.level().isClientSide());
         this.data = new FurnaceData(furnaceData.getData());
+        this.controls = new ContainerData() {
+            private final int[] synced = new int[5];
+            public int getCount() { return synced.length; }
+            public void set(int index, int value) { synced[index] = value; }
+            public int get(int index) {
+                if (player.level().isClientSide()) return synced[index];
+                return switch (index) {
+                    case 0 -> furnaceData.getWorkStatus(player.level());
+                    case 1 -> usedSlots(furnaceData.getInputAmounts());
+                    case 2 -> usedSlots(furnaceData.getOutputAmounts());
+                    case 3 -> Config.FURNACE_SPEED_COST.get();
+                    case 4 -> stats.getAvailablePoints() >= Config.FURNACE_SPEED_COST.get()
+                            && furnaceData.getSpeedLevel() < Integer.MAX_VALUE - 1 ? 1 : 0;
+                    default -> 0;
+                };
+            }
+        };
 
         // 原版熔炉槽位布局：单输入 + 单输出 + 燃料槽
-        this.addSlot(new UnlimitedSlot(furnace, PlayerFurnaceData.FUEL_SLOT, 56, 53));
-        this.addSlot(new UnlimitedSlot(furnace, PlayerFurnaceData.inputSlot(0), 56, 17));
-        this.addSlot(new UnlimitedSlot(furnace, PlayerFurnaceData.outputSlot(0), 116, 35));
+        this.addSlot(new UnlimitedSlot(furnace, PlayerFurnaceData.FUEL_SLOT, 46, 67,
+                stack -> ForgeHooks.getBurnTime(stack, RecipeType.SMELTING) > 0));
+        this.addSlot(new UnlimitedSlot(furnace, PlayerFurnaceData.inputSlot(0), 46, 31,
+                stack -> PlayerFurnaceData.hasSmeltRecipe(player.level(), stack)));
+        this.addSlot(new UnlimitedSlot(furnace, PlayerFurnaceData.outputSlot(0), 116, 49, stack -> false));
 
         // 玩家背包
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 9; j++) {
-                this.addSlot(new Slot(inv, j + i * 9 + 9, 8 + j * 18, 84 + i * 18));
+                this.addSlot(new Slot(inv, j + i * 9 + 9, 8 + j * 18, 135 + i * 18));
             }
         }
         // 玩家快捷栏
         for (int i = 0; i < 9; i++) {
-            this.addSlot(new Slot(inv, i, 8 + i * 18, 142));
+            this.addSlot(new Slot(inv, i, 8 + i * 18, 193));
         }
 
-        this.addDataSlots(data);
+        trackIntData(data);
+        trackIntData(controls);
+        trackBulkAmounts(furnaceData.getAmounts());
     }
 
     public PlayerFurnaceData getFurnaceData() {
@@ -72,87 +93,41 @@ public class PortableFurnaceMenu extends AbstractContainerMenu {
     }
 
     @Override
-    public ItemStack quickMoveStack(Player player, int index) {
-        Slot slot = this.slots.get(index);
-        if (slot == null || !slot.hasItem()) return ItemStack.EMPTY;
-        ItemStack source = slot.getItem();
+    protected int[] getBulkTargets(ItemStack stack) {
+        if (ForgeHooks.getBurnTime(stack, RecipeType.SMELTING) > 0) return new int[] { PlayerFurnaceData.FUEL_SLOT };
+        if (PlayerFurnaceData.hasSmeltRecipe(player.level(), stack)) return new int[] { PlayerFurnaceData.inputSlot(0) };
+        return new int[0];
+    }
 
-        if (index < PlayerFurnaceData.TOTAL_SLOTS) {
-            // 熔炉槽 -> 玩家背包（TOTAL_SLOTS..），熔炉槽可能持有超过 64 的数量，需分批放入背包
-            int remaining = PlayerFurnaceData.rawGetCount(source);
-            ItemStack template = source.copyWithCount(1);
-            for (int i = PlayerFurnaceData.TOTAL_SLOTS; i < this.slots.size() && remaining > 0; i++) {
-                Slot dst = this.slots.get(i);
-                ItemStack d = dst.getItem();
-                if (d.isEmpty()) {
-                    int put = Math.min(remaining, Math.min(64, source.getMaxStackSize()));
-                    dst.set(template.copyWithCount(put));
-                    remaining -= put;
-                } else if (ItemStack.isSameItemSameTags(d, source)) {
-                    int space = Math.min(64, d.getMaxStackSize()) - d.getCount();
-                    if (space > 0) {
-                        int put = Math.min(remaining, space);
-                        d.grow(put);
-                        remaining -= put;
-                    }
-                }
-            }
-            furnace.setAmountOnly(index, remaining);
-            slot.set(furnace.getItem(index));
-            return ItemStack.EMPTY;
-        } else {
-            // 玩家背包 -> 熔炉（燃料进燃料槽，矿物进输入槽：优先同类输入槽，其次空输入槽）
-            int target;
-            if (ForgeHooks.getBurnTime(source, RecipeType.SMELTING) > 0) {
-                target = PlayerFurnaceData.FUEL_SLOT;
-            } else {
-                target = -1;
-                for (int i = 0; i < PlayerFurnaceData.INPUT_COUNT; i++) {
-                    int idx = PlayerFurnaceData.inputSlot(i);
-                    ItemStack d = furnace.getItem(idx);
-                    if (!d.isEmpty() && ItemStack.isSameItemSameTags(d, source)) {
-                        target = idx;
-                        break;
-                    }
-                }
-                if (target == -1) {
-                    for (int i = 0; i < PlayerFurnaceData.INPUT_COUNT; i++) {
-                        int idx = PlayerFurnaceData.inputSlot(i);
-                        if (furnace.getItem(idx).isEmpty()) {
-                            target = idx;
-                            break;
-                        }
-                    }
-                }
-                if (target == -1) return ItemStack.EMPTY; // 没有空余输入槽
-            }
-
-            int remaining = source.getCount();
-            ItemStack cur = furnace.getItem(target);
-            if (cur.isEmpty()) {
-                furnaceData.setSlot(target, source.copyWithCount(Math.min(remaining, PlayerFurnaceData.UNBOUNDED)));
-                remaining = 0;
-            } else if (ItemStack.isSameItemSameTags(cur, source)) {
-                long curAmt = furnaceData.getAmount(target);
-                long space = (long) PlayerFurnaceData.UNBOUNDED - curAmt;
-                int put = (int) Math.min(remaining, space);
-                furnaceData.setAmountOnly(target, curAmt + put);
-                remaining -= put;
-            } else {
-                // 目标槽已被其他物品占用，放弃本次转移
-                remaining = source.getCount();
-            }
-            // 同步熔炉槽显示
-            this.slots.get(target).set(furnace.getItem(target));
-            // 更新来源背包槽
-            if (remaining <= 0) {
-                slot.set(ItemStack.EMPTY);
-            } else {
-                slot.set(source.copyWithCount(remaining));
-            }
-            return ItemStack.EMPTY;
+    @Override
+    protected void storeQuickMovedStack(ItemStack stack) {
+        super.storeQuickMovedStack(stack);
+        if (!stack.isEmpty() && ForgeHooks.getBurnTime(stack, RecipeType.SMELTING) <= 0
+                && PlayerFurnaceData.hasSmeltRecipe(player.level(), stack)) {
+            furnaceData.enqueueInput(stack);
         }
     }
+
+    @Override
+    public boolean clickMenuButton(Player player, int id) {
+        if (player != this.player || player.level().isClientSide() || id != COLLECT_PRODUCTS) return false;
+        long collected = furnaceData.collectProducts(player.getInventory());
+        player.displayClientMessage(Component.translatable(collected > 0
+                ? "gui.infinitestats.furnace.collected" : "gui.infinitestats.furnace.collect_none", collected), true);
+        broadcastChanges();
+        return true;
+    }
+
+    private static int usedSlots(long[] amounts) {
+        int used = 0;
+        for (long amount : amounts) if (amount > 0) used++;
+        return used;
+    }
+
+    public int getWorkStatus() { return controls.get(0); }
+    public int getQueuedSlots() { return controls.get(1); }
+    public int getProductSlots() { return controls.get(2); }
+    public boolean canUpgrade() { return controls.get(4) != 0; }
 
     @Override
     public boolean stillValid(Player player) {
@@ -191,20 +166,22 @@ public class PortableFurnaceMenu extends AbstractContainerMenu {
 
     /** 当前熔炼速度倍率（加速等级 + 1）。 */
     public int getSpeedMultiplier() {
-        return 1 + getSpeedLevel();
+        return (int) Math.min(Integer.MAX_VALUE, 1L + getSpeedLevel());
     }
 
     /** 每级加速消耗的可分配点数。 */
     public int getSpeedCost() {
-        return Config.FURNACE_SPEED_COST.get();
+        return controls.get(3);
     }
 
     /** 绑定到 PlayerFurnaceData 的容器视图，槽位直接读写持久化数据（数量无上限）。 */
     private static class FurnaceContainer implements Container {
         private final PlayerFurnaceData data;
+        private final boolean clientSide;
 
-        FurnaceContainer(PlayerFurnaceData data) {
+        FurnaceContainer(PlayerFurnaceData data, boolean clientSide) {
             this.data = data;
+            this.clientSide = clientSide;
         }
 
         @Override
@@ -222,7 +199,8 @@ public class PortableFurnaceMenu extends AbstractContainerMenu {
 
         @Override
         public ItemStack getItem(int index) {
-            return data.getStack(index);
+            ItemStack template = data.getItems().get(index);
+            return template.isEmpty() ? ItemStack.EMPTY : template.copyWithCount(1);
         }
 
         @Override
@@ -237,7 +215,8 @@ public class PortableFurnaceMenu extends AbstractContainerMenu {
 
         @Override
         public void setItem(int index, ItemStack stack) {
-            data.setSlot(index, stack);
+            if (clientSide) data.getItems().set(index, stack.copyWithCount(1));
+            else data.setSlot(index, stack);
         }
 
         @Override
@@ -264,34 +243,21 @@ public class PortableFurnaceMenu extends AbstractContainerMenu {
 
     /** 无上限堆叠的槽位：解除 64 限制，并绕过 setCount 钳制进行 merge。 */
     private static class UnlimitedSlot extends Slot {
-        UnlimitedSlot(Container container, int index, int x, int y) {
+        private final Predicate<ItemStack> accepts;
+
+        UnlimitedSlot(Container container, int index, int x, int y, Predicate<ItemStack> accepts) {
             super(container, index, x, y);
+            this.accepts = accepts;
         }
+
+        @Override
+        public boolean mayPlace(ItemStack stack) { return accepts.test(stack); }
 
         @Override
         public int getMaxStackSize() {
             return PlayerFurnaceData.UNBOUNDED;
         }
 
-        @Override
-        public ItemStack safeInsert(ItemStack stack, int amount) {
-            ItemStack cur = getItem();
-            if (!cur.isEmpty() && !ItemStack.isSameItemSameTags(cur, stack)) {
-                return stack;
-            }
-            int limit = getMaxStackSize(stack);
-            long space = (long) limit - PlayerFurnaceData.rawGetCount(cur);
-            int take = (int) Math.min(amount, space);
-            if (take <= 0) {
-                return stack;
-            }
-            if (cur.isEmpty()) {
-                set(stack.split(take));
-            } else {
-                PlayerFurnaceData.rawSetCount(cur, (int) (PlayerFurnaceData.rawGetCount(cur) + take));
-            }
-            return stack;
-        }
     }
 
     /** 绑定到 PlayerFurnaceData 进度数组的 ContainerData 视图。 */
@@ -336,7 +302,9 @@ public class PortableFurnaceMenu extends AbstractContainerMenu {
             if (netStack.isEmpty()) continue;
             if (!cur.isEmpty() && !ItemStack.isSameItemSameTags(cur, netStack)) continue;
             if (!hasSmeltingRecipe(netStack, player.level())) continue;
-            ItemStack got = NetworkIO.extract(nets, netStack.copyWithCount(64), 64);
+            int request = (int) Math.min(64, PlayerFurnaceData.UNBOUNDED - furnaceData.getAmount(idx));
+            if (request <= 0) break;
+            ItemStack got = NetworkIO.extract(nets, netStack.copyWithCount(request), request);
             if (got.isEmpty()) continue;
             if (cur.isEmpty()) {
                 furnaceData.setSlot(idx, got);
@@ -372,7 +340,9 @@ public class PortableFurnaceMenu extends AbstractContainerMenu {
             if (netStack.isEmpty()) continue;
             if (ForgeHooks.getBurnTime(netStack, RecipeType.SMELTING) <= 0) continue;
             if (!cur.isEmpty() && !ItemStack.isSameItemSameTags(cur, netStack)) continue;
-            ItemStack got = NetworkIO.extract(nets, netStack.copyWithCount(64), 64);
+            int request = (int) Math.min(64, PlayerFurnaceData.UNBOUNDED - furnaceData.getAmount(idx));
+            if (request <= 0) break;
+            ItemStack got = NetworkIO.extract(nets, netStack.copyWithCount(request), request);
             if (got.isEmpty()) continue;
             if (cur.isEmpty()) {
                 furnaceData.setSlot(idx, got);
@@ -405,10 +375,6 @@ public class PortableFurnaceMenu extends AbstractContainerMenu {
     }
 
     private boolean hasSmeltingRecipe(ItemStack stack, Level level) {
-        SimpleContainer c = new SimpleContainer(1);
-        c.setItem(0, stack);
-        return level.getRecipeManager()
-                .getRecipeFor(RecipeType.SMELTING, c, level)
-                .isPresent();
+        return PlayerFurnaceData.hasSmeltRecipe(level, stack);
     }
 }

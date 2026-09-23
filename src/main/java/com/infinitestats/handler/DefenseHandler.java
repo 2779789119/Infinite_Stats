@@ -34,8 +34,8 @@ public class DefenseHandler implements StatEffectHandler {
             applyInvincibilityTick(player, stats);
         }
 
-        // 每5秒处理生命恢复
-        if (tickCount % 100 == 0) {
+        // 按配置间隔处理生命恢复
+        if (tickCount % Config.HEALTH_REGEN_INTERVAL.get() == 0) {
             applyHealthRegen(player, stats);
         }
 
@@ -88,18 +88,26 @@ public class DefenseHandler implements StatEffectHandler {
      * 应用吸收护盾
      * shield > 0 → 始终确保吸收生效；shield == 0 → 仅当由本模组提供时才移除
      */
-    private void applyAbsorptionShield(ServerPlayer player, PlayerStats stats) {
-        float shield = stats.getStatValue(StatType.fromId("absorption_shield"));
-        boolean weProvided = stats.isProviding("absorption_shield");
-
-        if (shield > 0) {
-            player.addEffect(new MobEffectInstance(MobEffects.ABSORPTION,
-                    100, (int) Math.min(shield / 4, 4), false, false, true));
-            stats.setProviding("absorption_shield", true);
-        } else if (weProvided) {
-            player.removeEffect(MobEffects.ABSORPTION);
-            stats.setProviding("absorption_shield", false);
+    public static void applyAbsorptionShield(ServerPlayer player, PlayerStats stats) {
+        float shield = Math.max(0, stats.getStatValue("absorption_shield"));
+        float owned = stats.getShieldAbsorption();
+        // 迁移旧版由本模组施加的短时吸收药水，避免其到期扣除新护盾。
+        if (owned < 0) {
+            var effect = player.getEffect(MobEffects.ABSORPTION);
+            if (stats.isProviding("absorption_shield") && effect != null
+                    && effect.getDuration() <= 100 && !effect.isVisible()) {
+                player.removeEffect(MobEffects.ABSORPTION);
+            }
+            owned = 0;
         }
+        float remaining = Math.max(0, player.getAbsorptionAmount() - owned);
+        player.setAbsorptionAmount(remaining + shield);
+        stats.setShieldAbsorption(shield);
+        stats.setProviding("absorption_shield", shield > 0);
+    }
+
+    public static void trackAbsorptionUse(ServerPlayer player, PlayerStats stats) {
+        stats.setShieldAbsorption(Math.min(stats.getShieldAbsorption(), player.getAbsorptionAmount()));
     }
 
     /**
