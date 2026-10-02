@@ -1,6 +1,7 @@
 package com.infinitestats.command;
 
 import com.infinitestats.InfiniteStats;
+import com.infinitestats.crafting.PortableAnvil;
 import com.infinitestats.crafting.PortableCraftingMenu;
 import com.infinitestats.furnace.PortableFurnaceMenu;
 import com.infinitestats.stats.PlayerStats;
@@ -60,6 +61,8 @@ public final class ModServerCommands {
                                 .executes(ModServerCommands::openCrafting))
                         .then(Commands.literal("furnace")
                                 .executes(ModServerCommands::openFurnace))
+                        .then(Commands.literal("anvil")
+                                .executes(ModServerCommands::openAnvil))
         );
     }
 
@@ -238,6 +241,21 @@ public final class ModServerCommands {
                 (id, inv, p) -> new PortableCraftingMenu(id, inv),
                 Component.translatable("container.crafting"));
         NetworkHooks.openScreen(player, provider);
+        return 1;
+    }
+
+    private static int openAnvil(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) return 0;
+
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+        if (stats == null || !stats.isToggleActive("portable_anvil")) {
+            source.sendFailure(Component.literal("未激活『随身铁砧』属性，无法打开随身铁砧"));
+            return 0;
+        }
+
+        PortableAnvil.open(player);
         return 1;
     }
 

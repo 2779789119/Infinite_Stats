@@ -245,8 +245,18 @@ public class UtilityHandler implements StatEffectHandler {
     }
 
     /**
-     * 弹射物追踪 — 让玩家发射的弹射物自动转向追踪最近的敌人。
-     * 性能优化：仅在玩家周围「配置半径」范围内扫描（避免全维度实体遍历），
+     * 弹射物追踪 — 让玩家发射的弹射物自动转向追踪敌人。
+     * <p>
+     * 目标筛选按两级进行：
+     * <ol>
+     *   <li><b>隔着方块的直接排除</b>：用 {@code player.hasLineOfSight} 判断玩家与目标之间
+     *       是否被方块挡住，挡住的不追 —— 追过去也只会撞墙；</li>
+     *   <li><b>视野锥内的优先</b>：同样看得见的目标里，落在玩家前方约 ±60° 视锥内的先选；
+     *       视锥内一个都没有时才退回到视锥外但仍可见的目标。</li>
+     * </ol>
+     * 性能：仍在玩家周围「配置半径」内扫描（避免全维度实体遍历）。视线与视锥判定都放在
+     * 弹射物循环<b>之外</b>、每个敌人只算一次，不随弹射物数量重复计算；
+     * {@code hasLineOfSight} 内部自带 128 格上限与一次方块射线，开销可控。
      * 调用频率由 onTick 节流为每 4 tick 一次。
      */
     private void applyProjectileTracking(ServerPlayer player, PlayerStats stats) {
@@ -269,20 +279,23 @@ public class UtilityHandler implements StatEffectHandler {
                 m -> m instanceof Enemy && m.isAlive() && !m.isRemoved());
         if (enemies.isEmpty()) return;
 
+        // 先筛掉隔墙的，再分出视野锥内的两个候选池。二者都不依赖具体弹射物，
+        // 提前算好供下面复用，避免每支弹射物把同一批敌人重算一遍。
+        List<Mob> visible = new ArrayList<>();
+        List<Mob> inView = new ArrayList<>();
+        for (Mob enemy : enemies) {
+            if (!player.hasLineOfSight(enemy)) continue;
+            visible.add(enemy);
+            if (isInPlayerViewCone(player, enemy)) inView.add(enemy);
+        }
+        if (visible.isEmpty()) return;
+
         for (Projectile proj : projectiles) {
             if (proj.isRemoved()) continue;
 
-            // 找到最近的敌人
-            LivingEntity target = null;
-            double closestDist = Double.MAX_VALUE;
-            for (Mob enemy : enemies) {
-                double dist = proj.distanceToSqr(enemy);
-                if (dist < closestDist) {
-                    closestDist = dist;
-                    target = enemy;
-                }
-            }
-
+            // 视野内的优先；一个都没有时再退回到视野外但仍可见的目标
+            LivingEntity target = closestTo(proj, inView);
+            if (target == null) target = closestTo(proj, visible);
             if (target == null) continue;
 
             // 计算追踪方向，瞄准身体中部
@@ -294,6 +307,32 @@ public class UtilityHandler implements StatEffectHandler {
             double currentSpeed = proj.getDeltaMovement().length();
             proj.setDeltaMovement(direction.scale(currentSpeed));
         }
+    }
+
+    /** 视锥半角余弦，0.5 约等于玩家正前方 ±60°。 */
+    private static final double VIEW_CONE_COS = 0.5;
+
+    /** 目标是否落在玩家前方的视锥内。 */
+    private static boolean isInPlayerViewCone(ServerPlayer player, LivingEntity target) {
+        Vec3 look = player.getViewVector(1.0f).normalize();
+        Vec3 toTarget = target.getEyePosition().subtract(player.getEyePosition());
+        // 贴脸时方向向量退化，直接视作在视野内
+        if (toTarget.lengthSqr() < 1.0E-4) return true;
+        return look.dot(toTarget.normalize()) >= VIEW_CONE_COS;
+    }
+
+    /** 在候选集合里找离弹射物最近的一个；集合为空时返回 {@code null}。 */
+    private static LivingEntity closestTo(Projectile proj, List<Mob> candidates) {
+        LivingEntity best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (Mob candidate : candidates) {
+            double dist = proj.distanceToSqr(candidate);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = candidate;
+            }
+        }
+        return best;
     }
 
     /**

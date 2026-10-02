@@ -15,9 +15,9 @@ import net.minecraft.world.item.ItemStack;
 public class FurnaceOrePriorityMenu extends AbstractContainerMenu {
 
     /** 玩家背包槽位在 GUI 内的坐标（与 FurnaceOrePriorityScreen 绘制位置一致）。 */
-    public static final int INV_X = 69; // 在 300 宽界面中居中： (300 - 9*18) / 2
-    public static final int INV_MAIN_Y = 160;
-    public static final int INV_HOTBAR_Y = 218;
+    public static final int INV_X = 79; // 在 320 宽界面中居中： (320 - 9*18) / 2
+    public static final int INV_MAIN_Y = 176;
+    public static final int INV_HOTBAR_Y = 236;
 
     public FurnaceOrePriorityMenu(int windowId, Inventory inv) {
         super(ModMenuTypes.FURNACE_ORE_PRIORITY_MENU.get(), windowId);

@@ -49,7 +49,6 @@ public final class Config {
     // ========== 被动效果设置 ==========
 
     public static ForgeConfigSpec.IntValue HEALTH_REGEN_INTERVAL;
-    public static ForgeConfigSpec.IntValue MANA_REGEN_INTERVAL;
     public static ForgeConfigSpec.IntValue MAGNET_RANGE;
     public static ForgeConfigSpec.IntValue VEIN_MINER_MAX_BLOCKS;
 
@@ -100,8 +99,8 @@ public final class Config {
                 .comment("被动获取的经验值数量")
                 .defineInRange("passiveXpAmount", 2, 0, 100);
         PASSIVE_XP_INTERVAL = builder
-                .comment("被动经验获取间隔（tick，20tick=1秒）")
-                .defineInRange("passiveXpInterval", 80, 20, 12000);
+                .comment("被动经验获取间隔（tick，20tick=1秒），默认 20tick=1秒")
+                .defineInRange("passiveXpInterval", 20, 20, 12000);
         builder.pop();
 
         // 升级设置
@@ -114,7 +113,7 @@ public final class Config {
                 .defineInRange("xpPerLevelIncrement", 30, 0, 10000);
         POINTS_PER_LEVEL = builder
                 .comment("每次升级获得的属性点数")
-                .defineInRange("pointsPerLevel", 3, 1, 100);
+                .defineInRange("pointsPerLevel", 10, 1, 100);
         builder.pop();
 
         // 复活设置
@@ -139,11 +138,8 @@ public final class Config {
         // 被动效果设置
         builder.push("PassiveEffects");
         HEALTH_REGEN_INTERVAL = builder
-                .comment("生命恢复间隔（tick）")
-                .defineInRange("healthRegenInterval", 100, 20, 400);
-        MANA_REGEN_INTERVAL = builder
-                .comment("法力恢复间隔（tick）")
-                .defineInRange("manaRegenInterval", 40, 20, 400);
+                .comment("生命恢复间隔（tick），默认 20tick=1秒")
+                .defineInRange("healthRegenInterval", 20, 20, 400);
         MAGNET_RANGE = builder
                 .comment("物品/经验磁铁吸引范围")
                 .defineInRange("magnetRange", 10, 3, 50);

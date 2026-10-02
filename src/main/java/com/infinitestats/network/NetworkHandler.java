@@ -1,6 +1,7 @@
 package com.infinitestats.network;
 
 import com.infinitestats.InfiniteStats;
+import com.infinitestats.crafting.PortableAnvil;
 import com.infinitestats.crafting.PortableCraftingMenu;
 import com.infinitestats.emc.EmcDatabase;
 import com.infinitestats.emc.EmcMenu;
@@ -58,7 +59,7 @@ import java.util.function.Supplier;
  */
 public final class NetworkHandler {
 
-    private static final String PROTOCOL_VERSION = "5";
+    private static final String PROTOCOL_VERSION = "6";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -271,6 +272,12 @@ public final class NetworkHandler {
                 CraftingOpenPacket::encode,
                 CraftingOpenPacket::decode,
                 CraftingOpenPacket::handle);
+
+        // 随身铁砧菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, AnvilOpenPacket.class,
+                AnvilOpenPacket::encode,
+                AnvilOpenPacket::decode,
+                AnvilOpenPacket::handle);
 
         // 跨维度传送请求数据包（客户端 → 服务器）
         CHANNEL.registerMessage(packetId++, CrossDimRequestPacket.class,
@@ -1139,18 +1146,28 @@ public final class NetworkHandler {
     /** 客户端向服务器请求增减随身工作台物品倍率（消耗/返还可分配点数）。 */
     public static final class CraftingMultiplierPacket {
         private static final int MAX_MULTIPLIER = 64; // 受物品堆叠上限约束
+        /** 单次请求最多调整的级数：客户端按住 Shift 即以此步长提交。 */
+        private static final int MAX_STEP = 10;
+
         private final boolean increase; // true=提升倍率（消耗点数）；false=降低倍率（返点数）
+        private final int amount;       // 本次请求调整的级数
 
         public CraftingMultiplierPacket(boolean increase) {
+            this(increase, 1);
+        }
+
+        public CraftingMultiplierPacket(boolean increase, int amount) {
             this.increase = increase;
+            this.amount = Math.max(1, Math.min(amount, MAX_STEP));
         }
 
         public static void encode(CraftingMultiplierPacket msg, FriendlyByteBuf buf) {
             buf.writeBoolean(msg.increase);
+            buf.writeVarInt(msg.amount);
         }
 
         public static CraftingMultiplierPacket decode(FriendlyByteBuf buf) {
-            return new CraftingMultiplierPacket(buf.readBoolean());
+            return new CraftingMultiplierPacket(buf.readBoolean(), buf.readVarInt());
         }
 
         public static void handle(CraftingMultiplierPacket msg, Supplier<NetworkEvent.Context> ctx) {
@@ -1165,31 +1182,35 @@ public final class NetworkHandler {
                     long mult = stats.getCraftingMultiplier();
 
                     if (msg.increase) {
-                        if (mult >= MAX_MULTIPLIER) {
+                        int headroom = (int) Math.min(msg.amount, MAX_MULTIPLIER - mult);
+                        if (headroom <= 0) {
                             player.sendSystemMessage(Component.literal(
                                     "§e随身工作台倍率已达上限 ×" + MAX_MULTIPLIER));
                             return;
                         }
-                        if (stats.getAvailablePoints() < cost) {
+                        // 点数够几级就升几级；一级都升不动时才提示
+                        int affordable = (int) Math.min(headroom, stats.getAvailablePoints() / cost);
+                        if (affordable <= 0) {
                             player.sendSystemMessage(Component.literal(
                                     "§c可分配点数不足，提升一级倍率需 " + cost + " 点"));
                             return;
                         }
-                        stats.setCraftingMultiplier(mult + 1);
+                        stats.setCraftingMultiplier(mult + affordable);
                         stats.recalculateAvailablePoints();
                         player.sendSystemMessage(Component.literal(
                                 "§a工作台倍率提升至 §f×" + stats.getCraftingMultiplier()
-                                        + "§a（消耗 " + cost + " 点）"));
+                                        + "§a（消耗 " + (long) cost * affordable + " 点）"));
                     } else {
-                        if (mult <= 1) {
+                        int step = (int) Math.min(msg.amount, mult - 1);
+                        if (step <= 0) {
                             player.sendSystemMessage(Component.literal("§e随身工作台已处于基础倍率 ×1"));
                             return;
                         }
-                        stats.setCraftingMultiplier(mult - 1);
+                        stats.setCraftingMultiplier(mult - step);
                         stats.recalculateAvailablePoints();
                         player.sendSystemMessage(Component.literal(
                                 "§a工作台倍率降至 §f×" + stats.getCraftingMultiplier()
-                                        + "§a（返还 " + cost + " 点）"));
+                                        + "§a（返还 " + (long) cost * step + " 点）"));
                     }
 
                     // 同步点数与倍率，并立即重算已摆放配方的产物。
@@ -1229,6 +1250,34 @@ public final class NetworkHandler {
                             new SimpleMenuProvider(
                                     (id, inv, p) -> new PortableCraftingMenu(id, inv),
                                     Component.translatable("container.crafting")));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求打开随身铁砧（需已开启 portable_anvil 开关）。 */
+    public static final class AnvilOpenPacket {
+        public AnvilOpenPacket() {}
+
+        public static void encode(AnvilOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static AnvilOpenPacket decode(FriendlyByteBuf buf) {
+            return new AnvilOpenPacket();
+        }
+
+        public static void handle(AnvilOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_anvil")) {
+                        player.sendSystemMessage(Component.literal("未激活『随身铁砧』属性，无法打开随身铁砧"));
+                        return;
+                    }
+                    PortableAnvil.open(player);
                 });
             });
             ctx.get().setPacketHandled(true);

@@ -23,8 +23,6 @@ public final class HudEditScreen extends Screen {
     private static final int TEXT_LEVEL = 0xFF60A5FA;
     private static final int BAR_XP_BG = 0x40252535;
     private static final int BAR_XP = 0xFF4ADE80;
-    private static final int BAR_MANA_BG = 0x40252535;
-    private static final int BAR_MANA = 0xFFA78BFA;
     private static final int PANEL_WIDTH = 140;
     private static final int HINT_COLOR = 0x80FFFFFF;
 
@@ -111,17 +109,6 @@ public final class HudEditScreen extends Screen {
             cy += lineH + 2;
         }
 
-        float maxMana = stats.getMaxMana();
-        if (maxMana > 0) {
-            float manaPercent = Mth.clamp(stats.getCurrentMana() / maxMana, 0, 1);
-            graphics.fill(cx, cy, cx + barWidth, cy + 5, BAR_MANA_BG);
-            if (manaPercent > 0) {
-                int filled = Math.max(1, (int) (manaPercent * barWidth));
-                graphics.fill(cx, cy, cx + filled, cy + 5, BAR_MANA);
-            }
-            graphics.drawString(mc.font, (int) stats.getCurrentMana() + "/" + (int) maxMana, cx + barWidth + 4, cy - 2, TEXT_LABEL);
-        }
-
         // === 提示文字 ===
         String hint1 = "拖拽面板移动 · ESC 保存退出";
         String hint2 = "X=" + x + " Y=" + y;
@@ -188,7 +175,6 @@ public final class HudEditScreen extends Screen {
 
     private static int getPanelHeight(PlayerStats stats) {
         int pointLine = stats.getAvailablePoints() > 0 ? 1 : 0;
-        int manaLine = stats.getMaxMana() > 0 ? 1 : 0;
-        return 10 + 10 + 8 + pointLine * 11 + manaLine * 9 + 6;
+        return 10 + 10 + 8 + pointLine * 11 + 6;
     }
 }

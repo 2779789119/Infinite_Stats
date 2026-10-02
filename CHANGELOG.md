@@ -1,5 +1,470 @@
 # 更新日志 (Changelog)
 
+## [1.17.2] - 2026-10-01
+
+### 🌏 补充外部属性中文译文（+22 条）
+
+- **来源**：整合包 `Nemesis of Demons` 启动后生成的缺译文清单 `config/infinitestats/external_translations.json`，其中仍有 22 个属性的值停留在 `[modid:attr]` 占位符（其余 43 条此前已覆盖）。
+- **新增覆盖的两个模组**：
+  - `additionalentityattributes`（11 条）：暴击额外伤害、水中移动速度 / 水下视野、肺活量、岩浆中移动速度 / 视野、挖掘速度、额外稀有掉落次数、额外掉落次数、掉落经验、魔法保护；
+  - `obscure_api`（11 条）：暴击率、暴击伤害、闪避、招架、魔法伤害、魔法抗性、穿透、生命恢复、治疗强度、精准度、韧性。
+- **实现方式**：全部直接写入 `assets/infinitestats/lang/zh_cn.json` 的「外部模组属性补充翻译」区块尾部，沿用既有做法 —— 借 MC 语言表跨 namespace 合并 key 的特性，装包即用，不需要各整合包自行做资源包。
+- **影响范围**：`src/main/resources/assets/infinitestats/lang/zh_cn.json`、`README.md`（已覆盖模组清单同步补上这两个模组）。
+- **验证**：用脚本比对清单与语言文件，65 条键全部命中，且无重复键。
+
+## [1.17.1] - 2026-10-01
+
+### 🔀 随身工作台接入 Polymorph（多态合成）
+
+- **背景**：Polymorph 让「多个配方产出同一物品」时由玩家自己选。但**自定义合成容器不会自动被它接管** —— 它的集成接口面向两类宿主：方块实体（熔炉等）与物品（背包里的合成升级等），而随身工作台两者都不是。
+- **切入点**：Polymorph 的配方宿主其实有**第三类 —— 玩家本身**（`IPlayerRecipeData`），这正是它为「没有方块实体的合成容器」准备的，原版工作台走的就是它：
+
+  ```java
+  Optional<IPlayerRecipeData> data = PolymorphApi.common().getRecipeData(player);
+  data.get().setContainerMenu(menu);                       // 必须先挂菜单，见下
+  Optional<CraftingRecipe> picked =
+        data.get().getRecipe(RecipeType.CRAFTING, craftSlots, level, List.of());
+  ```
+
+  传空列表时 `AbstractRecipeData#getRecipe` 会**自己完成全部工作**：收集所有匹配配方 → 按玩家上次的选择挑一个 → 整理候选列表并按需同步给客户端控件。因此这里几乎不需要自己写逻辑。
+- **`setContainerMenu` 不能省**：`PlayerRecipeData#sendRecipesListToListeners` 只在「配方数据的容器菜单 == 玩家当前打开的菜单」时才真正发送，不挂上菜单客户端就收不到候选列表、选择控件也就空着。该方法在 `getRecipe` 读完会自动清空，无需手动还原。
+- **客户端零改动**：Polymorph 客户端按「槽位容器是不是 `ResultContainer`」识别合成结果槽（`findCraftingResultSlot`），而随身工作台的结果槽正是 `ResultSlot` + `ResultContainer`，于是界面一打开就会被自动接管，配方选择控件直接出现在成品槽旁。
+- **实现方式**：沿用本模组既有的兼容层风格（与 RS / AE2 / 背包桥接一致）——**纯反射，不加编译期依赖**。新增 `compat/PolymorphCompat`，运行时用 `ModList` 探测并缓存方法句柄。
+- **安全降级**：Polymorph 未加载、API 版本对不上或反射调用抛错时一律返回 `null`，`PortableCraftingMenu#slotsChanged` 随即回退到原版「取第一个匹配配方」的行为 —— 不装 Polymorph 的整合包完全不受影响，也不会白跑一次全量配方扫描。
+- **影响范围**：新增 `compat/PolymorphCompat`；`crafting/PortableCraftingMenu#slotsChanged` 改为先问 Polymorph、拿不到再回退。
+
+## [1.17.0] - 2026-10-01
+
+### 🔨 新增「随身铁砧」（功能分类，1 点解锁）
+
+- **效果**：解锁后可在任意位置打开一台铁砧，用于**修复 / 合并附魔 / 重命名**，与站在真铁砧前完全一致 —— 包括正常的**经验消耗**。
+- **实现**：直接复用原版 `AnvilMenu`，只把 `ContainerLevelAccess` 传成 `ContainerLevelAccess.NULL`：
+
+  ```java
+  new SimpleMenuProvider(
+          (windowId, inv, p) -> new AnvilMenu(windowId, inv, ContainerLevelAccess.NULL),
+          Component.translatable("container.repair"))
+  ```
+
+  - 铁砧的**方块损伤、砸落铁砧伤害、音效与统计**全都写在 `access.execute(...)` 回调里，而 `NULL` 实现是空操作 —— 于是随身铁砧天然**不会损耗**，也不会在世界里留下任何痕迹；
+  - **经验扣减**位于该回调之外（`AnvilMenu#onTake` 中），照常生效，不会变成免费修理。
+- **零新增客户端代码**：菜单类型沿用原版 `MenuType.ANVIL`，客户端会自动套用原版 `AnvilScreen`。新增的只有服务端侧 `crafting/PortableAnvil` 与一个 `AnvilOpenPacket`。
+- **入口**：`/infstats anvil`，或属性面板页脚导航栏的「铁砧」按钮。
+
+### 🧰 属性面板导航栏扩容
+
+- 页脚导航从 9 个入口增至 **10 个**（新增「铁砧」）。`GUI_WIDTH = 440` 原本已被 `9 × 45 + 8 × 4 = 437` 占满，因此按钮宽度与间隔收窄为 `40 / 3`（合计 427，居中后左右各留 6）。
+- **顺带修掉一处国际化遗漏**：导航按钮此前是 `Component.literal("传送")` 这类硬编码中文，英文客户端会直接显示中文。现已全部改用 `gui.infinitestats.nav.*` 语言键。
+
+### ⚙️ 随身工作台优化
+
+- **倍率按钮支持批量调整**：按住 **Shift** 点 `+` / `-` 一次调整 **10 级**。`CraftingMultiplierPacket` 增加 `amount` 字段（上限 10），服务端按「点数够几级就升几级」批量结算，只弹一条汇总提示；连一级都升不动时才提示点数不足。
+- **自动补料扩展到玩家背包**：原先只有玩家连着存储网络（RS / AE2 / 汤姆存储 / 背包等）时才自动补料，否则取一次成品后网格就空掉、每次都得手动重摆。现在**先向网络要，要不够的差额再从玩家背包补足** —— 一个网络都没连也能连续制作。关闭界面时网格余料仍照旧退回网络 / 背包，不会丢物品。
+  - 补料口径与配方一致：只补「取出前存在、取出后正好少掉的那部分」，且按 `isSameItemSameTags` 匹配，不会误拉其它同种但不同 NBT 的物品。
+- **按钮文案国际化**：成品去向按钮的「包」/「储」原为硬编码中文，改用 `gui.infinitestats.crafting.output_bag` / `output_storage`。
+
+- **影响范围**：`stats/StatType`、`network/NetworkHandler`、`command/ModServerCommands`、`client/StatsScreen`、`client/PortableCraftingScreen`、`crafting/PortableCraftingMenu`，新增 `crafting/PortableAnvil`；中英文语言文件同步（含 10 条导航键与铁砧属性文案）。
+
+## [1.16.1] - 2026-10-01
+
+### 🏹 「无限弓箭」补齐弩
+
+- **背景**：`infinite_arrows` 此前只作用于**弓**，弩完全没覆盖（1.16.0 的说明里也写着「未覆盖：弩」）。玩家拿弩时会发现开关"失灵"。
+- **为什么不能照搬弓的做法**：弓是在 `ArrowLooseEvent` 里补一支箭；弩的发射完全依赖装备自身的 `ChargedProjectiles`（原版 `performShooting` 只遍历这个列表），**在发射阶段插手已经太晚**，必须往前挪到「装填」。
+- **原版卡在哪两处**：
+
+  ```
+  CrossbowItem.use()
+    ├─ isCharged(stack) → performShooting            ← 想走这里，得先 charged
+    ├─ else if (!player.getProjectile(stack).isEmpty()) → startUsingItem
+    └─ else return fail                               ← 空手连「架弩」都做不到
+
+  CrossbowItem.releaseUsing()
+    ├─ f = getPowerForTime(已蓄力 tick, crossbow)
+    └─ if (f >= 1.0F && !isCharged(stack) && tryLoadProjectiles(...))   ← 空手时第三个条件挂掉
+  ```
+
+  `tryLoadProjectiles` 取的是 `player.getProjectile(crossbow)`，空手时为 `EMPTY`，直接返回 `false`，弩永远装不上。
+- **落点（两步，与弓同构但钩子不同）**：
+
+  1. **起手** —— 扩展现有的 `PlayerInteractEvent.RightClickItem`：手持弩、未装填、背包无箭且已解锁时，自己 `startUsingItem` 并取消事件返回 `CONSUME`；已装填的右键是「发射」，原样交回 `performShooting`。
+  2. **装填完成** —— 新增 `LivingEntityUseItemEvent.Stop`。Forge 在 1.20.1 的 `LivingEntity` 补丁里把它挂在 `releaseUsingItem()` 中、**正好在 `ItemStack.releaseUsing` 之前**：
+
+     ```java
+     if (!ForgeEventFactory.onUseItemStop(this, useItem, getUseItemRemainingTicks()))
+        useItem.releaseUsing(this.level(), this, getUseItemRemainingTicks());
+     ```
+
+     于是先把箭补进 `ChargedProjectiles` 并 `setCharged(true)`，原版那一步就会因 `!isCharged(stack)` 不成立而整体短路 —— 状态原地保留，一行原版逻辑都不用改。
+- **与原版手感一致**：装填是否蓄满沿用原版判据（`getUseDuration - 剩余 >= getChargeDuration`，等价于 `getPowerForTime >= 1.0F`，提前松手同样不装填）；虚拟箭数量跟随**多重射击**附魔取 1 / 3 支；原版挂在 `releaseUsing` 成功分支里的装填完成音效由模组补播。
+- **不碰背包**：写进 `ChargedProjectiles` 的是全新构造的 `ItemStack`，既不读也不扣玩家背包。
+- **顺手修掉一个会误伤弩的隐患**：`ArrowLooseEvent` 原先对所有武器生效，而弩发射时原版 `performShooting` 也会以 `charge=1 / hasAmmo=true` 触发它 —— 若玩家背包无箭，旧代码会把这次事件取消掉，**整发弩箭直接射不出去**。现在弩在该处理器里提前分流，只「记录 + 放行」。
+- **防刷箭**：原版 `shootProjectile` 只对「创造模式」或「多重射击第 2、3 支」设 `CREATIVE_ONLY`，生存玩家的第一支仍可拾取；虚拟箭白白得来，落地被捡回就等于凭空刷箭。因此由 `ArrowLooseEvent` 记下「发射那一刻背包无箭」的玩家与 tick，`EntityJoinLevelEvent` 据此把同一 tick 生成的弩箭改成 `CREATIVE_ONLY`。判定取的是**发射瞬间**而非实体生成之后，所以「多重射击把最后一支箭消耗掉」的真箭不会被误伤。
+- **两端收敛**：NBT 改写与拾取权限都只在服务端执行（1.20.1 的 `performShooting` / `EntityJoinLevelEvent` 两端都会触发），避免客户端产生分叉状态。
+- **影响范围**：`event/StatEventHandler` —— `onRightClickItem` 增加弩分支、`onArrowLoose` 增加弩分流、新增 `onUseItemStop` / `onEntityJoinLevel` / `loadVirtualArrows` / `hasArrowInInventory` / `onPlayerLogout` 与 `VIRTUAL_CROSSBOW_SHOTS` 表；`stats/StatType` 与中英文语言文件同步属性描述。
+- **仍未覆盖**：**弩装烟花**（`FIREWORK_ROCKET`）与自定义弩类物品 —— 它们的 `ChargedProjectiles` 非空，模组不会介入，行为保持原版。
+
+## [1.16.0] - 2026-10-01
+
+### ✨ 新增「无限弓箭」（攻击分类，5 点解锁）
+
+- **效果**：投入 5 点解锁后，**背包里一支箭都没有也能拉弓蓄力射击**，射出的箭不消耗背包。
+- **实现要点**（原版没有现成钩子，需要两步接管）：
+
+  1. **开始蓄力** —— 原版 `BowItem.use` 先判断 `player.getProjectile(bow)` 是否为空，为空直接返回 `fail`，玩家**连拉弓动作都做不出来**：
+
+     ```
+     BowItem.use()
+       ├─ flag = !player.getProjectile(bow).isEmpty()
+       ├─ ArrowNockEvent（hasAmmo 是 final 改不了，事件本身也不是 @Cancelable）
+       └─ if (!instabuild && !flag) return fail;      ← 卡在这里
+     ```
+
+     改用副作用最小的 `PlayerInteractEvent.RightClickItem`（在 `Item#use` **之前**触发且可取消），自己调 `startUsingItem` 启动蓄力，并返回 `CONSUME` 告知两端已处理。
+
+  2. **放箭** —— `ArrowLooseEvent.hasAmmo` 同样是 `final`、没有 setter，而且 `BowItem.releaseUsing` 的判定用的是局部变量 `itemstack = player.getProjectile(bow)`，与事件参数无关：
+
+     ```
+     releaseUsing()
+       ├─ itemstack = player.getProjectile(bow)         ← 空
+       ├─ i = ForgeEventFactory.onArrowLoose(...)       ← 取消后返回 -1
+       ├─ if (i < 0) return;                            ← 拦在这里，原版不再继续
+       └─ if (!itemstack.isEmpty() || flag) { ... }     ← 本来也进不去
+     ```
+
+     因此取消该事件，由模组按原版规则自行补一支箭 —— 这是唯一可行的落点。
+- **不碰背包**：补的箭是**独立新建的 `ItemStack`**，既不读也不改背包 —— 不会扣掉玩家装的箭，也不会凭空塞进物品栏。拾取权限沿用原版「无限附魔」的做法设为 `CREATIVE_ONLY`，否则落地的箭被捡回等于无限刷箭。
+- **手感与原版一致**：蓄力曲线、暴击阈值、力量 / 冲击 / 火矢附魔加成、弓的耐久损耗均复刻 `releaseUsing`。
+- **条件一致性**：两步的判定（创造模式 / 背包有箭 / 是否解锁）统一走 `hasInfiniteArrows`，避免出现「拉得起来但射不出去」的半残状态。
+- **未覆盖**：**弩**。`CrossbowItem` 的装填走 `getChargedProjectiles` / `setCharged` 另一套逻辑，需要单独处理，本次未做。
+
+### 🌏 内置 30+ 模组的外部属性中文翻译
+
+- **背景**：「外部属性」分类会自动收录其他模组注册的属性，显示名取自属性自带的 `getDescriptionId()`。但不少模组**自己都没提供中文译文**，于是 GUI 里直接显示成 `[gunsmithlib:bullet_damage]` 这样的原始键名。
+- **此前的问题**：模组会把这些「缺译文」的属性列进 `config/infinitestats/external_translations.json`，但**没有任何代码读回它** —— 在整合包里手填既不会生效，还会被下次启动时的 `Files.writeString` 整file覆盖。
+- **现在**：把 246 条译文**直接内置进模组语言文件** `assets/infinitestats/lang/zh_cn.json`。
+
+  - MC 的语言表是**跨 namespace 按 key 合并**的，所以 `infinitestats` 的 lang 里放别的模组的键照样生效；而这些键在原模组处本来就不存在，不会产生覆盖冲突。
+  - 写在模组 jar 里意味着**装包即用**，所有玩家都能看到中文，不需要每个整合包各填一份。
+  - 覆盖模组：`gunsmithlib`、`attributeslib`、`goety` / `goety_revelation` / `goeticlegacy`、`taa`、`touhou_little_maid`、`wizard_terra_cuiros`、`l2damagetracker`、`celestial_core`、`flame_chase_artifacts`、`additional_attributes`、`terra_entity`、`ending_library`、`cataclysm`、`apotheosis_modern_ragnarok`、`reach-entity-attributes`、`qiyuemod`、`blessingofpandora`、`curseofpandora`、`fallen_gems_affixes`、`tacz`、`tcc`、`alexscaves_torpedoes`、`ftbultimine`、`caelus`、`vengeance`、`slashblade`、`block_factorys_bosses`、`l2hostility`、`monsterexpansion`、`confluence`、`sal_fishs_attribute_lib` 等。
+- **`external_translations.json` 不再被覆盖**：该清单现在只在**文件不存在**时生成一次，作者手填的补充内容不会再被冲掉，仍可作为「还有哪些新属性没译文」的参考。
+- **文档同步**：`无限加点模组介绍.txt` 更新了外部属性一节的说明，并移除了早已删除的「魔法」属性列表。
+
+### 🔧 改进「弹射物追踪」的目标筛选
+
+- **以前**：在配置半径内挑一个**离弹射物最近**的敌人就把速度转过去 —— 不看方向、也不看中间有没有墙，于是会追到墙后面的怪，或者扭头去追玩家背对着的怪。
+- **现在**改成两级筛选：
+  1. **隔着方块的直接排除** —— 用 `player.hasLineOfSight` 判断玩家与目标之间是否被方块挡住，挡住的不追（追过去也只会撞墙）；
+  2. **视野锥内的优先** —— 同样看得见的目标里，落在玩家前方约 **±60°** 视锥内的先选；视锥内一个都没有时，才退回到视锥外但仍可见的目标。
+- **性能**：视线与视锥判定都放在弹射物循环**之外**、每个敌人只算一次，不随弹射物数量重复计算；`hasLineOfSight` 自带 128 格上限与一次方块射线，开销可控。原有「配置半径扫描 + 每 4 tick 节流」不变。
+- **影响范围**：`handler/UtilityHandler.applyProjectileTracking`，新增 `isInPlayerViewCone` / `closestTo` 两个辅助方法与 `VIEW_CONE_COS` 常量；属性描述文案同步更新。
+
+## [1.15.0] - 2026-10-01
+
+### 🔥 移除「魔法」属性分类
+
+- **移除内容**：整个 MAGIC 分类及其 6 条属性 —— 最大法力值、法力恢复、魔法伤害、法力护盾、法力窃取、击杀回蓝。
+- **移除原因**：这套法力系统在实际使用中不成体系：
+  - 法力**只有「法力护盾」一个消耗口**。不点护盾时，其余 4 条产蓝属性（最大法力值 / 法力恢复 / 法力窃取 / 击杀回蓝）全是无用投入 —— 蓝只涨不花；
+  - 「魔法伤害」的判定依赖 `infinitestats:magic` 伤害类型标签，只覆盖原版 `magic` / `indirect_magic` / `dragon_breath` / `wither` 与可选的 `#forge:is_magic`。整合包里的魔法模组若不注册该标签就完全不生效；
+  - 「法力窃取」与已修复的吸血同源（在 `LivingHurtEvent` 里按面板伤害结算），数值虚高。
+- **点数退还**：旧存档（含整合包内现存存档）里投入魔法属性的点数**在加载时全额退还到可用点数**，玩家不亏。
+  - 实现位于 `PlayerStats.deserializeNBT`，且**必须置于 `StatType.fromId` 判断之前** —— 属性定义删除后 `fromId` 返回 `null`，条目会被直接丢弃，点数就白丢了；
+  - 退还按绝对值累计，负值（透支方向）同样返还；逻辑幂等，重复加载不会重复退还。
+- **涉及改动**：
+  - `stats/StatCategory`（删 `MAGIC`）、`stats/StatType`（删 6 条定义）、`stats/PlayerStats`（删 `currentMana` 字段与 `getCurrentMana` / `setCurrentMana` / `getMaxMana`，NBT / `StatsSnapshot` / `copyFrom` / `restoreFromSnapshot` 同步清理，新增 `LEGACY_MAGIC_STATS` 常量与退还逻辑）
+  - 删除 `handler/MagicHandler` 及 `HandlerRegistry` 中的注册
+  - `handler/AttackHandler`（删 `MAGIC_DAMAGE` 标签、`calculateMagicBonus`、`applyManaSteal`）
+  - `event/StatEventHandler`（删魔法增伤、法力窃取、法力护盾、击杀回蓝四处调用）
+  - `network/SyncStatsPacket`（删 `currentMana` 字段，编码 / 解码 / 构造 / 快照四处同步调整）
+  - UI：`StatsScreen`（删 6 个属性图标与进度条下方的法力条）、`StatsHudOverlay` / `HudEditScreen`（删 HUD 法力条并同步面板高度计算）
+  - 资源：删除 `data/infinitestats/tags/damage_type/magic.json`；中英文语言文件移除 `category.infinitestats.magic` 与 12 个 `stat.infinitestats.*` 键
+  - 配置：删除 `MANA_REGEN_INTERVAL`
+  - 测试：`RegressionTests` 移除魔法伤害标签断言，`configuredRegenerationIntervals` 精简为只覆盖生命恢复间隔
+- **界面变化**：顶部标签栏由 6 个减为 5 个（攻击 / 防御 / 机动 / 功能 / 外部属性），标签宽度按分类数量自动重新均分，无需手工调整。
+
+### ⚖️ 调整默认配置数值
+
+按整合包实测节奏上调三个基础参数：
+
+| 配置项 | 原默认 | 新默认 | 说明 |
+|---|---|---|---|
+| `pointsPerLevel` | 3 | **10** | 每次升级获得的属性点数 |
+| `healthRegenInterval` | 100 | **20** | 生命恢复间隔（tick），即 5 秒 → 1 秒 |
+| `passiveXpInterval` | 80 | **20** | 被动经验获取间隔（tick），即 4 秒 → 1 秒 |
+
+- ⚠️ **只影响新生成的配置文件**。Forge 不会覆盖已存在的 `config/infinitestats-*.toml`，装过旧版本的整合包需**手动改值或删掉配置文件重新生成**，否则仍是旧默认。
+
+## [1.14.2] - 2026-10-01
+
+### 🐞 修复「取消无敌帧」在目标带有他人无敌帧时完全失效
+
+- **问题**：目标身上带着**其他来源**设置的无敌帧时（被别人打、被别的怪打、着火、中毒都会把 `invulnerableTime` 重设为 20），玩家这一击会被原版 `hurt()` 的无敌帧检查直接丢弃 —— 表现为"开了这个开关还是每 0.5 秒才掉一次血"。
+- **原因**：清零点写在 `LivingHurtEvent` 里，而该事件触发在无敌帧检查**之后**：
+
+  ```
+  hurt()
+    ├─ ForgeHooks.onLivingAttack(...)
+    ├─ if (invulnerableTime > 10) return false;      ← 被吞，后续事件全都不触发
+    └─ else { invulnerableTime = 20; actuallyHurt() → LivingHurtEvent }
+  ```
+
+  一旦在上面被 `return false` 丢弃，连补救的机会都没有；原有的清零只能覆盖"连续攻击同一目标"这种理想情况。
+- **修复（三层覆盖，且全部只作用于"玩家自己打出的伤害"）**：
+
+  | 层 | 时机 | 作用 |
+  |---|---|---|
+  | `AttackEntityEvent` | `Player.attack()` 里、施伤之前 | 最早；覆盖"在 `hurt()` 之前自查无敌帧并跳过"的实现 |
+  | `LivingAttackEvent` | `hurt()` 内、无敌帧检查之前 | 覆盖投射物等全部路径，并挡住"反复重设无敌帧" |
+  | `LivingHurtEvent` | 结算过程中（原有） | 兜底，并为下一次攻击铺路 |
+
+  无论对方在什么时候重复添加无敌帧（受伤后、结算后、自己的 tick 里），玩家下一次攻击的一开始就会被清零。
+- **刻意不采用的做法**：每 tick 扫描附近实体持续清零。那会把目标的无敌帧长期压成 0，变成**全局状态** —— 别的玩家、别的伤害来源、怪物之间互殴都会一起受益，等于给全服开挂，也背离该属性"让我的攻击更连贯"的语义。
+- **影响范围**：`event/StatEventHandler`（新增 `onLivingIncomingDamage` 与 `onAttackEntity`）。
+
+## [1.14.1] - 2026-10-01
+
+### 🔧 「冷却缩减」上限由 80% 放宽到 100%
+
+- **改动**：`cooldown_reduction` 的封顶值从 `-80%` 提到 `-100%`（100 点即可点满）。
+- **满额走的是另一条路径**：100% 的语义是「零冷却」，用加速实现不了 ——
+  - 额外流速公式是 `r/(1-r)`，`r = 1` 时**除零**；
+  - 而且无论把计时器推多快，结果都只是"接近零"而不是真的零。
+
+  所以满额时改为**直接清除**玩家身上的冷却（遍历主栏 + 护甲 + 副手约 41 格调用 `removeCooldown`），未满额时仍走原来的等比加速。
+- **顺手收敛逻辑**：两端合流为 `CooldownHandler.apply(player, stats, reduction)`，服务端与客户端调用同一个方法，避免以后再出现两边算法漂移。
+- **已知局限**：满额时若某个物品不在玩家身上（刚丢出去、放进箱子），它的冷却不会被清除 —— `ItemCooldowns` 没有公开的「列出全部冷却」接口，只能按玩家物品栏来清。
+- **影响范围**：`handler/CooldownHandler`、`client/ClientEventHandler`、`stats/StatType` 描述、`zh_cn` / `en_us` 文案。
+
+## [1.14.0] - 2026-10-01
+
+### ✨ 新增「冷却缩减」属性 —— 缩短物品冷却时间
+
+- **新属性**：`cooldown_reduction`（功能类），每点 **-0.5%** 冷却时间，**硬上限 -80%**。100 点即可把末影珍珠、三叉戟、盾牌以及各类技能物品的冷却压到只剩原本的 20%（等效 5 倍速）。
+- **上限为什么是 80%**：100% 等于零冷却，末影珍珠 / 三叉戟 / 盾牌会变成无限使用，可能刷物品或卡住 AI，因此在 Handler 里强制封顶，与玩家堆多少点无关。
+- **实现**：物品冷却完全由 `ItemCooldowns` 的公开方法 `tick()` 驱动（每次调用推进一次内部计时器并清理到期冷却），所以「每 tick 多调几次 `tick()`」就等于等比加速全部冷却。
+  - **两端一起加**：客户端也持有自己的一份冷却（`LocalPlayer`），只加速服务端会导致"客户端认为还在冷却而拦住使用"（表现为右键点了没反应），因此 `ClientEventHandler` 里跑同一套算法，保证步调一致。
+  - **倍率换算**：属性语义是「冷却时间减少的百分比」，剩余冷却 = 原时长 × (1 - reduction)，所以计时器需要跑到 `1/(1-reduction)` 倍速，即额外流速为 `reduction/(1-reduction)`。小数部分累加，避免低点数时不触发（与时间加速同一套写法）。
+- **关于 Mixin（重要结论）**：原计划用 Accessor Mixin 直接改 `ItemCooldowns.tickCount`，实施时确认 —— **ForgeGradle 6 在 official mappings 下不会自动生成 Mixin refmap**：注解处理器只支持 `searge/notch` 环境，编译期报 `Unable to locate obfuscation mapping for @Accessor target tickCount`，且 refmap 文件根本不会产出，若硬上会在生产环境（SRG 名）找不到字段而崩溃。既然公开的 `tick()` 已经够用，最终**没有引入 Mixin**，本项目保持零 Mixin 依赖。
+- **影响范围**：新增 `handler/CooldownHandler`；`stats/StatType`（新属性）；`stats/PlayerStats`（冷却累加器）；`handler/HandlerRegistry`（注册）；`client/ClientEventHandler`（客户端同步）；`client/StatsScreen`（图标）；`zh_cn` / `en_us` 文案。
+
+## [1.13.1] - 2026-10-01
+
+### 💄 效果过滤器：去掉行内的「增益 / 中性 / 负面」文字标签
+
+- **问题**：列表行里同时存在三套类别标识 —— 左侧色条、名称着色、以及行中间的「增益 / 中性 / 负面」文字。文字标签没有带来额外信息，却挤掉约 40px 的名称宽度，长效果名（如 `twilightfinalexpansion:moon_boost` 这类）被截断到几乎看不见。
+- **修复**：移除行内类别文字标签，名称直接占满「勾选图标 → ID」之间的空间；类别仍由左侧色条与名称着色体现，悬停浮窗里的「类别: xxx」保留，ID 截断宽度由 150px 收到 140px 让位给名称。
+- **影响范围**：`client/DebuffFilterScreen.drawList`。
+
+## [1.13.0] - 2026-10-01
+
+### ✨ 外部属性自动获取翻译，不再需要手工逐条补
+
+- **背景**：其他模组注册的属性会被自动发现并归入「外部属性」分类，但它们的翻译键此前是本模组自建的 `stat.infinitestats.attr.<命名空间>.<路径>`。模组的语言文件里当然没有这个键，于是只能靠人一条条往 `external_translations.json` 里填。
+- **做法**：外部属性改为直接把**属性自身**的 `Attribute#getDescriptionId()` 当作翻译键 —— 这个键正是模组在游戏内显示属性名时使用的键，其语言文件里通常已带中文/英文译文，因此立刻可用，零手工维护。
+- **回退**：万一某个属性连它所属的模组都没提供译文，客户端会回退成「命名空间: 可读路径」（例如 `forge: reach distance`），不会再出现 `attribute.name.xxx` 这种原始键名。
+- **搜索**：属性搜索现在同时匹配显示名、说明、内部 ID 与属性注册名，可以直接搜 `forge`、`attributeslib` 之类找出某个模组带来的全部属性。
+- **清单**：`config/infinitestats/external_translations.json` 改为**只列出真正缺译文**的属性；若所有外部属性都有自带译文，则不再生成该文件。启动日志也会打印 `N/M auto-translated from their own mods`，方便确认命中率。
+- **影响范围**：`stats/StatType`（发现逻辑 + 模板生成 + 启动统计）、`client/StatsScreen`（显示名回退、搜索匹配）。
+
+## [1.12.0] - 2026-10-01
+
+### 🎨 重写「效果过滤器」界面：增益 / 中性 / 负面三分类配色 + 效果说明
+
+**分类配色**
+
+- 按原版 `MobEffectCategory` 把效果分为**增益 / 中性 / 负面**三类，用「左侧色条 + 名称着色 + 类别标签」三重标识：增益绿、中性琥珀、负面红；未注册的自定义 ID 用灰色。
+- 新增**类别筛选**：搜索框右侧加入 全部 / 增益 / 中性 / 负面 四个按钮，激活项以下划线高亮为对应类别色，可与搜索关键字叠加使用。
+
+**效果说明**
+
+- 悬停条目时在浮窗中显示该效果的**作用说明**（自动折行，中英文通用）。
+- 取值顺序：先查通用约定键 `effect.<命名空间>.<路径>.desc` —— 任何模组或资源包按此格式提供即可自动生效；再回退到本模组内置的 `infinitestats.effect.<命名空间>.<路径>`。
+- 已内置原版全部 33 种效果的说明文案；搜索框现在也会匹配说明内容（例如搜「失血」可以同时找到中毒与凋零）。
+
+**布局与交互修复**
+
+- 修复旧版搜索框位于 `topPos + 6`、与 24px 高的标题栏同层，导致标题文字和右侧模式标签被搜索框压盖的问题；标题栏独立成行，模式按钮移到标题栏右侧并显示当前模式（`模式: 黑名单`）。
+- 统一到 `EditorUi` 规范（配色 / 面板 / 分隔线 / 滚动条 / 浮窗），移除全项目唯一一套私有控件 `PixelButton`、`HintLabel`；tooltip 从原版灰色框改为统一浮窗。
+- 底栏重构：左侧 清空 / 全选，中间显示「拦截选中 N 项」（黑名单红字 / 白名单绿字），右侧 完成。新增的「全选」作用于当前筛选结果，配合类别筛选即可一键拦截全部负面效果。
+- 滚动条拖动改用与绘制一致的几何计算；键盘滚动只占用方向键（旧版同时占用 W/S，与搜索框输入冲突）；自定义 ID 先做 `ResourceLocation` 校验再入库。
+- **影响范围**：重写 `client/DebuffFilterScreen`、`client/EditorUi`（新增折行工具）；`zh_cn` 新增 45 条、`en_us` 新增 49 条文案（含 33 条效果说明与此前缺失的 4 条 `custom_*` 文案）。
+
+## [1.11.1] - 2026-10-01
+
+### 🐞 修复「选择属性」界面底部控件重叠与多余冒号
+
+- **问题**：「选择属性」界面底部，「返回」按钮与「槽位」下拉框**完全重叠**（两者 x 坐标相同）；「操作」「槽位」下拉框前还多出一个冒号，显示成「: 操作: 加算」。
+- **原因**：
+  - 槽位下拉框与返回按钮都从 `leftPos + GAP` 起排，宽度分别为 118 / 100，前者把后者完全盖住；
+  - `CycleButton` 会把 `name` 参数与当前值渲染成 `name: value`。新代码把「操作: 」直接拼进了值里、`name` 传了 `Component.empty()`，于是渲染成「: 操作: 加算」。
+- **修复**：
+  - 槽位下拉框改从返回按钮右侧起排（`leftPos + GAP + 返回按钮宽 + GAP`）；
+  - 下拉框标签改由 `CycleButton` 的 `name` 参数提供（`item_editor.op` / `item_editor.slot`），值只保留纯选项文本；
+  - 列表下方补一条分隔线，输入区整体下移 4px，缓解固定 9 行后底部偏挤的问题。
+- **影响范围**：`client/ItemEditSelectScreen`。
+
+## [1.11.0] - 2026-10-01
+
+### 🎨 重写「物品编辑器」整套界面（主编辑 / 条目选择 / 元数据编辑）
+
+三处界面的布局、绘制与交互全部推翻重做，并抽出共用的视觉规范类 `client/EditorUi`（配色 / 尺寸 / 面板 / 分隔线 / 滚动条 / 浮窗集中管理），三处风格与间距统一，不再各自维护一套魔法数字。
+
+**主编辑界面 `ItemEditorScreen`（400×340 → 420×308）**
+
+- 新增顶部**物品预览条**：主手物品图标、名称、堆叠数量、耐久条（按剩余比例变色）与物品 ID；
+- 两栏**行数一致**（各 7 行）：修复旧版左栏 6 行 / 右栏 5 行导致底部不对齐、右侧空出 26px 的问题；
+- 每栏独立**搜索框**（模糊匹配显示名与 ID），栏头显示「命中/总数」，无结果时给出占位提示；
+- 每栏独立**滚动条**，带滑块比例与悬停高亮；
+- **拖拽排序**：按住条目上下拖动即可调整顺序（移动阈值 4px，与单击编辑区分开）；
+- **批量操作**：每栏底部提供 添加 / 复制 / 粘贴 / 清空，剪贴板在同一会话内保留，粘贴遇到同 ID 条目自动合并；
+- 删除按钮由 14×14 的 `x` 字符放大为 16×16 方块，悬停变红；
+- 带扩展 NBT 的附魔条目以 `+` 标记；
+- 布局坐标全部收敛为顶部常量（`ITEM_BAR_Y` / `SECTION_Y` / `SEARCH_Y` / `LIST_Y` / `TOOLBAR_Y` / `FOOTER_Y`）。
+
+**条目选择界面 `ItemEditSelectScreen`（360×320 → 420×320）**
+
+- 列表高度**固定 9 行**，不再随选中状态伸缩，切换选中时界面不再跳动；
+- **编辑已有条目时保留候选列表**，可直接改选成别的条目（旧版编辑附魔会隐藏整张列表）；
+- **新增「编辑属性」支持**（旧版只能编辑附魔）；
+- 选中行高亮 + 左侧强调色条；操作 / 槽位下拉框自带「操作: 」「槽位: 」前缀，避免与数值混淆；
+- 未选条目、数值非法、扩展 NBT 格式错误均给出明确的底部提示；
+- **回车即确认**。
+
+**元数据编辑界面 `EditItemMetaScreen`（固定 300 → 高度自适应）**
+
+- 面板高度随 Lore 行数自适应，不再把控件挤出面板；
+- Lore **每行自带删除按钮**，可删除任意一行（旧版只能删末行），并新增「+ 添加行」；
+- Lore 行数上限 8 行，超出时给出提示而不是静默失败；
+- 同样带物品预览条，与主界面保持一致。
+
+**影响范围**：新增 `client/EditorUi`；重写 `client/ItemEditorScreen`、`client/ItemEditSelectScreen`、`client/EditItemMetaScreen`；`zh_cn` / `en_us` 各新增 21 条界面文案。
+
+## [1.10.1] - 2026-10-01
+
+### 🐞 修复「生命偷取 / 范围吸血」按面板伤害结算导致的虚高与幻影回血
+
+- **问题**：
+  - 打高护甲 / 高抗性 / 带「单次伤害上限（限伤）」的目标时，实际只掉几点血，却能按未削减的面板伤害吸血，甚至一击回满；
+  - 攻击被格挡、闪避或被无敌取消、完全没造成伤害时，玩家照样回血（「幻影回血」）；
+  - 范围吸血同理：周围敌人护甲 / 免疫挡掉的伤害也计入回血。
+- **原因**：`生命偷取` 在 `LivingHurtEvent` 里用 `amount` 计算——此时既没过护甲、也没过减伤，只是攻击加成后的面板值；范围吸血则用「打出去的 AOE 伤害」而非「敌人实际掉血」计算。
+- **修复**：
+  - `life_steal` 改到 `LivingDamageEvent`（LOWEST）结算，用护甲 / 减伤结算后的实际伤害作为基数。该分支在事件被取消时提前返回，因此被格挡 / 闪避 / 无敌取消的伤害不再吸血；次级直接伤害（范围攻击 / 真伤 / 降上限）不属于玩家主动攻击，不计入吸血；
+  - `life_steal_aoe` 改为按每个周围敌人的**实际被承受伤害（含护盾消耗）**累计回血，被削减或完全免疫的部分不再计入；
+  - 新增 `StatEventHandler.getPlayerAttacker(DamageSource)` 重载，供伤害结算阶段反查攻击者。
+- **影响范围**：`event/StatEventHandler`（`onLivingHurt` 移除吸血调用、`onLivingDamage` 新增吸血结算、`getPlayerAttacker` 重载）、`handler/AttackHandler.applyAoeLifeSteal`。
+
+## [1.10.0] - 2026-10-01
+
+### 🎨 重写「矿石优先顺序」设置界面
+
+界面的布局、绘制与交互全部推翻重做，`FurnaceOrePriorityScreen` 整体重写（旧实现约 460 行 → 新实现按「布局常量 / 状态 / 输入 / 三层绘制」重新组织）。
+
+**布局（面板由 300×240 扩至 320×258）**
+- 五段式结构：标题栏 → 待炼仓矿石条 → 双栏列表（分区标题 + 列表）→ 分隔线 → 物品栏；
+- 列表可见行数由 **3 行提升到 5 行**，两栏各占更宽的横向空间（左栏 `10~152`、右栏 `162~304`），名称截断宽度同步放宽（左 52px / 右 92px）；
+- 各段之间加入统一分隔线，标题栏高度固定 24px，标题 + 副标题垂直分层，不再相互挤压。
+
+**绘制分层（修复旧实现的层级问题）**
+- 旧实现在 `render` 中手动 `renderBackground` 并在父类渲染后补齐内容，导致背景/标题重复绘制、自绘内容可能盖住槽位 tooltip；
+- 新实现严格分层：`renderBg` 只画底板、列表底、悬停高亮、拖拽指示线与背包槽位（绝对坐标）；`renderLabels` 画全部文字、图标与自绘按钮（父类已平移坐标系，使用相对坐标）；`render` 在父类渲染之后仅补画拖拽残影与自定义 tooltip。
+
+**交互**
+- **拖拽排序**：左栏行按下后可直接上下拖动重新排序，拖动过程中显示跟随鼠标的残影、源行半透明占位，并在落点位置绘制金色插入指示线（`mouseDragged` / `mouseReleased` 已重写，拖拽期间不再透传给容器槽位逻辑）；
+- **自绘按钮**：`↑` `↓` `✕` `＋` `清空` 全部改为自绘（带悬停高亮与禁用态），不再每帧增删 `Button` widget，消除了重建控件带来的开销与闪烁；
+- **新增「清空」按钮**：一键清空优先顺序（列表为空时自动置灰）；
+- **悬停高亮**：鼠标悬停所在行整行高亮；
+- **空状态提示**：优先列表为空提示「点击右侧矿石加入」，右栏无结果提示「无匹配矿石」，待炼仓为空提示「（空）」；
+- **仓内矿石标识**：右栏中待炼仓已有存货的矿石改用金色名称并对图标加 1px 金色描边（同时保留待炼仓条上的 `✔` 已加入标记）；
+- **搜索过滤缓存**：`filteredAvailable()` 由「每次调用都全量过滤」改为在搜索内容 / 同步数据变化时重建缓存，避免每帧重复遍历数百条矿石；
+- 其余交互保持并优化：点击右栏行 / 顶部待炼仓矿石 / 背包内可熔炼物品均可加入；滚轮按所在列独立滚动；tooltip 现在显示显示名 + 优先序号 / 仓内存货状态 / 拖拽提示。
+
+**配套改动**
+- `FurnaceOrePriorityMenu` 背包槽位坐标随面板调整：`INV_X 69 → 79`、`INV_MAIN_Y 160 → 176`、`INV_HOTBAR_Y 218 → 236`；
+- 新增中英文语言条目：`clear`、`empty_priority`、`empty_available`、`empty_reserve`、`tip_priority`、`tip_reserve`、`tip_amount`、`tip_drag`，并更新 `hint` 文案。
+- **影响范围**：`client/FurnaceOrePriorityScreen`（整体重写）、`furnace/FurnaceOrePriorityMenu`（槽位坐标）、`zh_cn` / `en_us` 文案。
+- 网络协议未变更，与 1.9.22 存档 / 客户端无兼容问题。
+
+## [1.9.22] - 2026-10-01
+
+### 🐞 修复「真实伤害」被限伤 / 抗性提升 / 吸收护盾削减
+
+- **问题**：给「真实伤害」加点后，遇到带「单次伤害上限（限伤）」的目标、或高抗性提升 / 保护附魔 / 吸收护盾的目标时，真伤被大量削减甚至完全无效。
+- **原因**：真伤此前是叠加进 `LivingDamageEvent.getAmount()` 与主伤害合并结算，因此它仍在伤害管线内，凡是在其之后处理该数值的环节都会连带削掉真伤：
+  - 原版 `actuallyHurt` 在 `LivingDamageEvent` **之后**才执行 `getDamageAfterMagicAbsorb`（抗性提升、保护附魔）与吸收（absorption）结算——1.9.19 说明中「抗性、附魔与吸收均已结算」的判断有误，实际只有护甲已结算；
+  - 同优先级（LOWEST）注册顺序靠后的监听器（各类「限伤」实现）会对 `amount` 再 clamp 一次；
+  - 直接 Mixin `actuallyHurt` 的限伤实现，事件层完全拦不住。
+- **修复**：真伤改为**直接扣血**结算，完全脱离伤害管线：
+  - `LivingDamageEvent`（LOWEST）不再叠加 `event.getAmount()`，改为调用新增的 `AttackHandler.applyUnavoidableTrueDamage` 直接 `setHealth` 扣血——无视护甲、抗性提升、保护附魔、吸收护盾、无敌帧与一切限伤；
+  - 死亡、掉落与击杀归属仍由原版收尾：原版 `actuallyHurt` 结尾的 `setHealth(getHealth() - f3)` 读取的是当前血量，提前扣掉的血不会丢失，紧随其后的 `getHealth() <= 0` 判定照常触发图腾检查与 `die(playerSource)`；
+  - 主伤害被完全减免时原版会在 `LivingHurtEvent` 后提前 return、不走死亡判定，此时真伤最多扣到 0.01，避免产生「0 血存活」的实体；
+  - 仍保留对「完全免疫」的尊重：创造模式 / 无敌目标不产生伤害事件，被格挡、闪避或无敌取消（`event.isCanceled()`）的伤害不结算真伤。
+- **测试**：`trueDamageCancellationAndIsolation` 断言改为校验目标血量（不再检查 `event.getAmount()`）；`damageTypesAndPenetration` 新增直接扣血路径覆盖（抗性 + 吸收 + 无敌帧 + 零血保护）。
+- **影响范围**：`handler/AttackHandler`（新增 `applyUnavoidableTrueDamage`）、`event/StatEventHandler.onLivingDamage`、`gameTest` 两个测试文件。
+
+## [1.9.21] - 2026-09-26
+
+### 🔄 回滚「飞行」开关为原版创造飞行手感
+
+- **改动**：移除 1.9.20 新增的客户端 `ClientEventHandler#maintainFlight`（按跳跃自动起飞、空中持续维持 `flying`、落地后可再次按跳跃起飞）。「飞行」开关现在只负责授予 `mayfly`，飞行状态完全交回原版客户端逻辑：**双击跳跃开启/关闭飞行，落地自动退出飞行，再次双击继续飞**，与创造模式完全一致。
+- **保留**：
+  - 服务端 `MobilityHandler#updateFlight` 仍只在 `mayfly` / 提供状态真正变化时才同步能力，不再每 5 tick 无条件发包覆盖客户端飞行状态；
+  - `mayfly` 期间不摔伤（与原版 `Player#causeFallDamage` 的 `abilities.mayfly` 判断一致，非本模组额外行为）；
+  - `auto_step` / `step_height` 的客户端 `syncStepHeight` 同步不受影响。
+- **文案**：「创造模式飞行」描述恢复为原版操作说明（双击跳跃开启/关闭飞行）。
+- **影响范围**：`client/ClientEventHandler`（删除 `maintainFlight`）、`handler/MobilityHandler#updateFlight`（注释/说明）、`zh_cn` / `en_us` 文案。
+
+## [1.9.20] - 2026-09-26
+
+### 🐞 修复「飞行」开关起飞后落地即掉飞、必须反复双击跳跃
+
+- **问题**：给「飞行」加点后（服务端已授予 `mayfly`），生存模式下仍要双击跳跃才能进入飞行，且脚一沾地飞行立刻被取消。
+- **原因**：原版非创造/旁观的飞行状态由客户端主导——`LocalPlayer#aiStep` 只在 `gameMode.isAlwaysFlying()` 时自动保持 `flying`，否则需要"双击跳跃"切换，并在 `onGround()` 时强制把 `flying` 重置为 `false`；而服务端 `MobilityHandler.updateFlight` 每 5 tick 无条件 `onUpdateAbilities()`，会在客户端刚起飞时把 `flying=false` 再次发回，造成抖动/掉飞。
+- **修复**：
+  - 客户端 `ClientEventHandler.onClientTick` 新增 `maintainFlight`：飞行开关激活且玩家处于可控空中状态（非骑乘、非鞘翅滑翔、非水中/岩浆/梯子）时，自动把 `flying` 补回 `true` 并同步服务端，形成"按跳跃起飞 → 持续飞行 → 按 Shift 降落"的完整飞行模式；落地后按跳跃即可再次起飞。
+  - 服务端 `MobilityHandler.updateFlight` 改为仅在 `mayfly`/提供状态真正变化时才发包，不再覆盖客户端主导的飞行状态。
+- **影响范围**：`client/ClientEventHandler`（新增 `maintainFlight`）、`handler/MobilityHandler#updateFlight`。
+
+### 🐞 修复「自动跨越 / 跨越高度」客户端不生效、上台阶被卡住
+
+- **问题**：开启 `auto_step`（或加 `step_height`）后台阶仍然上不去，走到台阶前会被卡住/被服务端拉回。
+- **原因**：台阶高度由客户端本地碰撞参与移动预判（`Entity#collide` 读取 `maxUpStep`），旧实现只在服务端 `setMaxUpStep`，客户端仍按默认 0.6 计算，本地预判失败。
+- **修复**：客户端 `ClientEventHandler.onClientTick` 新增 `syncStepHeight`，按与服务端 `MobilityHandler#updateStepHeight` 完全一致的公式（`0.6`，`auto_step` 时 `1.0`，再乘 `1 + step_height`）同步本地 `maxUpStep`。
+- **影响范围**：`client/ClientEventHandler`（新增 `syncStepHeight`）。
+
+### 📝 文案
+
+- 更新 `zh_cn` / `en_us` 语言文件中「创造模式飞行」「自动跨越」的描述，说明起飞/降落操作与叠加规则。
+
+## [1.9.19] - 2026-09-25
+
+### 🐞 修复「真实伤害」完全没有效果
+
+- **问题**：为「真实伤害」加点后，攻击高护甲/高抗性目标时看不到任何额外掉血，真伤形同虚设。
+- **原因**：旧实现 `AttackHandler.applyTrueDamage` 在 `LivingHurtEvent` 里对目标再调用一次 `hurt()`。同一次攻击内目标的无敌帧（`invulnerableTime`）已经生效，嵌套的 `hurt()` 被原版直接拒绝，真伤一点血都掉不下来。
+- **修复**：改为两阶段结算，不再嵌套 hurt：
+  - `LivingHurtEvent`（LOW）按**减伤前的基数**算出真伤额并暂存（`AttackHandler.calculateTrueDamage` / `rememberTrueDamage`，ThreadLocal + 以「目标 + DamageSource」为键，多目标/次级攻击互不干扰）；
+  - 同一次 hurt 的 `LivingDamageEvent`（LOWEST、`receiveCanceled = true`）再把暂存值叠加进 `event.getAmount()`——此时护甲、抗性、附魔、吸收均已结算，真伤全额生效且只结算一次，击杀仍归属原攻击者；
+  - 被取消的伤害不叠加；后续模组取消伤害或提前返回留下的暂存值在服务端 tick 结束时清空，不会串到下一次攻击。
+- **影响范围**：`AttackHandler`（新增 `calculateTrueDamage` / `rememberTrueDamage` / `takeTrueDamage` / `clearPendingTrueDamage`）、`StatEventHandler.onLivingHurt` / `onLivingDamage` / `onServerTickEnd`。
+
+### 🐞 修复「编辑物品属性会把物品变成白板」
+
+- **问题**：在物品编辑器里改属性（或顺带保存）后，物品自带的攻击力/攻速、原有词缀、UUID 与外部模组 NBT 一起消失，物品变成"白板"。
+- **原因**：旧 `EditItemPacket` 把附魔与属性两个列表**整体覆盖重写**。而编辑器打开时只读 NBT 里的 `AttributeModifiers`——普通装备（原版剑/甲等）的属性来自物品内置而非 NBT，列表本来就是空的；点「应用」就把空/不完整的列表写回，并重新生成 UUID 覆盖原词缀 UUID，于是内置属性与扩展数据被抹掉。
+- **修复**：新增 `ItemEditUtil` 统一读写：
+  - NBT 中没有 `AttributeModifiers` 时，从 `stack.getItem().getAttributeModifiers(slot, stack)` 读取物品**内置属性**作为编辑初始值，不再显示为空；
+  - 保存时只发送**实际改动过**的列表（未改动传 `null` = 保持原样），空列表表示「明确清空」；
+  - 每条修饰符保留原始 UUID / Name / 扩展字段，附魔保留扩展 NBT（附魔书写入 `StoredEnchantments`）；
+  - 写入前校验物品 ID、快捷栏槽位与 NBT 快照（过期编辑直接拒绝），全部在物品副本上修改，成功后刷新容器同步客户端；
+  - 显式清空属性时保留空列表标签，避免内置属性"复活"。
+- **影响范围**：新增 `util/ItemEditUtil.java`；`EditItemPacket`、`ItemEditorScreen`、`EditItemMetaPacket`、`NetworkHandler`、语言文件。
+
+### 🧪 回归测试
+
+- 新增 `src/gameTest/java/com/infinitestats/ItemAndDamageRegressionTests.java`，覆盖：真伤穿甲/穿抗/不被吸收吸收、取消命中不叠加、多目标隔离、暂存不跨 tick；属性编辑保留内置攻击力/攻速与 UUID、保留附魔与 display/外部 NBT、附魔书标签写入、过期编辑拒绝、清空语义与无效数值拒绝。
+
 ## [1.9.18] - 2026-09-22
 
 ### ⚙️ 重做「矿石优先顺序」界面并优化交互

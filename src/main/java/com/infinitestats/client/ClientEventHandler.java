@@ -9,11 +9,14 @@ import com.infinitestats.furnace.FurnaceFuelBufferMenu;
 import com.infinitestats.furnace.FurnaceOrePriorityMenu;
 import com.infinitestats.client.PortableFurnaceScreen;
 import com.infinitestats.client.FurnaceOrePriorityScreen;
+import com.infinitestats.handler.CooldownHandler;
 import com.infinitestats.network.NetworkHandler;
+import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.MenuScreens;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.CrossbowItem;
@@ -63,6 +66,22 @@ public final class ClientEventHandler {
                 int extraReduction = Math.max(1, (int) (totalSpeed * 100));
                 event.setDuration(Math.max(0, event.getDuration() - extraReduction));
             }
+        });
+    }
+
+    // ========== 冷却缩减（客户端同步） ==========
+
+    /**
+     * 客户端也持有自己的一份物品冷却（{@link LocalPlayer}），服务端那侧的加速不会同步过来。
+     * 这里若不同步推进，客户端会认为物品仍在冷却而拦住使用，表现为"右键点了没反应"。
+     * 算法与服务端 {@link CooldownHandler} 完全一致，保证两端步调相同、不会错位。
+     */
+    private static void accelerateCooldowns(LocalPlayer player) {
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            float reduction = stats.getStatValue(StatType.fromId("cooldown_reduction"));
+            if (reduction > CooldownHandler.MAX_REDUCTION) reduction = CooldownHandler.MAX_REDUCTION;
+            // 与服务端共用同一套逻辑（含满额时的清除路径），避免两边算法漂移
+            CooldownHandler.apply(player, stats, reduction);
         });
     }
 
@@ -140,6 +159,8 @@ public final class ClientEventHandler {
         var player = mc.player;
         if (player == null) return;
 
+        accelerateCooldowns(player);
+
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             var map = player.getActiveEffectsMap();
             if (stats.isToggleActive("night_vision")) {
@@ -155,7 +176,30 @@ public final class ClientEventHandler {
                     map.remove(MobEffects.NIGHT_VISION);
                 }
             }
+
+            // 自动跨越：客户端本地同步 maxUpStep
+            syncStepHeight(player, stats);
         });
+    }
+
+    // ========== 自动跨越高度（客户端同步） ==========
+
+    /**
+     * auto_step / step_height 的客户端同步。
+     *
+     * 台阶高度由客户端本地碰撞（Entity#collide 读取 maxUpStep）参与移动预判，
+     * 只在服务端设置会导致客户端走不上台阶、被服务端拉回。这里按与服务端
+     * MobilityHandler#updateStepHeight 完全一致的公式在本地同步。
+     */
+    private static void syncStepHeight(LocalPlayer player, PlayerStats stats) {
+        float targetStep = 0.6f;
+        if (stats.isToggleActive("auto_step")) targetStep = 1.0f;
+        float stepBonus = stats.getStatValue(StatType.fromId("step_height"));
+        if (stepBonus > 0) targetStep *= (1.0f + stepBonus);
+
+        if (Math.abs(player.maxUpStep() - targetStep) > 0.01f) {
+            player.setMaxUpStep(targetStep);
+        }
     }
 
     /**

@@ -25,7 +25,6 @@ public final class SyncStatsPacket {
     private long availablePoints;
     private long lastReviveTime;
     private long reviveInvulnUntilTick;
-    private float currentMana;
     private Map<String, Long> allocatedPoints;
     private boolean buffUseBlacklist;
     private Set<String> buffFilterList;
@@ -41,7 +40,6 @@ public final class SyncStatsPacket {
         this.availablePoints = snapshot.availablePoints;
         this.lastReviveTime = snapshot.lastReviveTime;
         this.reviveInvulnUntilTick = snapshot.reviveInvulnUntilTick;
-        this.currentMana = snapshot.currentMana;
         this.allocatedPoints = snapshot.allocatedPoints;
         this.buffUseBlacklist = snapshot.buffUseBlacklist;
         this.buffFilterList = snapshot.buffFilterList;
@@ -58,7 +56,6 @@ public final class SyncStatsPacket {
         this.availablePoints = buf.readVarLong();
         this.lastReviveTime = buf.readVarLong();
         this.reviveInvulnUntilTick = buf.readVarLong();
-        this.currentMana = buf.readFloat();
         
         // 读取属性点数Map
         int count = buf.readVarInt();
@@ -105,7 +102,6 @@ public final class SyncStatsPacket {
         buf.writeVarLong(msg.availablePoints);
         buf.writeVarLong(msg.lastReviveTime);
         buf.writeVarLong(msg.reviveInvulnUntilTick);
-        buf.writeFloat(msg.currentMana);
 
         // 写入非零属性数量
         buf.writeVarInt(msg.allocatedPoints.size());
@@ -160,7 +156,6 @@ public final class SyncStatsPacket {
                         msg.experience,
                         msg.availablePoints,
                         msg.lastReviveTime,
-                        msg.currentMana,
                         -1,
                         msg.allocatedPoints,
                         msg.buffUseBlacklist,
@@ -181,7 +176,7 @@ public final class SyncStatsPacket {
     public PlayerStats.StatsSnapshot getSnapshot() {
         return new PlayerStats.StatsSnapshot(
                 level, experience, availablePoints,
-                lastReviveTime, currentMana,
+                lastReviveTime,
                 -1,
                 allocatedPoints,
                 buffUseBlacklist,

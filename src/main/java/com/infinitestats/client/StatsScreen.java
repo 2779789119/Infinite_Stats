@@ -16,6 +16,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.ItemStack;
@@ -68,8 +69,6 @@ public class StatsScreen extends Screen {
     private static final int BG_TAB_SELECTED = 0x80252540;
     private static final int BG_XP_BAR = 0x50252535;
     private static final int BG_XP_FILL = 0xFF4ADE80;
-    private static final int BG_MANA_BAR = 0x50252535;
-    private static final int BG_MANA_FILL = 0xFFA78BFA;
     private static final int BG_SCROLLBAR_TRACK = 0x30151520;
     private static final int BG_SCROLLBAR = 0x80555570;
     private static final int BG_SCROLLBAR_HOVER = 0xB08888A0;
@@ -83,7 +82,6 @@ public class StatsScreen extends Screen {
     private static final int TEXT_POINTS = 0xFFFFD166;
     private static final int TEXT_POINTS_ZERO = 0xFF64748B;
     private static final int TEXT_POINTS_NEGATIVE = 0xFFF87171; // 可用点数为负也红色
-    private static final int TEXT_MANA = 0xFFA78BFA;
     private static final int TEXT_BUTTON = 0xFFFFFFFF;
     private static final int TEXT_HINT = 0xFF64748B;
     private static final int TEXT_TOGGLE_ON = 0xFF4ADE80;
@@ -169,6 +167,7 @@ public class StatsScreen extends Screen {
         icon("reduce_max_health", Items.WITHER_ROSE);
         icon("scope_attack", Items.TRIDENT);
         icon("repulsion", Items.SLIME_BALL);
+        icon("infinite_arrows", Items.SPECTRAL_ARROW);
 
         // ═══════ 防御 ═══════
         icon("max_health", Items.RED_BED);
@@ -227,19 +226,13 @@ public class StatsScreen extends Screen {
         icon("repair_amount", Items.IRON_INGOT);
         icon("time_accel", Items.CLOCK);
         icon("time_accel_radius", Items.COMPASS);
+        icon("cooldown_reduction", Items.ENDER_EYE);
         icon("cross_dimension_teleport", Items.ENDER_PEARL);
         icon("fixed_point_teleport", Items.LODESTONE);
         icon("portable_crafting", Items.CRAFTING_TABLE);
         icon("portable_furnace", Items.FURNACE);
+        icon("portable_anvil", Items.ANVIL);
         icon("pe_auto_learn", Items.BOOK);
-
-        // ═══════ 魔法 ═══════
-        icon("max_mana", Items.ENCHANTING_TABLE);
-        icon("mana_regen", Items.BOOK);
-        icon("magic_damage", Items.BLAZE_ROD);
-        icon("mana_shield", Items.END_CRYSTAL);
-        icon("mana_steal", Items.WITHER_ROSE);
-        icon("mana_on_kill", Items.EXPERIENCE_BOTTLE);
     }
 
     private static void icon(String statId, net.minecraft.world.item.Item item) {
@@ -382,10 +375,12 @@ public class StatsScreen extends Screen {
 
     private boolean matchesSearch(StatType stat, String search) {
         if (search.isEmpty()) return true;
-        String name = Component.translatable(stat.getTranslationKey()).getString().toLowerCase();
+        String name = getStatDisplayName(stat).toLowerCase();
         String desc = stat.getDescription() != null ? stat.getDescription().toLowerCase() : "";
+        String attr = stat.getAttributeName() != null ? stat.getAttributeName().toLowerCase() : "";
         return JechCompat.matches(name, search) || JechCompat.matches(desc, search)
-                || JechCompat.matches(stat.getId().toLowerCase(), search);
+                || JechCompat.matches(stat.getId().toLowerCase(), search)
+                || (!attr.isEmpty() && JechCompat.matches(attr, search));
     }
 
     /**
@@ -647,8 +642,20 @@ public class StatsScreen extends Screen {
     /** 页脚导航行：从主面板一键打开其它独立面板。 */
     private void addPanelNavButtons() {
         int navY = GUI_HEIGHT - FOOTER_H + 4;
-        int btnW = 45, gap = 4;
-        String[] labels = {"传送", "跨维度", "过滤", "EMC", "成就", "物品", "HUD", "工作台", "熔炉"};
+        // 10 个入口要挤进 GUI_WIDTH，按钮与间隔相应收窄
+        int btnW = 40, gap = 3;
+        Component[] labels = {
+                Component.translatable("gui.infinitestats.nav.waypoint"),
+                Component.translatable("gui.infinitestats.nav.crossdim"),
+                Component.translatable("gui.infinitestats.nav.filter"),
+                Component.translatable("gui.infinitestats.nav.emc"),
+                Component.translatable("gui.infinitestats.nav.achievement"),
+                Component.translatable("gui.infinitestats.nav.item_editor"),
+                Component.translatable("gui.infinitestats.nav.hud"),
+                Component.translatable("gui.infinitestats.nav.crafting"),
+                Component.translatable("gui.infinitestats.nav.furnace"),
+                Component.translatable("gui.infinitestats.nav.anvil")
+        };
         Runnable[] actions = {
                 () -> { if (minecraft != null) minecraft.setScreen(new WaypointScreen()); },
                 () -> { if (minecraft != null) minecraft.setScreen(new CrossDimScreen()); },
@@ -658,14 +665,15 @@ public class StatsScreen extends Screen {
                 () -> { if (minecraft != null) minecraft.setScreen(new ItemEditorScreen()); },
                 () -> { if (minecraft != null) minecraft.setScreen(new HudEditScreen()); },
                 () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.CraftingOpenPacket()),
-                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceOpenPacket())
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceOpenPacket()),
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.AnvilOpenPacket())
         };
         int totalW = labels.length * btnW + (labels.length - 1) * gap;
         int startX = (GUI_WIDTH - totalW) / 2;
         for (int i = 0; i < labels.length; i++) {
             final int idx = i;
             Button btn = new PixelButton(startX + i * (btnW + gap), navY, btnW, 16,
-                    Component.literal(labels[i]), 0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                    labels[i], 0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
                     b -> { playClickSound(); actions[idx].run(); });
             addRenderableWidget(btn);
         }
@@ -1037,7 +1045,6 @@ public class StatsScreen extends Screen {
         long xp = cachedStats.getExperience();
         long xpNeeded = cachedStats.getXpForNextLevel();
         long points = cachedStats.getAvailablePoints();
-        float maxMana = cachedStats.getMaxMana();
 
         // 标题
         String title = Component.translatable("screen.infinitestats.title").getString();
@@ -1067,24 +1074,8 @@ public class StatsScreen extends Screen {
         int pointsColor = points > 0 ? TEXT_POINTS : points < 0 ? TEXT_POINTS_NEGATIVE : TEXT_POINTS_ZERO;
         g.drawString(font, pointsStr, l + GUI_WIDTH - 14 - font.width(pointsStr), t + 28, pointsColor);
 
-        if (maxMana > 0) {
-            // 法力条
-            int manaBarX = l + 60;
-            int manaBarY = t + 44;
-            int manaBarW = 140;
-            int manaBarH = 8;
-            float manaPercent = Mth.clamp(cachedStats.getCurrentMana() / maxMana, 0, 1);
-
-            g.fill(manaBarX, manaBarY, manaBarX + manaBarW, manaBarY + manaBarH, BG_MANA_BAR);
-            int manaFilled = Math.max(1, (int) (manaPercent * manaBarW));
-            g.fill(manaBarX, manaBarY, manaBarX + manaFilled, manaBarY + manaBarH, BG_MANA_FILL);
-
-            String manaStr = String.format("\u2727 %.0f / %.0f", cachedStats.getCurrentMana(), maxMana);
-            g.drawString(font, manaStr, manaBarX + manaBarW + 6, manaBarY - 1, TEXT_MANA);
-        } else {
-            String hint = Component.translatable("screen.infinitestats.hint_controls").getString();
-            g.drawString(font, hint, l + 60, t + 44, TEXT_HINT);
-        }
+        String hint = Component.translatable("screen.infinitestats.hint_controls").getString();
+        g.drawString(font, hint, l + 60, t + 44, TEXT_HINT);
     }
 
     // ======================== 属性卡片绘制 ========================
@@ -1633,10 +1624,27 @@ public class StatsScreen extends Screen {
     // ======================== 辅助方法 ========================
 
     /**
-     * 获取属性的显示名称（直接使用翻译键，lang 文件中已包含所有外部属性翻译）
+     * 获取属性的显示名称。
+     * <p>
+     * 外部属性的翻译键就是属性自身的 {@code getDescriptionId()}，因此模组自带的中文
+     * 会被直接复用，不需要再手工补翻译；万一某个属性连它自己所属的模组都没给译文，
+     * 才回退成「命名空间: 可读路径」，避免把 {@code attribute.name.xxx} 这种原始键名
+     * 直接摆到玩家面前。
      */
     private String getStatDisplayName(StatType stat) {
-        return Component.translatable(stat.getTranslationKey()).getString();
+        String key = stat.getTranslationKey();
+        String translated = Component.translatable(key).getString();
+        if (!translated.equals(key)) return translated;
+
+        String attrName = stat.getAttributeName();
+        if (attrName != null) {
+            ResourceLocation rl = ResourceLocation.tryParse(attrName);
+            if (rl != null) {
+                return rl.getNamespace() + ": " + rl.getPath().replace('_', ' ').trim();
+            }
+            return attrName;
+        }
+        return key;
     }
 
     /**

@@ -37,3 +37,4 @@ modmind.project.json
 
 # 文档目录（暂不纳入版本库）
 docs/
+/.analysis-src

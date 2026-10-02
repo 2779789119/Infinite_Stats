@@ -56,7 +56,8 @@ public final class RegressionTests {
     }
 
     private static PlayerStats stats(ServerPlayer player) {
-        return player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElseThrow();
+        return player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .orElseThrow(() -> new IllegalStateException("Missing player stats capability"));
     }
 
     private static void equal(long expected, long actual, String message) {
@@ -491,10 +492,6 @@ public final class RegressionTests {
                 .getHolderOrThrow(ResourceKey.create(Registries.DAMAGE_TYPE, new ResourceLocation("infinitestats", "direct_damage")));
         DamageSource direct = new DamageSource(holder, player);
         helper.assertTrue(direct.is(DamageTypeTags.BYPASSES_ARMOR) && direct.is(DamageTypeTags.BYPASSES_COOLDOWN), "True damage tags not loaded");
-        helper.assertTrue(!player.damageSources().arrow(new Arrow(helper.getLevel(), player), player)
-                .is(AttackHandler.MAGIC_DAMAGE), "Ordinary arrow classified as magic");
-        helper.assertTrue(player.damageSources().indirectMagic(player, player)
-                .is(AttackHandler.MAGIC_DAMAGE), "Magic damage tag missing");
         for (float armor : new float[]{0, 10, 20, 40}) {
             for (float toughness : new float[]{0, 8, 20}) {
                 for (float penetration : new float[]{0, 0.25f, 1}) {
@@ -504,6 +501,18 @@ public final class RegressionTests {
                 }
             }
         }
+        // 事件链真伤走「直接扣血」结算：抗性提升、吸收护盾与无敌帧都无法阻挡或削减
+        var directTarget = EntityType.ZOMBIE.create(helper.getLevel());
+        directTarget.addEffect(new MobEffectInstance(MobEffects.DAMAGE_RESISTANCE, 200, 4));
+        directTarget.setAbsorptionAmount(10);
+        directTarget.invulnerableTime = 20;
+        float directHealth = directTarget.getHealth();
+        AttackHandler.applyUnavoidableTrueDamage(directTarget, 2, true);
+        close(directHealth - 2, directTarget.getHealth(), "Direct true damage was reduced, absorbed or swallowed");
+        close(10, directTarget.getAbsorptionAmount(), "Direct true damage touched absorption");
+        // 无原版结算收尾时不得留下「0 血存活」的实体
+        AttackHandler.applyUnavoidableTrueDamage(directTarget, 9999, false);
+        helper.assertTrue(directTarget.getHealth() > 0, "Lethal direct true damage left a zero-health entity");
         ServerPlayer victim = player(helper);
         stats(victim).setAvailablePoints(1000);
         add(stats(victim), "damage_reduction", 400);
@@ -556,28 +565,17 @@ public final class RegressionTests {
         PlayerStats stats = stats(player);
         stats.setAvailablePoints(1000);
         add(stats, "health_regen", 20);
-        add(stats, "max_mana", 10);
-        add(stats, "mana_regen", 10);
         player.setHealth(10);
-        stats.setCurrentMana(0);
         int healthInterval = Config.HEALTH_REGEN_INTERVAL.get();
-        int manaInterval = Config.MANA_REGEN_INTERVAL.get();
         try {
             Config.HEALTH_REGEN_INTERVAL.set(7);
-            Config.MANA_REGEN_INTERVAL.set(11);
             DefenseHandler defense = new DefenseHandler();
-            MagicHandler magic = new MagicHandler();
             defense.onTick(player, stats, 6);
-            magic.onTick(player, stats, 10);
             close(10, player.getHealth(), "Health regenerated too early");
-            close(0, stats.getCurrentMana(), "Mana regenerated too early");
             defense.onTick(player, stats, 7);
-            magic.onTick(player, stats, 11);
             close(11, player.getHealth(), "Configured health interval ignored");
-            close(stats.getStatValue("mana_regen"), stats.getCurrentMana(), "Configured mana interval ignored");
         } finally {
             Config.HEALTH_REGEN_INTERVAL.set(healthInterval);
-            Config.MANA_REGEN_INTERVAL.set(manaInterval);
         }
         helper.succeed();
     }

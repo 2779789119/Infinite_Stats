@@ -19,8 +19,6 @@ public final class StatsHudOverlay {
     private static final int TEXT_LEVEL = 0xFF60A5FA;
     private static final int BAR_XP_BG = 0x40252535;
     private static final int BAR_XP = 0xFF4ADE80;
-    private static final int BAR_MANA_BG = 0x40252535;
-    private static final int BAR_MANA = 0xFFA78BFA;
 
     public static final int PANEL_WIDTH = 140;
 
@@ -79,24 +77,11 @@ public final class StatsHudOverlay {
             graphics.drawString(mc.font, stats.getAvailablePoints() + " pts", contentX, contentY, TEXT_POINTS);
             contentY += lineH + 2;
         }
-
-        // 法力条
-        float maxMana = stats.getMaxMana();
-        if (maxMana > 0) {
-            float manaPercent = Mth.clamp(stats.getCurrentMana() / maxMana, 0, 1);
-            graphics.fill(contentX, contentY, contentX + barWidth, contentY + 5, BAR_MANA_BG);
-            if (manaPercent > 0) {
-                int filled = Math.max(1, (int) (manaPercent * barWidth));
-                graphics.fill(contentX, contentY, contentX + filled, contentY + 5, BAR_MANA);
-            }
-            graphics.drawString(mc.font, (int) stats.getCurrentMana() + "/" + (int) maxMana, contentX + barWidth + 4, contentY - 2, TEXT_LABEL);
-        }
     }
 
     private static int getPanelHeight(PlayerStats stats) {
         int pointLine = stats.getAvailablePoints() > 0 ? 1 : 0;
-        int manaLine = stats.getMaxMana() > 0 ? 1 : 0;
-        return 10 + 10 + 8 + pointLine * 11 + manaLine * 9 + 6;
+        return 10 + 10 + 8 + pointLine * 11 + 6;
     }
 
     private static void renderPanel(GuiGraphics g, int x, int y, int height) {

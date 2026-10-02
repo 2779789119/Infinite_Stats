@@ -246,8 +246,16 @@ public final class StatType {
             // 自动决定合理的每点值
             float defaultValue = guessDefaultPerPoint(rl);
 
+            // 翻译键直接复用属性自带的 getDescriptionId()：模组的语言文件里通常已经
+            // 有这个键的翻译（游戏内显示属性名用的就是它），因此外部属性无需再手工补译文。
+            // 仅在该键缺失（模组自己都没提供翻译）时回退到本模组的自建键。
+            String descId = entry.getValue().getDescriptionId();
+            String translationKey = (descId != null && !descId.isBlank())
+                    ? descId
+                    : "stat.infinitestats." + statId;
+
             StatType newStat = builder(statId)
-                    .translationKey("stat.infinitestats." + statId)
+                    .translationKey(translationKey)
                     .category(StatCategory.EXTERNAL)
                     .attribute(attrName)
                     .perPointValue(defaultValue)
@@ -261,7 +269,17 @@ public final class StatType {
 
         // 重建 ALL_STATS
         ALL_STATS = ALL_STATS_LIST.toArray(new StatType[0]);
-        System.out.println("[InfiniteStats] Discovered " + added + " external attributes from mods");
+
+        // 统计有多少外部属性能直接复用其所属模组自带的译文（翻译键 = getDescriptionId()）
+        int external = 0, translated = 0;
+        for (StatType stat : ALL_STATS_LIST) {
+            if (stat.getCategory() != StatCategory.EXTERNAL) continue;
+            external++;
+            String key = stat.getTranslationKey();
+            if (!net.minecraft.network.chat.Component.translatable(key).getString().equals(key)) translated++;
+        }
+        System.out.println("[InfiniteStats] Discovered " + added + " external attributes ("
+                + translated + "/" + external + " auto-translated from their own mods)");
 
         // 生成翻译模板文件（仅首次发现时）
         if (added > 0) {
@@ -270,28 +288,44 @@ public final class StatType {
     }
 
     /**
-     * 生成翻译模板文件到 config 目录
-     * 用户填好翻译后发回，我们将它内置进模组的语言文件
+     * 生成「待补翻译」清单到 config 目录。
+     * <p>
+     * 外部属性的显示名已自动复用属性自带的 {@code getDescriptionId()}，绝大多数情况下
+     * 直接使用其所属模组自带的译文，无需人工干预。这里只列出那些<b>连所属模组都没有
+     * 提供译文</b>的属性，便于按需补充。
      */
     private static void generateTranslationTemplate() {
         try {
+            Map<String, String> keys = new java.util.LinkedHashMap<>();
+            for (StatType stat : ALL_STATS_LIST) {
+                if (stat.getCategory() != StatCategory.EXTERNAL) continue;
+                String displayKey = stat.getTranslationKey();
+                // 显示名已有译文 → 不需要补
+                if (!net.minecraft.network.chat.Component.translatable(displayKey).getString().equals(displayKey)) {
+                    continue;
+                }
+                keys.put(displayKey, stat.getAttributeName() != null ? "[" + stat.getAttributeName() + "]" : "");
+            }
+
+            if (keys.isEmpty()) {
+                System.out.println("[InfiniteStats] Every external attribute already has its own "
+                        + "translation; nothing to fill in.");
+                return;
+            }
+
             java.nio.file.Path configDir = java.nio.file.Path.of("config", "infinitestats");
             java.nio.file.Files.createDirectories(configDir);
             java.nio.file.Path templatePath = configDir.resolve("external_translations.json");
 
-            // 收集所有外部属性的翻译键
-            Map<String, String> keys = new java.util.LinkedHashMap<>();
-            for (StatType stat : ALL_STATS_LIST) {
-                if (stat.getCategory() == StatCategory.EXTERNAL) {
-                    // 显示名称键
-                    keys.put(stat.getTranslationKey(), "");
-                    // 描述键
-                    keys.put(stat.getTranslationKey() + ".desc", stat.getAttributeName() != null
-                            ? "[" + stat.getAttributeName() + "]" : "");
-                }
+            // 已存在就原样保留。这份清单的用途是「提示还有哪些外部属性没译文」，
+            // 而整合包作者往往会在里面手填补充译文 —— 直接覆盖会把人工内容冲掉。
+            if (java.nio.file.Files.exists(templatePath)) {
+                System.out.println("[InfiniteStats] " + keys.size()
+                        + " external attribute(s) lack a built-in translation; "
+                        + templatePath + " already exists and was left untouched.");
+                return;
             }
 
-            // 格式化 JSON
             StringBuilder json = new StringBuilder();
             json.append("{\n");
             boolean first = true;
@@ -303,8 +337,9 @@ public final class StatType {
             json.append("\n}\n");
 
             java.nio.file.Files.writeString(templatePath, json.toString());
-            System.out.println("[InfiniteStats] Translation template written to config/infinitestats/external_translations.json ("
-                    + keys.size() + " keys)");
+            System.out.println("[InfiniteStats] " + keys.size()
+                    + " external attribute(s) still lack a translation; the list was written to "
+                    + "config/infinitestats/external_translations.json");
         } catch (Exception e) {
             System.err.println("[InfiniteStats] Failed to generate translation template: " + e.getMessage());
         }
@@ -435,6 +470,12 @@ public final class StatType {
             create("repulsion").category(StatCategory.ATTACK)
                 .perPointValue(0.5f)
                 .description("持续排斥周围的敌对生物，将它们推开（半径每点 +0.5 格）")
+                .build(),
+
+            create("infinite_arrows").category(StatCategory.ATTACK)
+                .toggle()
+                .maxLevel(5)
+                .description("投入5点解锁：背包中没有箭也能拉弓 / 弩蓄力并射出箭矢，箭不消耗背包")
                 .build(),
 
             // ===== 防御属性 =====
@@ -623,7 +664,7 @@ public final class StatType {
 
             create("projectile_tracking").category(StatCategory.UTILITY)
                 .behavior(StatBehavior.TOGGLE).maxLevel(5).perPointValue(0)
-                .description("解锁后你发射的弹射物（箭矢、雪球、三叉戟等）会自动转向追踪最近的敌人。仅在配置半径内（默认64格，可在配置中调整）生效，性能开销远小于无范围限制版本。")
+                .description("解锁后你发射的弹射物（箭矢、雪球、三叉戟等）会自动转向追踪敌人，优先追踪视野内的目标，被方块挡住的不会追。仅在配置半径内（默认64格，可在配置中调整）生效。")
                 .build(),
 
             create("no_invincibility_frames").category(StatCategory.UTILITY)
@@ -668,6 +709,12 @@ public final class StatType {
                 .description("扩大「加速」的影响半径（每点 +1 格），玩家可自行加点扩展范围")
                 .build(),
 
+            create("cooldown_reduction").category(StatCategory.UTILITY)
+                .percentage()
+                .perPointValue(0.005f)
+                .description("减少物品冷却时间（每点 -0.5%，最高 -100%）")
+                .build(),
+
             create("cross_dimension_teleport").category(StatCategory.UTILITY)
                 .toggle()
                 .maxLevel(1)
@@ -692,39 +739,18 @@ public final class StatType {
                 .description("开启后可使用 /infstats furnace 打开随身熔炉")
                 .build(),
 
+            create("portable_anvil").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可使用 /infstats anvil 打开随身铁砧（修复与重命名，正常消耗经验）")
+                .build(),
+
             create("pe_auto_learn").category(StatCategory.UTILITY)
                 .toggle()
                 .maxLevel(5)
                 .description("投入5点解锁：获得物品时自动学习到ProjectE知识库，无需卖入转化桌即可用EMC转化")
                 .build(),
 
-            // ===== 魔法属性 =====
-            create("max_mana").category(StatCategory.MAGIC)
-                .perPointValue(10f)
-                .build(),
-
-            create("mana_regen").category(StatCategory.MAGIC)
-                .perPointValue(0.5f)
-                .build(),
-
-            create("magic_damage").category(StatCategory.MAGIC)
-                .percentage()
-                .perPointValue(0.03f)
-                .build(),
-
-            create("mana_shield").category(StatCategory.MAGIC)
-                .percentage()
-                .perPointValue(0.01f)
-                .build(),
-
-            create("mana_steal").category(StatCategory.MAGIC)
-                .percentage()
-                .perPointValue(0.01f)
-                .build(),
-
-            create("mana_on_kill").category(StatCategory.MAGIC)
-                .perPointValue(2.0f)
-                .build(),
         };
     }
 

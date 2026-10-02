@@ -14,7 +14,6 @@ public enum StatCategory {
     DEFENSE("defense", "category.infinitestats.defense", 0x5555FF, Items.SHIELD),
     MOBILITY("mobility", "category.infinitestats.mobility", 0x55FF55, Items.ELYTRA),
     UTILITY("utility", "category.infinitestats.utility", 0xFFAA00, Items.DIAMOND_PICKAXE),
-    MAGIC("magic", "category.infinitestats.magic", 0xAA55FF, Items.ENCHANTED_BOOK),
     /** 其他模组注册的属性 - 自动从 ForgeRegistries.ATTRIBUTES 发现 */
     EXTERNAL("external", "category.infinitestats.external", 0xFF66B2, Items.KNOWLEDGE_BOOK);
 

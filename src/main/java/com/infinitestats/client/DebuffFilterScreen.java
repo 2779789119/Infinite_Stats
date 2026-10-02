@@ -2,549 +2,657 @@ package com.infinitestats.client;
 
 import com.infinitestats.compat.JechCompat;
 import com.infinitestats.network.NetworkHandler;
-import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
-import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
+import net.minecraft.locale.Language;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.effect.MobEffect;
+import net.minecraft.world.effect.MobEffectCategory;
 import net.minecraftforge.registries.ForgeRegistries;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.*;
 
 /**
- * 效果过滤器 GUI（原 Debuff 免疫过滤器）
+ * 效果过滤器界面（原 Debuff 免疫过滤器）。
  * <p>
- * 玩家可以选择哪些效果被拦截、哪些放行，支持所有正面和负面效果。
- * 支持两种模式：
- * - 黑名单模式（默认）：列表中的效果被拦截，其他全部放行
- * - 白名单模式：列表中的效果绝对不拦截，其他不管
+ * 玩家勾选需要过滤的效果，支持两种模式：
+ * <ul>
+ *   <li><b>黑名单</b>（默认）：勾选的效果被拦截，其余放行；</li>
+ *   <li><b>白名单</b>：勾选的效果绝对不拦截，其余不处理。</li>
+ * </ul>
+ * 本次重写要点：
+ * <ul>
+ *   <li>按原版 {@link MobEffectCategory} 把效果分为<b>增益 / 中性 / 负面</b>三类，
+ *       用「左侧色条 + 名称着色 + 类别标签」三重标识；</li>
+ *   <li>新增<b>类别筛选</b>（全部 / 增益 / 中性 / 负面），配合搜索可快速定位；</li>
+ *   <li>修复旧版搜索框与标题栏同高互相压盖的问题，布局改用 {@link EditorUi} 统一规范；</li>
+ *   <li>新增「全选」（作用于当前筛选结果）与底栏统计；移除与风格不符的自绘按钮类。</li>
+ * </ul>
  */
 public class DebuffFilterScreen extends Screen {
 
-    private static final int GUI_WIDTH = 360;
-    private static final int GUI_HEIGHT = 280;
-    private static final int HEADER_H = 24;
-    private static final int LIST_TOP = 30;
-    private static final int ENTRY_H = 20;
-    private static final int MAX_VISIBLE = 7;
-    private static final int FOOTER_H = 28;
-    private static final int SCROLLBAR_W = 6;
-    private static final int CUSTOM_H = 24;
+    // ======================== 三分类配色 ========================
 
-    private static final int BG_PANEL = 0xE81A1A2E;
-    private static final int BG_ENTRY = 0x50252535;
-    private static final int BG_ENTRY_HOVER = 0x80353550;
-    private static final int BG_ENTRY_FILTERED = 0x504A2A1A;
-    private static final int BG_ENTRY_FILTERED_HOVER = 0x808A4A2E;
-    private static final int BG_ENTRY_FILTERED_GOOD = 0x502A4A1A;
-    private static final int BG_ENTRY_FILTERED_GOOD_HOVER = 0x804E8A2E;
-    private static final int BG_HEADER = 0xFF1E293B;
-    private static final int BG_INPUT = 0xFF0F172A;
-    private static final int BG_SCROLLBAR_TRACK = 0x30151520;
-    private static final int BG_SCROLLBAR = 0x80555570;
+    /** 增益（BENEFICIAL） */
+    static final int COLOR_BENEFICIAL = 0xFF4ADE80;
+    /** 负面（HARMFUL） */
+    static final int COLOR_HARMFUL = 0xFFF87171;
+    /** 中性（NEUTRAL） */
+    static final int COLOR_NEUTRAL = 0xFFFBBF24;
+    /** 未注册 / 自定义（类别未知） */
+    static final int COLOR_UNKNOWN = 0xFF94A3B8;
 
-    private static final int TEXT_PRIMARY = 0xFFE2E8F0;
-    private static final int TEXT_SECONDARY = 0xFF94A3B8;
-    private static final int TEXT_HIGHLIGHT = 0xFF4ADE80;
-    private static final int TEXT_WARNING = 0xFFF87171;
-    private static final int TEXT_MODE_BLACKLIST = 0xFFF87171;
-    private static final int TEXT_MODE_WHITELIST = 0xFF4ADE80;
+    /** 黑名单模式下「已勾选 = 将被拦截」的行底色 */
+    private static final int BG_PICKED_BLOCK = 0x504A2A1A;
+    private static final int BG_PICKED_BLOCK_HOVER = 0x808A4A2E;
+    /** 白名单模式下「已勾选 = 受到保护」的行底色 */
+    private static final int BG_PICKED_KEEP = 0x502A4A1A;
+    private static final int BG_PICKED_KEEP_HOVER = 0x804E8A2E;
 
-    /** 统一的列表条目 */
-    private record FilterEntry(String name, String id, boolean isCustom) {}
+    private static final int CAT_DIM = 0xFF64748B;
 
-    // 状态
+    // ======================== 布局常量 ========================
+
+    private static final int GUI_W = 420;
+    private static final int GUI_H = 312;
+
+    private static final int SEARCH_Y = EditorUi.HEADER_H + 6;              // 30
+    private static final int SEARCH_H = 18;
+    private static final int LIST_Y = SEARCH_Y + SEARCH_H + 4;              // 52
+    private static final int VISIBLE_ROWS = 9;
+    private static final int LIST_H = VISIBLE_ROWS * EditorUi.ROW_H;        // 198
+
+    private static final int CUSTOM_Y = LIST_Y + LIST_H + 6;                // 256
+    private static final int CUSTOM_H = 20;
+    private static final int FOOTER_Y = CUSTOM_Y + CUSTOM_H + 10;           // 286
+    private static final int FOOTER_H = 20;
+
+    private static final int CAT_BTN_W = 40;
+    private static final int CAT_BTN_H = 16;
+    private static final int CAT_BTN_GAP = 3;
+    private static final int CAT_TOTAL_W =
+            CAT_BTN_W * 4 + CAT_BTN_GAP * 3;                                // 169
+
+    private static final int MODE_BTN_W = 96;
+    private static final int CUSTOM_LABEL_W = 54;
+    private static final int CUSTOM_ADD_W = 66;
+
+    // ======================== 类别筛选 ========================
+
+    private enum CatFilter {
+        ALL("all", EditorUi.INFO),
+        BENEFICIAL("beneficial", COLOR_BENEFICIAL),
+        NEUTRAL("neutral", COLOR_NEUTRAL),
+        HARMFUL("harmful", COLOR_HARMFUL);
+
+        final String key;
+        final int color;
+
+        CatFilter(String key, int color) {
+            this.key = key;
+            this.color = color;
+        }
+
+        String labelKey() {
+            return "screen.infinitestats.debuff_filter.cat_" + key;
+        }
+
+        /** 自定义条目（类别未知）只在「全部」下出现。 */
+        boolean accept(MobEffectCategory category) {
+            if (this == ALL) return true;
+            if (category == null) return false;
+            return switch (this) {
+                case BENEFICIAL -> category == MobEffectCategory.BENEFICIAL;
+                case NEUTRAL -> category == MobEffectCategory.NEUTRAL;
+                case HARMFUL -> category == MobEffectCategory.HARMFUL;
+                case ALL -> true;
+            };
+        }
+    }
+
+    /** 统一的列表条目。category 为 null 表示未注册 / 自定义效果。 */
+    private record FilterEntry(String name, String id, boolean isCustom, MobEffectCategory category) {
+
+        int color() {
+            if (category == null) return COLOR_UNKNOWN;
+            return switch (category) {
+                case BENEFICIAL -> COLOR_BENEFICIAL;
+                case HARMFUL -> COLOR_HARMFUL;
+                case NEUTRAL -> COLOR_NEUTRAL;
+            };
+        }
+
+        String categoryKey() {
+            if (category == null) return "screen.infinitestats.debuff_filter.cat_custom";
+            return switch (category) {
+                case BENEFICIAL -> "screen.infinitestats.debuff_filter.cat_beneficial";
+                case HARMFUL -> "screen.infinitestats.debuff_filter.cat_harmful";
+                case NEUTRAL -> "screen.infinitestats.debuff_filter.cat_neutral";
+            };
+        }
+    }
+
+    // ======================== 状态 ========================
+
     private int leftPos, topPos;
-    private int scrollOffset;
-    private int maxScroll;
-    private boolean scrollbarDragging;
-    private int scrollbarDragStartY;
-    private int scrollbarDragStartOffset;
+    private int scrollOffset, maxScroll;
 
     private EditBox searchBox;
     private EditBox customInputBox;
+    private Button modeButton;
+
     private String searchText = "";
-    private boolean useBlacklist; // true=黑名单, false=白名单
+    private CatFilter categoryFilter = CatFilter.ALL;
+    private boolean useBlacklist = true;
+
     private final Set<String> filteredEffects = new HashSet<>();
-    /** 记录用户手动输入的 ID（不在注册表中的自定义效果） */
     private final Set<String> customIds = new HashSet<>();
 
-    /** 所有可用的效果列表（缓存） */
     private List<MobEffect> allEffects = new ArrayList<>();
-    /** 过滤后的统一列表 */
     private List<FilterEntry> displayedEntries = new ArrayList<>();
-    /** 上次播放音效的 tick */
-    private long lastSoundTick;
-    /** 悬停条目索引 */
+
     private int hoveredIndex = -1;
+    private long lastSoundTick;
+    private String statusMsg = "";
+    private long statusUntil;
+
+    private final List<int[]> rowRects = new ArrayList<>();
+    private final List<int[]> catBtnRects = new ArrayList<>();
+
+    private boolean scrollbarDragging;
+    private int scrollbarDragStartY;
+    private int scrollbarDragStartOffset;
 
     public DebuffFilterScreen() {
         super(Component.translatable("screen.infinitestats.debuff_filter"));
     }
 
+    // ======================== 初始化 ========================
+
     @Override
     protected void init() {
         super.init();
-        leftPos = (width - GUI_WIDTH) / 2;
-        topPos = (height - GUI_HEIGHT) / 2;
+        leftPos = Math.max(0, (width - GUI_W) / 2);
+        topPos = Math.max(0, (height - GUI_H) / 2);
 
-        // 从客户端缓存读取当前过滤状态
-        var player = Minecraft.getInstance().player;
-        if (player != null) {
-            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                useBlacklist = stats.isBuffUseBlacklist();
-                filteredEffects.clear();
-                filteredEffects.addAll(stats.getBuffFilterList());
-                // 重建 customIds：找出 filteredEffects 中不在注册表里的 ID
-                for (String id : filteredEffects) {
-                    if (ForgeRegistries.MOB_EFFECTS.getValue(new net.minecraft.resources.ResourceLocation(id)) == null) {
-                        customIds.add(id);
-                    }
-                }
-            });
-        }
+        loadFromPlayer();
+        buildAllEffects();
+        applyFilters();
 
-        // 收集所有效果
-        buildAllEffectsList();
-        applySearchFilter();
-
-        // 搜索框
-        int searchX = leftPos + 8;
-        int searchY = topPos + 6;
-        int searchW = GUI_WIDTH - 16;
-        searchBox = new EditBox(font, searchX, searchY, searchW, 16,
-                Component.translatable("screen.infinitestats.debuff_filter.search"));
+        searchBox = new EditBox(font, leftPos + EditorUi.GAP, topPos + SEARCH_Y,
+                searchWidth(), SEARCH_H, Component.empty());
         searchBox.setMaxLength(50);
-        searchBox.setValue(searchText);
-        searchBox.setResponder(this::onSearchChanged);
-        searchBox.setBordered(true);
-        searchBox.setFocused(true);
-        searchBox.setTextColor(TEXT_PRIMARY);
+        searchBox.setTextColor(EditorUi.PRIMARY);
         searchBox.setHint(Component.translatable("screen.infinitestats.debuff_filter.search_hint"));
+        searchBox.setValue(searchText);
+        searchBox.setResponder(v -> { searchText = v; applyFilters(); });
+        searchBox.setFocused(true);
         addRenderableWidget(searchBox);
 
-        // 自定义 ID 输入框
-        int customInputY = topPos + LIST_TOP + 26 + MAX_VISIBLE * (ENTRY_H + 2) + 4;
-        customInputBox = new EditBox(font, leftPos + 8, customInputY, GUI_WIDTH - 120, 16,
-                Component.translatable("screen.infinitestats.debuff_filter.custom_input"));
+        modeButton = Button.builder(modeLabel(), b -> toggleMode())
+                .bounds(leftPos + GUI_W - EditorUi.GAP - MODE_BTN_W, topPos + 4, MODE_BTN_W, 16)
+                .build();
+        addRenderableWidget(modeButton);
+
+        customInputBox = new EditBox(font, leftPos + EditorUi.GAP + CUSTOM_LABEL_W,
+                topPos + CUSTOM_Y, GUI_W - CUSTOM_LABEL_W - EditorUi.GAP * 2 - CUSTOM_ADD_W - 4,
+                CUSTOM_H, Component.empty());
         customInputBox.setMaxLength(80);
-        customInputBox.setBordered(true);
-        customInputBox.setTextColor(TEXT_PRIMARY);
+        customInputBox.setTextColor(EditorUi.PRIMARY);
         customInputBox.setHint(Component.translatable("screen.infinitestats.debuff_filter.custom_hint"));
         addRenderableWidget(customInputBox);
 
-        updateMaxScroll();
-        rebuildFilterWidgets();
+        addRenderableWidget(Button.builder(
+                        Component.translatable("screen.infinitestats.debuff_filter.custom_add"),
+                        b -> addCustomId())
+                .bounds(leftPos + GUI_W - EditorUi.GAP - CUSTOM_ADD_W, topPos + CUSTOM_Y,
+                        CUSTOM_ADD_W, CUSTOM_H).build());
+
+        addRenderableWidget(Button.builder(
+                        Component.translatable("screen.infinitestats.debuff_filter.clear"),
+                        b -> clearAll())
+                .bounds(leftPos + EditorUi.GAP, topPos + FOOTER_Y, 70, FOOTER_H).build());
+        addRenderableWidget(Button.builder(
+                        Component.translatable("screen.infinitestats.debuff_filter.select_all"),
+                        b -> selectAllShown())
+                .bounds(leftPos + EditorUi.GAP + 74, topPos + FOOTER_Y, 70, FOOTER_H).build());
+        addRenderableWidget(Button.builder(
+                        Component.translatable("screen.infinitestats.debuff_filter.done"),
+                        b -> onClose())
+                .bounds(leftPos + GUI_W - EditorUi.GAP - 100, topPos + FOOTER_Y, 100, FOOTER_H).build());
     }
 
-    private void buildAllEffectsList() {
+    private int searchWidth() {
+        return GUI_W - EditorUi.GAP * 2 - CAT_TOTAL_W - 4;
+    }
+
+    /** 从客户端缓存的属性数据读取当前过滤状态。 */
+    private void loadFromPlayer() {
+        var player = Minecraft.getInstance().player;
+        if (player == null) return;
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            useBlacklist = stats.isBuffUseBlacklist();
+            filteredEffects.clear();
+            filteredEffects.addAll(stats.getBuffFilterList());
+            customIds.clear();
+            for (String id : filteredEffects) {
+                ResourceLocation rl = ResourceLocation.tryParse(id);
+                if (rl == null || ForgeRegistries.MOB_EFFECTS.getValue(rl) == null) customIds.add(id);
+            }
+        });
+    }
+
+    private void buildAllEffects() {
         allEffects.clear();
-        for (MobEffect effect : ForgeRegistries.MOB_EFFECTS) {
-            allEffects.add(effect);
-        }
-        // 按显示名称排序
+        for (MobEffect effect : ForgeRegistries.MOB_EFFECTS) allEffects.add(effect);
         allEffects.sort(Comparator.comparing(e ->
-                e.getDisplayName().getString().toLowerCase()));
-    }
-
-    private void applySearchFilter() {
-        displayedEntries.clear();
-        String query = searchText.toLowerCase().trim();
-
-        // 先添加注册表中的效果
-        for (MobEffect effect : allEffects) {
-            String id = ForgeRegistries.MOB_EFFECTS.getKey(effect).toString();
-            if (query.isEmpty() ||
-                    JechCompat.matches(effect.getDisplayName().getString().toLowerCase(), query) ||
-                    JechCompat.matches(id.toLowerCase(), query)) {
-                displayedEntries.add(new FilterEntry(effect.getDisplayName().getString(), id, false));
-            }
-        }
-
-        // 再添加自定义 ID（不重复添加已在注册表中的）
-        for (String customId : customIds) {
-            if (query.isEmpty() || JechCompat.matches(customId.toLowerCase(), query)) {
-                // 检查是否已在注册表条目中
-                boolean alreadyListed = allEffects.stream().anyMatch(e ->
-                        ForgeRegistries.MOB_EFFECTS.getKey(e).toString().equals(customId));
-                if (!alreadyListed) {
-                    displayedEntries.add(new FilterEntry(customId, customId, true));
-                }
-            }
-        }
-    }
-
-    private void onSearchChanged(String text) {
-        searchText = text;
-        applySearchFilter();
-        scrollOffset = 0;
-        updateMaxScroll();
-        rebuildFilterWidgets();
-    }
-
-    private void updateMaxScroll() {
-        maxScroll = Math.max(0, displayedEntries.size() - MAX_VISIBLE);
-        scrollOffset = Math.max(0, Math.min(scrollOffset, maxScroll));
-    }
-
-    private void rebuildFilterWidgets() {
-        clearWidgets();
-        // 重新添加搜索框和自定义输入框
-        if (searchBox != null) {
-            addRenderableWidget(searchBox);
-        }
-        if (customInputBox != null) {
-            addRenderableWidget(customInputBox);
-        }
-
-        // 自定义 ID 添加按钮
-        int customInputY = topPos + LIST_TOP + 26 + MAX_VISIBLE * (ENTRY_H + 2) + 4;
-        addRenderableWidget(new PixelButton(
-                leftPos + GUI_WIDTH - 106, customInputY, 42, 16,
-                Component.translatable("screen.infinitestats.debuff_filter.custom_add"),
-                0x503B5E8A, 0x805080B0, TEXT_HIGHLIGHT,
-                b -> addCustomId()));
-
-        // 模式切换按钮
-        int modeBtnX = leftPos + 8;
-        int modeBtnY = topPos + GUI_HEIGHT - FOOTER_H + 2;
-        int modeBtnW = 100;
-        addRenderableWidget(new PixelButton(modeBtnX, modeBtnY, modeBtnW, 14,
-                Component.translatable("screen.infinitestats.debuff_filter.mode"),
-                useBlacklist ? 0x508A2E2E : 0x502E8A4E,
-                useBlacklist ? 0x80AA4040 : 0x8040AA40,
-                useBlacklist ? TEXT_MODE_BLACKLIST : TEXT_MODE_WHITELIST,
-                b -> toggleMode()));
-
-        // 清空按钮
-        int clearBtnX = modeBtnX + modeBtnW + 6;
-        addRenderableWidget(new PixelButton(clearBtnX, modeBtnY, 48, 14,
-                Component.translatable("screen.infinitestats.debuff_filter.clear"),
-                0x50353550, 0x80555570, TEXT_SECONDARY,
-                b -> clearAllFilters()));
-
-        // 底部提示
-        int hintX = leftPos + GUI_WIDTH - 8;
-        String hint = useBlacklist
-                ? Component.translatable("screen.infinitestats.debuff_filter.hint_blacklist").getString()
-                : Component.translatable("screen.infinitestats.debuff_filter.hint_whitelist").getString();
-        addRenderableWidget(new HintLabel(hintX - font.width(hint), modeBtnY + 1, hint));
+                e.getDisplayName().getString().toLowerCase(Locale.ROOT)));
     }
 
     /**
-     * 添加用户自定义的效果 ID
+     * 查询某个效果的说明文本。
+     * <p>
+     * 取值顺序：
+     * <ol>
+     *   <li><code>effect.&lt;命名空间&gt;.&lt;路径&gt;.desc</code> —— 通用约定键，
+     *       任何模组或资源包按此格式提供即可自动生效；</li>
+     *   <li><code>infinitestats.effect.&lt;命名空间&gt;.&lt;路径&gt;</code> —— 本模组内置说明
+     *       （独立命名空间，避免与其他模组抢占同名键）。</li>
+     * </ol>
+     *
+     * @return 说明文本；两处都没有时返回 {@code null}
      */
-    private void addCustomId() {
-        String input = customInputBox.getValue().trim();
-        if (input.isEmpty()) return;
-
-        // 验证格式：必须包含冒号 (namespace:id)
-        if (!input.contains(":")) {
-            // 自动补全 minecraft: 前缀
-            input = "minecraft:" + input;
+    static String effectDescription(ResourceLocation rl) {
+        if (rl == null) return null;
+        String[] keys = {
+                "effect." + rl.getNamespace() + "." + rl.getPath() + ".desc",
+                "infinitestats.effect." + rl.getNamespace() + "." + rl.getPath()
+        };
+        for (String key : keys) {
+            String val = Language.getInstance().getOrDefault(key, "");
+            if (val != null && !val.isEmpty() && !val.equals(key)) return val;
         }
-
-        String id = input.toLowerCase();
-        if (filteredEffects.add(id)) {
-            playClickSound();
-            customIds.add(id);
-            applySearchFilter();
-            updateMaxScroll();
-            rebuildFilterWidgets();
-            sendFilterUpdate();
-        }
-        customInputBox.setValue("");
+        return null;
     }
+
+    /** 依据「类别筛选 + 搜索关键字」重建显示列表（搜索同时匹配效果说明）。 */
+    private void applyFilters() {
+        displayedEntries.clear();
+        String q = searchText.toLowerCase(Locale.ROOT).trim();
+
+        for (MobEffect effect : allEffects) {
+            ResourceLocation rl = ForgeRegistries.MOB_EFFECTS.getKey(effect);
+            if (rl == null) continue;
+            String id = rl.toString();
+            MobEffectCategory category = effect.getCategory();
+            if (!categoryFilter.accept(category)) continue;
+
+            String name = effect.getDisplayName().getString();
+            if (!q.isEmpty()) {
+                String desc = effectDescription(rl);
+                if (!JechCompat.matches(name.toLowerCase(Locale.ROOT), q)
+                        && !JechCompat.matches(id.toLowerCase(Locale.ROOT), q)
+                        && (desc == null || !JechCompat.matches(desc.toLowerCase(Locale.ROOT), q))) {
+                    continue;
+                }
+            }
+            displayedEntries.add(new FilterEntry(name, id, false, category));
+        }
+
+        for (String customId : customIds) {
+            if (!categoryFilter.accept(null)) continue;
+            if (!q.isEmpty() && !JechCompat.matches(customId.toLowerCase(Locale.ROOT), q)) continue;
+            boolean listed = false;
+            for (MobEffect e : allEffects) {
+                ResourceLocation key = ForgeRegistries.MOB_EFFECTS.getKey(e);
+                if (key != null && key.toString().equals(customId)) { listed = true; break; }
+            }
+            if (!listed) displayedEntries.add(new FilterEntry(customId, customId, true, null));
+        }
+
+        maxScroll = Math.max(0, displayedEntries.size() - VISIBLE_ROWS);
+        scrollOffset = clamp(scrollOffset, 0, maxScroll);
+    }
+
+    // ======================== 数据操作 ========================
 
     private void toggleMode() {
-        playClickSound();
         useBlacklist = !useBlacklist;
+        if (modeButton != null) modeButton.setMessage(modeLabel());
+        playClick();
         sendFilterUpdate();
-        rebuildFilterWidgets();
     }
 
-    private void clearAllFilters() {
-        playClickSound();
-        filteredEffects.clear();
-        customIds.clear();
-        applySearchFilter();
-        updateMaxScroll();
-        sendFilterUpdate();
-        rebuildFilterWidgets();
+    private Component modeLabel() {
+        return Component.translatable("screen.infinitestats.debuff_filter.mode_label",
+                Component.translatable(useBlacklist
+                        ? "screen.infinitestats.debuff_filter.mode_blacklist"
+                        : "screen.infinitestats.debuff_filter.mode_whitelist"));
     }
 
     private void toggleEffect(FilterEntry entry) {
-        playClickSound();
-        if (filteredEffects.contains(entry.id())) {
-            filteredEffects.remove(entry.id());
-            customIds.remove(entry.id());
-        } else {
+        if (!filteredEffects.remove(entry.id())) {
             filteredEffects.add(entry.id());
-            if (entry.isCustom()) {
-                customIds.add(entry.id());
-            }
+            if (entry.isCustom()) customIds.add(entry.id());
+        } else if (entry.isCustom()) {
+            customIds.remove(entry.id());
         }
-        applySearchFilter();
-        updateMaxScroll();
+        playClick();
         sendFilterUpdate();
-        rebuildFilterWidgets();
+    }
+
+    private void clearAll() {
+        filteredEffects.clear();
+        customIds.clear();
+        applyFilters();
+        playClick();
+        sendFilterUpdate();
+    }
+
+    /** 把当前筛选结果全部勾选（例如先筛「负面」再点全选，即可一键拦截所有负面效果）。 */
+    private void selectAllShown() {
+        for (FilterEntry entry : displayedEntries) filteredEffects.add(entry.id());
+        playClick();
+        sendFilterUpdate();
+    }
+
+    private void addCustomId() {
+        String input = customInputBox.getValue().trim().toLowerCase(Locale.ROOT);
+        if (input.isEmpty()) return;
+        if (!input.contains(":")) input = "minecraft:" + input;
+
+        ResourceLocation rl = ResourceLocation.tryParse(input);
+        if (rl == null) {
+            setStatus(Component.translatable("screen.infinitestats.debuff_filter.invalid_id").getString());
+            return;
+        }
+        filteredEffects.add(input);
+        if (ForgeRegistries.MOB_EFFECTS.getValue(rl) == null) customIds.add(input);
+
+        customInputBox.setValue("");
+        applyFilters();
+        playClick();
+        sendFilterUpdate();
     }
 
     private void sendFilterUpdate() {
         NetworkHandler.CHANNEL.sendToServer(
                 new NetworkHandler.UpdateBuffFilterPacket(useBlacklist, new HashSet<>(filteredEffects)));
 
-        // 同步更新客户端缓存
         var player = Minecraft.getInstance().player;
         if (player != null) {
-            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                stats.setBuffFilterList(new HashSet<>(filteredEffects), useBlacklist);
-            });
+            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
+                    stats.setBuffFilterList(new HashSet<>(filteredEffects), useBlacklist));
         }
     }
 
-    private void playClickSound() {
+    private void setStatus(String msg) {
+        statusMsg = msg;
+        statusUntil = System.currentTimeMillis() + 2500;
+    }
+
+    private void playClick() {
         if (minecraft == null) return;
         long now = System.currentTimeMillis();
         if (now - lastSoundTick < 50) return;
         lastSoundTick = now;
-        minecraft.getSoundManager().play(
-                SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
+        minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
     }
 
-    // ======================== 渲染 ========================
+    // ======================== 绘制 ========================
 
     @Override
-    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderBackground(graphics);
+    public void render(GuiGraphics g, int mx, int my, float pt) {
+        renderBackground(g);
 
-        PoseStack pose = graphics.pose();
-        pose.pushPose();
+        EditorUi.panel(g, leftPos, topPos, GUI_W, GUI_H);
+        EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
 
-        // 面板背景
-        graphics.fill(leftPos, topPos, leftPos + GUI_WIDTH, topPos + GUI_HEIGHT, BG_PANEL);
+        drawCategoryButtons(g, mx, my);
+        drawList(g, mx, my);
 
-        // 标题栏
-        graphics.fill(leftPos, topPos, leftPos + GUI_WIDTH, topPos + HEADER_H, BG_HEADER);
-        String title = Component.translatable("screen.infinitestats.debuff_filter").getString();
-        graphics.drawCenteredString(font, title, leftPos + GUI_WIDTH / 2, topPos + 8, TEXT_HIGHLIGHT);
+        EditorUi.dividerH(g, leftPos + 4, topPos + LIST_Y + LIST_H - 2, GUI_W - 8);
+        g.drawString(font, Component.translatable("screen.infinitestats.debuff_filter.custom_input").getString(),
+                leftPos + EditorUi.GAP, topPos + CUSTOM_Y + 6, EditorUi.GOLD);
+        EditorUi.dividerH(g, leftPos + 4, topPos + FOOTER_Y - 6, GUI_W - 8);
 
-        // 模式标签
-        String modeText = useBlacklist
-                ? Component.translatable("screen.infinitestats.debuff_filter.mode_blacklist").getString()
-                : Component.translatable("screen.infinitestats.debuff_filter.mode_whitelist").getString();
-        int modeColor = useBlacklist ? TEXT_MODE_BLACKLIST : TEXT_MODE_WHITELIST;
-        graphics.drawString(font, modeText, leftPos + GUI_WIDTH - font.width(modeText) - 8,
-                topPos + 8, modeColor);
+        // 底栏统计（说明当前模式的含义）
+        String stat = Component.translatable(useBlacklist
+                        ? "screen.infinitestats.debuff_filter.stat_blacklist"
+                        : "screen.infinitestats.debuff_filter.stat_whitelist",
+                filteredEffects.size()).getString();
+        g.drawString(font, stat, leftPos + 156, topPos + FOOTER_Y + 6,
+                useBlacklist ? COLOR_HARMFUL : COLOR_BENEFICIAL);
 
-        // 渲染效果列表
-        renderEffectList(graphics, mouseX, mouseY);
-        renderScrollbar(graphics, mouseX, mouseY);
+        super.render(g, mx, my, pt);
 
-        // 渲染所有 widget
-        for (var renderable : this.renderables) {
-            renderable.render(graphics, mouseX, mouseY, partialTick);
+        drawTooltip(g, mx, my);
+
+        if (System.currentTimeMillis() < statusUntil) {
+            g.drawCenteredString(font, statusMsg, leftPos + GUI_W / 2, topPos + GUI_H - 8, EditorUi.DANGER);
         }
-
-        // 渲染悬停 tooltip
-        renderTooltip(graphics, mouseX, mouseY);
-
-        pose.popPose();
     }
 
-    private void renderEffectList(GuiGraphics g, int mouseX, int mouseY) {
+    private void drawCategoryButtons(GuiGraphics g, int mx, int my) {
+        catBtnRects.clear();
+        int by = topPos + SEARCH_Y + (SEARCH_H - CAT_BTN_H) / 2;
+        int bx = leftPos + GUI_W - EditorUi.GAP - CAT_TOTAL_W;
+
+        for (CatFilter f : CatFilter.values()) {
+            boolean active = categoryFilter == f;
+            boolean hover = mx >= bx && mx < bx + CAT_BTN_W && my >= by && my < by + CAT_BTN_H;
+
+            int bg = active ? ((f.color & 0x00FFFFFF) | 0x50000000)
+                    : hover ? EditorUi.BG_ROW_HOVER : EditorUi.BG_ROW;
+            g.fill(bx, by, bx + CAT_BTN_W, by + CAT_BTN_H, bg);
+            // 激活时用类别色画下边框，非激活时画一条暗边框
+            g.fill(bx, by + CAT_BTN_H - 1, bx + CAT_BTN_W, by + CAT_BTN_H,
+                    active ? f.color : EditorUi.BG_DIVIDER);
+
+            g.drawCenteredString(font, Component.translatable(f.labelKey()).getString(),
+                    bx + CAT_BTN_W / 2, by + (CAT_BTN_H - font.lineHeight) / 2 + 1,
+                    active ? f.color : EditorUi.SECONDARY);
+
+            catBtnRects.add(new int[]{bx, by, CAT_BTN_W, CAT_BTN_H, f.ordinal()});
+            bx += CAT_BTN_W + CAT_BTN_GAP;
+        }
+    }
+
+    private void drawList(GuiGraphics g, int mx, int my) {
+        int x = leftPos + EditorUi.GAP;
+        int w = GUI_W - EditorUi.GAP * 2 - EditorUi.SCROLL_W - 2;
+        int ly = topPos + LIST_Y;
+
+        rowRects.clear();
         hoveredIndex = -1;
 
-        for (int i = 0; i < MAX_VISIBLE; i++) {
+        for (int i = 0; i < VISIBLE_ROWS; i++) {
             int idx = i + scrollOffset;
             if (idx >= displayedEntries.size()) break;
 
             FilterEntry entry = displayedEntries.get(idx);
-            boolean isInFilter = filteredEffects.contains(entry.id());
+            boolean picked = filteredEffects.contains(entry.id());
+            int y = ly + i * EditorUi.ROW_H;
+            boolean hover = mx >= x && mx < x + w && my >= y && my < y + EditorUi.ROW_H - 2;
+            if (hover) hoveredIndex = idx;
 
-            int y = topPos + LIST_TOP + 24 + i * (ENTRY_H + 2);
-            int x = leftPos + 6;
-            int entryW = GUI_WIDTH - SCROLLBAR_W - 18;
-
-            boolean hovered = mouseX >= x && mouseX < x + entryW &&
-                    mouseY >= y && mouseY < y + ENTRY_H;
-            if (hovered) hoveredIndex = idx;
-
-            int bgColor;
-            if (isInFilter) {
-                if (useBlacklist) {
-                    bgColor = hovered ? BG_ENTRY_FILTERED_HOVER : BG_ENTRY_FILTERED;
-                } else {
-                    bgColor = hovered ? BG_ENTRY_FILTERED_GOOD_HOVER : BG_ENTRY_FILTERED_GOOD;
-                }
+            int bg;
+            if (picked) {
+                bg = useBlacklist
+                        ? (hover ? BG_PICKED_BLOCK_HOVER : BG_PICKED_BLOCK)
+                        : (hover ? BG_PICKED_KEEP_HOVER : BG_PICKED_KEEP);
             } else {
-                bgColor = hovered ? BG_ENTRY_HOVER : BG_ENTRY;
+                bg = hover ? EditorUi.BG_ROW_HOVER : EditorUi.BG_ROW;
             }
+            g.fill(x, y, x + w, y + EditorUi.ROW_H - 2, bg);
 
-            g.fill(x, y, x + entryW, y + ENTRY_H, bgColor);
+            // 类别色条：整行最直观的分类标识
+            g.fill(x, y, x + 2, y + EditorUi.ROW_H - 2, entry.color());
 
-            // 状态图标
-            String icon;
-            int iconColor;
-            if (entry.isCustom()) {
-                // 自定义条目：特殊图标
-                icon = isInFilter ? "✦" : "✧";
-                iconColor = isInFilter ? TEXT_HIGHLIGHT : 0xFF64748B;
-            } else {
-                icon = isInFilter ? "◉" : "○";
-                if (useBlacklist) {
-                    iconColor = isInFilter ? TEXT_WARNING : TEXT_HIGHLIGHT;
-                } else {
-                    iconColor = isInFilter ? TEXT_HIGHLIGHT : TEXT_SECONDARY;
-                }
-            }
-            g.drawString(font, icon, x + 6, y + (ENTRY_H - font.lineHeight) / 2 + 1, iconColor);
+            int ty = y + (EditorUi.ROW_H - 2 - font.lineHeight) / 2 + 1;
+            g.drawString(font, picked ? "◉" : "○", x + 6, ty, picked ? entry.color() : CAT_DIM);
 
-            // 条目名称
-            String name = entry.isCustom()
-                    ? "⚙ " + entry.name()
-                    : entry.name();
-            int textColor = hovered ? TEXT_PRIMARY : TEXT_SECONDARY;
-            g.drawString(font, name, x + 20, y + (ENTRY_H - font.lineHeight) / 2 + 1, textColor);
+            // 名称直接占满「勾选图标 → ID」之间的空间。
+            // 行内不再绘制「增益 / 中性 / 负面」文字标签：左侧色条 + 名称着色已经足够区分，
+            // 而文字标签会占掉约 40px，把长效果名挤到几乎看不见。
+            // 需要确认精确类别时看悬停浮窗里的「类别: xxx」。
+            String idText = EditorUi.ellipsize(font, entry.id(), 140);
+            int idX = x + w - font.width(idText) - 6;
 
-            // 效果 ID
-            int idColor = hovered ? TEXT_HIGHLIGHT : 0xFF64748B;
-            g.drawString(font, entry.id(), x + entryW - font.width(entry.id()) - 4,
-                    y + (ENTRY_H - font.lineHeight) / 2 + 1, idColor);
+            String name = entry.isCustom() ? "⚙ " + entry.name() : entry.name();
+            int nameMax = Math.max(20, idX - (x + 18) - 6);
+            g.drawString(font, EditorUi.ellipsize(font, name, nameMax), x + 18, ty, entry.color());
+            g.drawString(font, idText, idX, ty, EditorUi.SECONDARY);
+
+            rowRects.add(new int[]{x, y, w, EditorUi.ROW_H - 2, idx});
         }
 
-        // 自定义输入分隔线
-        int lineY = topPos + LIST_TOP + 24 + MAX_VISIBLE * (ENTRY_H + 2) + 2;
-        g.fill(leftPos + 8, lineY, leftPos + GUI_WIDTH - 8, lineY + 1, 0x403B5E8A);
+        if (displayedEntries.isEmpty()) {
+            g.drawString(font,
+                    Component.translatable("screen.infinitestats.debuff_filter.no_match").getString(),
+                    x + 6, ly + 6, EditorUi.SECONDARY);
+        }
+
+        EditorUi.scrollbar(g, mx, my, leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W,
+                ly, LIST_H - 2, scrollOffset, maxScroll, VISIBLE_ROWS);
     }
 
-    private void renderScrollbar(GuiGraphics g, int mouseX, int mouseY) {
-        if (maxScroll <= 0) return;
-
-        int sx = leftPos + GUI_WIDTH - SCROLLBAR_W - 4;
-        int sy = topPos + LIST_TOP + 24;
-        int sh = MAX_VISIBLE * (ENTRY_H + 2) - 2;
-
-        g.fill(sx, sy, sx + SCROLLBAR_W, sy + sh, BG_SCROLLBAR_TRACK);
-
-        int sliderH = Math.max(20, (int) ((float) MAX_VISIBLE / (maxScroll + MAX_VISIBLE) * sh));
-        int sliderY = sy + (sh - sliderH) * scrollOffset / maxScroll;
-
-        boolean hovering = mouseX >= sx && mouseX < sx + SCROLLBAR_W &&
-                mouseY >= sliderY && mouseY < sliderY + sliderH;
-        g.fill(sx, sliderY, sx + SCROLLBAR_W, sliderY + sliderH,
-                hovering || scrollbarDragging ? 0xB08888A0 : BG_SCROLLBAR);
-    }
-
-    private void renderTooltip(GuiGraphics g, int mouseX, int mouseY) {
+    private void drawTooltip(GuiGraphics g, int mx, int my) {
         if (hoveredIndex < 0 || hoveredIndex >= displayedEntries.size()) return;
-
         FilterEntry entry = displayedEntries.get(hoveredIndex);
-        boolean isInFilter = filteredEffects.contains(entry.id());
+        boolean picked = filteredEffects.contains(entry.id());
 
         List<String> lines = new ArrayList<>();
-        if (entry.isCustom()) {
-            lines.add(Component.translatable("screen.infinitestats.debuff_filter.custom_label").getString() + " " + entry.name());
-        } else {
-            lines.add(entry.name());
+        lines.add("§f§l" + entry.name());
+        lines.add("§7类别: " + chatColor(entry.color())
+                + Component.translatable(entry.categoryKey()).getString());
+
+        // 效果说明（可由其他模组 / 资源包通过 effect.<ns>.<path>.desc 覆盖）
+        String desc = effectDescription(ResourceLocation.tryParse(entry.id()));
+        if (desc != null) {
+            lines.add("");
+            for (String line : EditorUi.wrap(font, desc, 190)) {
+                lines.add(line.isEmpty() ? "§8§m        " : "§7" + line);
+            }
         }
 
         if (useBlacklist) {
-            if (isInFilter) {
-                lines.add(Component.translatable("screen.infinitestats.debuff_filter.tooltip_blacklist_blocked").getString());
-            } else {
-                lines.add(Component.translatable("screen.infinitestats.debuff_filter.tooltip_blacklist_allowed").getString());
-            }
+            lines.add(picked
+                    ? Component.translatable("screen.infinitestats.debuff_filter.tooltip_blacklist_blocked").getString()
+                    : Component.translatable("screen.infinitestats.debuff_filter.tooltip_blacklist_allowed").getString());
         } else {
-            if (isInFilter) {
-                lines.add(Component.translatable("screen.infinitestats.debuff_filter.tooltip_whitelist_protected").getString());
-            } else {
-                lines.add(Component.translatable("screen.infinitestats.debuff_filter.tooltip_whitelist_ignored").getString());
-            }
+            lines.add(picked
+                    ? Component.translatable("screen.infinitestats.debuff_filter.tooltip_whitelist_protected").getString()
+                    : Component.translatable("screen.infinitestats.debuff_filter.tooltip_whitelist_ignored").getString());
         }
-        lines.add(entry.id());
-        lines.add(Component.translatable("screen.infinitestats.debuff_filter.tooltip_click").getString());
+        lines.add("§8" + entry.id());
+        lines.add("§8" + Component.translatable("screen.infinitestats.debuff_filter.tooltip_click").getString());
 
-        List<net.minecraft.util.FormattedCharSequence> visualLines = new ArrayList<>();
-        for (String line : lines) {
-            visualLines.add(Component.literal(line).getVisualOrderText());
-        }
-        g.renderTooltip(font, visualLines, mouseX, mouseY);
+        EditorUi.tooltip(g, mx, my, lines, entry.color());
+    }
+
+    /** 把 ARGB 映射到最接近的原版格式码，用于 tooltip 内的彩色片段。 */
+    private static String chatColor(int argb) {
+        return switch (argb) {
+            case COLOR_BENEFICIAL -> "§a";
+            case COLOR_HARMFUL -> "§c";
+            case COLOR_NEUTRAL -> "§e";
+            default -> "§7";
+        };
     }
 
     // ======================== 鼠标输入 ========================
 
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+    public boolean mouseClicked(double mx, double my, int button) {
         if (button == 0) {
-            // 点击条目
+            // 类别筛选
+            for (int[] r : catBtnRects) {
+                if (mx >= r[0] && mx < r[0] + r[2] && my >= r[1] && my < r[1] + r[3]) {
+                    categoryFilter = CatFilter.values()[r[4]];
+                    scrollOffset = 0;
+                    applyFilters();
+                    playClick();
+                    return true;
+                }
+            }
+
+            // 列表条目
             if (hoveredIndex >= 0 && hoveredIndex < displayedEntries.size()) {
                 toggleEffect(displayedEntries.get(hoveredIndex));
                 return true;
             }
 
             // 滚动条
-            if (maxScroll > 0 && isMouseOnScrollbar((int) mouseX, (int) mouseY)) {
+            if (maxScroll > 0 && isOnScrollbar((int) mx, (int) my)) {
                 scrollbarDragging = true;
-                scrollbarDragStartY = (int) mouseY;
+                scrollbarDragStartY = (int) my;
                 scrollbarDragStartOffset = scrollOffset;
                 return true;
             }
         }
-
-        return super.mouseClicked(mouseX, mouseY, button);
+        return super.mouseClicked(mx, my, button);
     }
 
     @Override
-    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+    public boolean mouseDragged(double mx, double my, int button, double dx, double dy) {
         if (scrollbarDragging && maxScroll > 0) {
-            int sy = topPos + LIST_TOP + 24;
-            int sh = MAX_VISIBLE * (ENTRY_H + 2) - 2;
-            int sliderH = Math.max(20, (int) ((float) MAX_VISIBLE / (maxScroll + MAX_VISIBLE) * sh));
-            int dragRange = sh - sliderH;
-            if (dragRange > 0) {
-                float progress = (float) ((mouseY - sy - sliderH / 2.0 - scrollbarDragStartY) / dragRange
-                        + (float) scrollbarDragStartOffset / maxScroll);
-                scrollOffset = Math.max(0, Math.min(maxScroll,
-                        (int) (progress * maxScroll + 0.5)));
+            int[] slider = sliderRect();
+            int trackY = topPos + LIST_Y;
+            int trackH = LIST_H - 2;
+            int range = trackH - slider[3];
+            if (range > 0) {
+                int newY = (int) (my - (slider[1] - scrollbarDragStartY) - trackY);
+                float progress = (float) newY / range;
+                scrollOffset = clamp((int) (progress * maxScroll + 0.5f), 0, maxScroll);
             }
             return true;
         }
-        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+        return super.mouseDragged(mx, my, button, dx, dy);
     }
 
     @Override
-    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+    public boolean mouseReleased(double mx, double my, int button) {
         if (scrollbarDragging) {
             scrollbarDragging = false;
             return true;
         }
-        return super.mouseReleased(mouseX, mouseY, button);
+        return super.mouseReleased(mx, my, button);
     }
 
     @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
+    public boolean mouseScrolled(double mx, double my, double delta) {
         if (maxScroll > 0) {
-            scrollOffset = Math.max(0, Math.min(maxScroll, scrollOffset + (delta > 0 ? -1 : 1)));
+            scrollOffset = clamp(scrollOffset + (delta > 0 ? -1 : 1), 0, maxScroll);
             return true;
         }
-        return super.mouseScrolled(mouseX, mouseY, delta);
+        return super.mouseScrolled(mx, my, delta);
     }
 
-    private boolean isMouseOnScrollbar(int mouseX, int mouseY) {
-        int sx = leftPos + GUI_WIDTH - SCROLLBAR_W - 4;
-        int sy = topPos + LIST_TOP + 24;
-        int sh = MAX_VISIBLE * (ENTRY_H + 2) - 2;
-        return mouseX >= sx && mouseX < sx + SCROLLBAR_W + 4 &&
-                mouseY >= sy && mouseY < sy + sh;
+    /** 与 {@link EditorUi#scrollbar} 使用同一套几何计算，保证拖动与绘制一致。 */
+    private int[] sliderRect() {
+        int sx = leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
+        int sy = topPos + LIST_Y;
+        int h = LIST_H - 2;
+        int sliderH = Math.min(h, Math.max(16,
+                (int) ((float) VISIBLE_ROWS / (maxScroll + VISIBLE_ROWS) * h)));
+        int sliderY = maxScroll > 0 ? sy + (h - sliderH) * scrollOffset / maxScroll : sy;
+        return new int[]{sx, sliderY, EditorUi.SCROLL_W, sliderH};
+    }
+
+    private boolean isOnScrollbar(int mx, int my) {
+        int[] slider = sliderRect();
+        int trackX = leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
+        return mx >= trackX - 2 && mx < trackX + EditorUi.SCROLL_W + 2
+                && my >= topPos + LIST_Y && my < topPos + LIST_Y + LIST_H - 2;
     }
 
     // ======================== 键盘输入 ========================
@@ -555,22 +663,15 @@ public class DebuffFilterScreen extends Screen {
             onClose();
             return true;
         }
-        // 在自定义输入框按回车 → 添加
-        if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
-            if (customInputBox != null && customInputBox.isFocused()) {
-                addCustomId();
-                return true;
-            }
-        }
-        if (keyCode == GLFW.GLFW_KEY_UP || keyCode == GLFW.GLFW_KEY_W) {
-            if (maxScroll > 0) {
-                scrollOffset = Math.max(0, scrollOffset - 1);
-            }
+        if ((keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER)
+                && customInputBox != null && customInputBox.isFocused()) {
+            addCustomId();
             return true;
         }
-        if (keyCode == GLFW.GLFW_KEY_DOWN || keyCode == GLFW.GLFW_KEY_S) {
+        // 方向键翻列表（不占用 W/S，避免与搜索框输入冲突）
+        if (keyCode == GLFW.GLFW_KEY_UP || keyCode == GLFW.GLFW_KEY_DOWN) {
             if (maxScroll > 0) {
-                scrollOffset = Math.min(maxScroll, scrollOffset + 1);
+                scrollOffset = clamp(scrollOffset + (keyCode == GLFW.GLFW_KEY_UP ? -1 : 1), 0, maxScroll);
             }
             return true;
         }
@@ -582,49 +683,7 @@ public class DebuffFilterScreen extends Screen {
         return true;
     }
 
-    // ======================== 自定义控件 ========================
-
-    private static class PixelButton extends Button {
-        private final int bgColor, hoverColor, textColor;
-
-        PixelButton(int x, int y, int w, int h, Component message,
-                    int bg, int hover, int text, OnPress onPress) {
-            super(x, y, w, h, message, onPress, DEFAULT_NARRATION);
-            this.bgColor = bg;
-            this.hoverColor = hover;
-            this.textColor = text;
-        }
-
-        @Override
-        public void renderWidget(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-            int color = isHoveredOrFocused() ? hoverColor : bgColor;
-            g.fill(getX(), getY(), getX() + width, getY() + height, color);
-            g.drawCenteredString(Minecraft.getInstance().font, getMessage(),
-                    getX() + width / 2,
-                    getY() + (height - Minecraft.getInstance().font.lineHeight) / 2 + 1,
-                    textColor);
-        }
-
-        @Override
-        public void playDownSound(net.minecraft.client.sounds.SoundManager handler) {}
-    }
-
-    private static class HintLabel extends Button {
-        private final String text;
-        private final int color;
-
-        HintLabel(int x, int y, String text) {
-            super(x, y, 0, 12, Component.literal(text), b -> {}, DEFAULT_NARRATION);
-            this.text = text;
-            this.color = TEXT_SECONDARY;
-        }
-
-        @Override
-        public void renderWidget(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-            g.drawString(Minecraft.getInstance().font, text, getX(), getY(), color);
-        }
-
-        @Override
-        public void playDownSound(net.minecraft.client.sounds.SoundManager handler) {}
+    private static int clamp(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, v));
     }
 }

@@ -68,7 +68,7 @@ public final class EditItemMetaPacket {
             ServerPlayer player = ctx.get().getSender();
             if (player == null) return;
 
-            ItemStack stack = player.getItemInHand(InteractionHand.MAIN_HAND);
+            ItemStack stack = player.getItemInHand(InteractionHand.MAIN_HAND).copy();
             if (stack.isEmpty()) return;
 
             if (msg.changeName) {
@@ -105,6 +105,9 @@ public final class EditItemMetaPacket {
             }
 
             player.setItemInHand(InteractionHand.MAIN_HAND, stack);
+            player.getInventory().setChanged();
+            player.inventoryMenu.broadcastChanges();
+            if (player.containerMenu != player.inventoryMenu) player.containerMenu.broadcastChanges();
         });
         ctx.get().setPacketHandled(true);
     }

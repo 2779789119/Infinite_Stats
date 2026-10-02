@@ -1,6 +1,7 @@
 package com.infinitestats.crafting;
 
 import com.infinitestats.Config;
+import com.infinitestats.compat.PolymorphCompat;
 import com.infinitestats.emc.ModMenuTypes;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
@@ -132,16 +133,20 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
         if (fillingGrid || level.isClientSide() || !(player instanceof ServerPlayer serverPlayer)) {
             return;
         }
+        // 装了 Polymorph（多态合成）时交给它挑配方：它会按玩家此前在原版合成台 / 随身工作台
+        // 做过的选择决定用哪一个，并把候选列表同步给客户端的配方选择控件；
+        // 没装或它没能给出结果时（返回 null）回退到原版「取第一个匹配配方」。
+        CraftingRecipe recipe = PolymorphCompat.getSelectedRecipe(serverPlayer, this, craftSlots, level);
+        if (recipe == null) {
+            recipe = level.getServer().getRecipeManager()
+                    .getRecipeFor(RecipeType.CRAFTING, craftSlots, level).orElse(null);
+        }
+
         ItemStack result = ItemStack.EMPTY;
-        Optional<CraftingRecipe> optional = level.getServer().getRecipeManager()
-                .getRecipeFor(RecipeType.CRAFTING, craftSlots, level);
-        if (optional.isPresent()) {
-                CraftingRecipe recipe = optional.get();
-            if (resultSlots.setRecipeUsed(level, serverPlayer, recipe)) {
-                ItemStack assembled = recipe.assemble(craftSlots, level.registryAccess());
-                if (assembled.isItemEnabled(level.enabledFeatures())) {
-                    result = assembled;
-                }
+        if (recipe != null && resultSlots.setRecipeUsed(level, serverPlayer, recipe)) {
+            ItemStack assembled = recipe.assemble(craftSlots, level.registryAccess());
+            if (assembled.isItemEnabled(level.enabledFeatures())) {
+                result = assembled;
             }
         }
         // 应用随身工作台物品倍率（影响每次合成的产出数量）
@@ -335,26 +340,57 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
             super.onTake(player, stack);
             if (player.level().isClientSide() || !(player instanceof ServerPlayer)) return;
             List<NetworkHandle> nets = NetworkIO.getNetworks(player);
-            if (nets.isEmpty()) return;
+            boolean changed = false;
             for (int i = 0; i < before.length; i++) {
                 ItemStack pre = before[i];
                 if (pre.isEmpty()) continue; // 取出前为空的槽不补充，避免误拉无关物品
                 ItemStack now = craftSlots.getItem(i);
                 if (!now.isEmpty() && !ItemStack.isSameItemSameTags(pre, now)) continue;
                 int deficit = pre.getCount() - now.getCount();
-                if (deficit > 0) {
-                    ItemStack got = NetworkIO.extract(nets, pre.copyWithCount(deficit), deficit);
-                    if (!got.isEmpty()) {
-                        if (now.isEmpty()) {
-                            craftSlots.setItem(i, got);
-                        } else {
-                            now.grow(got.getCount());
-                            craftSlots.setItem(i, now);
-                        }
+                if (deficit <= 0) continue;
+
+                // 先向存储网络要，要不够的差额再从玩家背包补：这样即便一个网络都没连，
+                // 也不会出现「取一次就断料、每次都要手动重新摆材料」的卡顿感。
+                ItemStack got = nets.isEmpty()
+                        ? ItemStack.EMPTY
+                        : NetworkIO.extract(nets, pre.copyWithCount(deficit), deficit);
+                int missing = deficit - got.getCount();
+                if (missing > 0) {
+                    ItemStack fromBag = takeFromInventory(player, pre, missing);
+                    if (!fromBag.isEmpty()) {
+                        if (got.isEmpty()) got = fromBag;
+                        else got.grow(fromBag.getCount());
                     }
                 }
+                if (got.isEmpty()) continue;
+
+                if (now.isEmpty()) {
+                    craftSlots.setItem(i, got);
+                } else {
+                    now.grow(got.getCount());
+                    craftSlots.setItem(i, now);
+                }
+                changed = true;
             }
-            menu.broadcastChanges();
+            if (changed) menu.broadcastChanges();
+        }
+
+        /** 从玩家背包抽取至多 amount 个与模板同种（含 NBT）的物品，返回实际取得的堆。 */
+        private static ItemStack takeFromInventory(Player player, ItemStack template, int amount) {
+            ItemStack taken = ItemStack.EMPTY;
+            Inventory inv = player.getInventory();
+            for (int i = 0; i < inv.getContainerSize() && taken.getCount() < amount; i++) {
+                ItemStack slot = inv.getItem(i);
+                if (slot.isEmpty() || !ItemStack.isSameItemSameTags(template, slot)) continue;
+                int take = Math.min(amount - taken.getCount(), slot.getCount());
+                ItemStack part = slot.copyWithCount(take);
+                slot.shrink(take);
+                if (slot.isEmpty()) inv.setItem(i, ItemStack.EMPTY);
+                if (taken.isEmpty()) taken = part;
+                else taken.grow(part.getCount());
+            }
+            if (!taken.isEmpty()) inv.setChanged();
+            return taken;
         }
     }
 }

@@ -21,8 +21,15 @@ public class PlayerStats {
     private long availablePoints = 0;
     private long lastReviveTime = 0;
     private long reviveInvulnUntilTick = 0;
-    private float currentMana = 0;
     private float shieldAbsorption = 0;
+
+    /**
+     * 已移除的「魔法」分类属性 id。
+     * 旧存档里投入这些属性的点数，在加载时全额退还到可用点数（见 {@link #deserializeNBT}），
+     * 避免整合包升级后玩家凭空损失点数。
+     */
+    private static final Set<String> LEGACY_MAGIC_STATS = Set.of(
+            "max_mana", "mana_regen", "magic_damage", "mana_shield", "mana_steal", "mana_on_kill");
 
     // 使用 Map 存储属性点数 - 支持动态属性发现
     // statId → points
@@ -41,6 +48,9 @@ public class PlayerStats {
 
     // 时间加速（加速属性）的小数累加器，避免点数较小时完全不生效
     private double timeAccelAccum = 0;
+
+    // 冷却缩减的小数累加器：每 tick 累加缩减率，整数部分用于额外推进物品冷却计时器
+    private double cooldownAccum = 0;
 
     // 记录本模组当前正在提供的能力（用于区分本模组 vs 其他模组给予的效果）
     private final Set<String> providedAbilities = new HashSet<>();
@@ -171,20 +181,6 @@ public class PlayerStats {
         this.reviveInvulnUntilTick = tick;
     }
 
-    // ========== 法力 ==========
-
-    public float getCurrentMana() {
-        return currentMana;
-    }
-
-    public void setCurrentMana(float mana) {
-        this.currentMana = Math.max(0, mana);
-    }
-
-    public float getMaxMana() {
-        return getStatValue("max_mana");
-    }
-
     public float getShieldAbsorption() {
         return shieldAbsorption;
     }
@@ -219,6 +215,16 @@ public class PlayerStats {
 
     public void setTimeAccelAccum(double value) {
         this.timeAccelAccum = value;
+    }
+
+    // ========== 冷却缩减累加器 ==========
+
+    public double getCooldownAccum() {
+        return cooldownAccum;
+    }
+
+    public void setCooldownAccum(double value) {
+        this.cooldownAccum = value;
     }
 
     // ========== 能力提供追踪 ==========
@@ -575,7 +581,6 @@ public class PlayerStats {
         tag.putLong("availablePoints", availablePoints);
         tag.putLong("lastReviveTime", lastReviveTime);
         tag.putLong("reviveInvulnUntilTick", reviveInvulnUntilTick);
-        tag.putFloat("currentMana", currentMana);
         tag.putFloat("shieldAbsorption", shieldAbsorption);
 
         // 使用 ID 格式存储属性点数（支持负值）
@@ -643,7 +648,6 @@ public class PlayerStats {
         availablePoints = tag.getLong("availablePoints");
         lastReviveTime = tag.getLong("lastReviveTime");
         reviveInvulnUntilTick = tag.getLong("reviveInvulnUntilTick");
-        currentMana = tag.getFloat("currentMana");
         shieldAbsorption = tag.contains("shieldAbsorption") ? tag.getFloat("shieldAbsorption") : -1;
 
         // 重置所有属性点
@@ -654,6 +658,13 @@ public class PlayerStats {
             CompoundTag entryTag = pointsList.getCompound(i);
             String statId = entryTag.getString("id");
             long points = entryTag.getLong("points");
+            if (LEGACY_MAGIC_STATS.contains(statId)) {
+                // 「魔法」分类已移除。必须放在 StatType.fromId 判断之前：
+                // 属性定义删掉后 fromId 会返回 null，条目会被直接丢弃，点数就白丢了。
+                // 按绝对值退还，负值（透支方向）同样返还。
+                availablePoints += Math.abs(points);
+                continue;
+            }
             if (StatType.fromId(statId) != null) {
                 allocatedPoints.put(statId, points);
             }
@@ -722,7 +733,6 @@ public class PlayerStats {
         this.availablePoints = other.availablePoints;
         this.lastReviveTime = other.lastReviveTime;
         this.reviveInvulnUntilTick = other.reviveInvulnUntilTick;
-        this.currentMana = other.currentMana;
         this.passiveTickCounter = other.passiveTickCounter;
         this.providedAbilities.clear();
         this.providedAbilities.addAll(other.providedAbilities);
@@ -746,7 +756,7 @@ public class PlayerStats {
     public StatsSnapshot createSnapshot() {
         return new StatsSnapshot(
                 level, experience, availablePoints,
-                lastReviveTime, currentMana, passiveTickCounter,
+                lastReviveTime, passiveTickCounter,
                 new HashMap<>(allocatedPoints),
                 buffUseBlacklist,
                 new HashSet<>(buffFilterList),
@@ -765,7 +775,6 @@ public class PlayerStats {
         this.availablePoints = snapshot.availablePoints;
         this.lastReviveTime = snapshot.lastReviveTime;
         this.reviveInvulnUntilTick = snapshot.reviveInvulnUntilTick;
-        this.currentMana = snapshot.currentMana;
         this.passiveTickCounter = snapshot.passiveTickCounter;
         this.allocatedPoints.clear();
         this.allocatedPoints.putAll(snapshot.allocatedPoints);
@@ -786,7 +795,6 @@ public class PlayerStats {
         public final long experience;
         public final long availablePoints;
         public final long lastReviveTime;
-        public final float currentMana;
         public final int passiveTickCounter;
         public final Map<String, Long> allocatedPoints;
         public final boolean buffUseBlacklist;
@@ -796,7 +804,7 @@ public class PlayerStats {
         public final Set<String> favorites;
 
         public StatsSnapshot(long level, long experience, long availablePoints,
-                long lastReviveTime, float currentMana, int passiveTickCounter,
+                long lastReviveTime, int passiveTickCounter,
                 Map<String, Long> allocatedPoints,
                 boolean buffUseBlacklist, Set<String> buffFilterList,
                 Map<String, Waypoint> waypoints, long reviveInvulnUntilTick, Set<String> favorites) {
@@ -804,7 +812,6 @@ public class PlayerStats {
             this.experience = experience;
             this.availablePoints = availablePoints;
             this.lastReviveTime = lastReviveTime;
-            this.currentMana = currentMana;
             this.passiveTickCounter = passiveTickCounter;
             this.allocatedPoints = allocatedPoints;
             this.buffUseBlacklist = buffUseBlacklist;

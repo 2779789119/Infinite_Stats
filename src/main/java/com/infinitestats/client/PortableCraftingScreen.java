@@ -40,14 +40,14 @@ public class PortableCraftingScreen extends AbstractContainerScreen<PortableCraf
         int by = topPos + 8;
         this.addRenderableWidget(makeButton(bx, by,
                 b -> NetworkHandler.CHANNEL.sendToServer(
-                        new NetworkHandler.CraftingMultiplierPacket(true)),
-                Component.literal("+"),
+                        new NetworkHandler.CraftingMultiplierPacket(true, multiplierStep())),
+                Component.translatable("gui.infinitestats.crafting.multiplyup"),
                 Component.translatable("gui.infinitestats.crafting.cost_tip",
                         menu.getMultiplierCost())));
         this.addRenderableWidget(makeButton(bx, by + 20,
                 b -> NetworkHandler.CHANNEL.sendToServer(
-                        new NetworkHandler.CraftingMultiplierPacket(false)),
-                Component.literal("-"),
+                        new NetworkHandler.CraftingMultiplierPacket(false, multiplierStep())),
+                Component.translatable("gui.infinitestats.crafting.multiplydown"),
                 Component.translatable("gui.infinitestats.crafting.refund_tip",
                         menu.getMultiplierCost())));
 
@@ -56,7 +56,7 @@ public class PortableCraftingScreen extends AbstractContainerScreen<PortableCraf
         int rx = leftPos + 119;
         int ry = topPos + 50;
         this.outputButton = this.addRenderableWidget(Button.builder(
-                        Component.literal("包"),
+                        Component.translatable("gui.infinitestats.crafting.output_bag"),
                         b -> NetworkHandler.CHANNEL.sendToServer(
                                 new NetworkHandler.CraftingOutputModePacket()))
                 .pos(rx, ry).size(20, 16)
@@ -68,12 +68,19 @@ public class PortableCraftingScreen extends AbstractContainerScreen<PortableCraf
     public void render(GuiGraphics gfx, int mouseX, int mouseY, float partialTick) {
         if (this.outputButton != null) {
             boolean toStorage = menu.isOutputToStorage();
-            this.outputButton.setMessage(Component.literal(toStorage ? "储" : "包"));
+            this.outputButton.setMessage(Component.translatable(
+                    toStorage ? "gui.infinitestats.crafting.output_storage"
+                              : "gui.infinitestats.crafting.output_bag"));
             this.outputButton.setTooltip(Tooltip.create(Component.translatable(
                     toStorage ? "gui.infinitestats.crafting.output_storage_tip"
                               : "gui.infinitestats.crafting.output_bag_tip")));
         }
         super.render(gfx, mouseX, mouseY, partialTick);
+    }
+
+    /** Shift 按住时一次调整 10 级倍率，否则 1 级。 */
+    private static int multiplierStep() {
+        return hasShiftDown() ? 10 : 1;
     }
 
     private Button makeButton(int x, int y, Button.OnPress press, Component text, Component tip) {

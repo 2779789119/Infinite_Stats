@@ -22,8 +22,8 @@ public final class HandlerRegistry {
         register(new DefenseHandler());
         register(new MobilityHandler());
         register(new UtilityHandler());
-        register(new MagicHandler());
         register(new TimeAccelHandler());
+        register(new CooldownHandler());
 
         initialized = true;
     }
