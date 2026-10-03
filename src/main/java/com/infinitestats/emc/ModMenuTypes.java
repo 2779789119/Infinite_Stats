@@ -1,6 +1,7 @@
 package com.infinitestats.emc;
 
 import com.infinitestats.InfiniteStats;
+import com.infinitestats.crafting.PortableAnvilMenu;
 import com.infinitestats.crafting.PortableCraftingMenu;
 import com.infinitestats.furnace.FurnaceFuelBufferMenu;
 import com.infinitestats.furnace.FurnaceOrePriorityMenu;
@@ -40,4 +41,8 @@ public final class ModMenuTypes {
     public static final RegistryObject<MenuType<PortableCraftingMenu>> PORTABLE_CRAFTING_MENU =
             MENU_TYPES.register("portable_crafting_menu", () -> IForgeMenuType.create(
                     (windowId, inv, data) -> new PortableCraftingMenu(windowId, inv)));
+
+    public static final RegistryObject<MenuType<PortableAnvilMenu>> PORTABLE_ANVIL_MENU =
+            MENU_TYPES.register("portable_anvil_menu", () -> IForgeMenuType.create(
+                    (windowId, inv, data) -> new PortableAnvilMenu(windowId, inv)));
 }

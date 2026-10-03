@@ -3,6 +3,7 @@ package com.infinitestats.client;
 import com.infinitestats.furnace.FurnaceProductBufferMenu;
 import com.infinitestats.furnace.PortableFurnaceMenu;
 import com.infinitestats.network.NetworkHandler;
+import com.infinitestats.stats.PlayerStats;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -47,6 +48,20 @@ public class FurnaceProductBufferScreen extends AbstractContainerScreen<FurnaceP
                                 new NetworkHandler.FurnaceProductRSDepositPacket()))
                 .pos(leftPos + 116, topPos + 171).size(52, 18)
                 .tooltip(Tooltip.create(Component.translatable("gui.infinitestats.furnace.product_rs_deposit_tip")))
+                .build());
+
+        // 存储优先级：只影响成品仓出库到网络的顺序
+        this.addRenderableWidget(Button.builder(
+                        Component.translatable("gui.infinitestats.network.priority_short"),
+                        b -> {
+                            if (minecraft != null) {
+                                minecraft.setScreen(new NetworkPriorityScreen(
+                                        this, PlayerStats.SCOPE_PRODUCT_BUFFER));
+                            }
+                        })
+                .pos(leftPos + 116, topPos + 3).size(52, 14)
+                .tooltip(Tooltip.create(Component.translatable(
+                        "gui.infinitestats.network.priority_tip_product")))
                 .build());
     }
 

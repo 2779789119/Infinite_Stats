@@ -2,6 +2,7 @@ package com.infinitestats;
 
 import net.minecraftforge.common.ForgeConfigSpec;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -59,6 +60,38 @@ public final class Config {
 
     public static ForgeConfigSpec.BooleanValue SHOW_HIDDEN_STATS;
 
+    /**
+     * 「功能开关」把某项关掉时的执行模式（**全局设置，由整合包作者决定**，不按玩家存）。
+     * <p>
+     * OP 也可用 {@code /infstats feature mode <keep|refund|hide>} 在运行时改写。
+     * <ul>
+     *   <li>{@code keep}：整条失效，保留已投入的点数（默认）；</li>
+     *   <li>{@code refund}：整条失效，并返还该属性已投入的点数；</li>
+     *   <li>{@code hide}：只从属性面板隐藏，效果与指令照常，点数不返还。</li>
+     * </ul>
+     */
+    public static ForgeConfigSpec.EnumValue<com.infinitestats.stats.FeatureDisableMode> FEATURE_DISABLE_MODE;
+
+    /**
+     * 整合包作者预设的「开局默认禁用」属性列表（属性 id，如 {@code auto_deposit}）。
+     * <p>
+     * 列表中的属性在玩家<b>首次进入</b>时默认被禁用（按玩家写入，之后不随配置变回）；
+     * 作者可配合 {@link #FEATURE_DISABLE_MODE} 决定禁用后是整条失效还是仅隐藏，
+     * 再通过 FTB 任务奖励的指令（{@code /infstats feature <id> on}）逐步开放。
+     * 玩家自己<b>不能</b>编辑这份列表 —— 这纯粹是给整合包作者的开局设计入口。
+     */
+    public static ForgeConfigSpec.ConfigValue<List<? extends String>> DISABLED_STATS;
+
+    /** 作者预设的开局默认禁用列表（可能为 null，未加载时）。 */
+    public static List<String> defaultDisabledStats() {
+        try {
+            List<? extends String> list = DISABLED_STATS.get();
+            return list == null ? List.of() : new ArrayList<>(list);
+        } catch (Throwable ignored) {
+            return List.of(); // 配置尚未加载
+        }
+    }
+
     // ========== 兼容性设置 ==========
 
     public static ForgeConfigSpec.BooleanValue ENABLE_ATTRIBUTE_DISCOVERY;
@@ -83,6 +116,17 @@ public final class Config {
 
     // 每提升一级熔炉速度所消耗的可分配点数（属性点数）
     public static ForgeConfigSpec.IntValue FURNACE_SPEED_COST;
+
+    // ========== 自动入库设置 ==========
+
+    /** 自动入库的扫描间隔（tick），值越小越及时、但存储网络调用开销越高。 */
+    public static ForgeConfigSpec.IntValue AUTO_DEPOSIT_INTERVAL;
+
+    /** true = 快捷栏（0-8 号槽）的物品不会被自动存入存储，避免把随身工具吸走。 */
+    public static ForgeConfigSpec.BooleanValue AUTO_DEPOSIT_KEEP_HOTBAR;
+
+    /** 自动入库黑名单（物品 ID），列表中的物品永不自动存入存储。 */
+    public static ForgeConfigSpec.ConfigValue<List<? extends String>> AUTO_DEPOSIT_BLACKLIST;
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
@@ -160,6 +204,19 @@ public final class Config {
                          "设为 true 后打开 GUI 即可看到隐藏属性。",
                          "修改后关闭并重新打开属性面板即可生效，无需重启。")
                 .define("showHiddenStats", false);
+        FEATURE_DISABLE_MODE = builder
+                .comment("某个属性被「禁用」时的执行模式 —— 全局设置，对所有人一致。",
+                         "keep   = 整条失效，保留已投入的点数（默认）；",
+                         "refund = 整条失效，并返还该属性已投入的点数；",
+                         "hide   = 只从属性面板隐藏，效果与指令照常，点数不返还。",
+                         "改这里即时生效；OP 也可用 /infstats feature mode <keep|refund|hide> 切换。")
+                .defineEnum("featureDisableMode", com.infinitestats.stats.FeatureDisableMode.INACTIVE_KEEP_POINTS);
+        DISABLED_STATS = builder
+                .comment("整合包作者预设的「开局默认禁用」属性列表（属性 id，如 auto_deposit）。",
+                         "新玩家首次进入世界时，这些属性按玩家写入为禁用状态；之后作者通过任务奖励指令",
+                         "/infstats feature <id> on 逐步开放。玩家自己不能编辑这份列表。",
+                         "属性 id 可用 /infstats feature 命令的 Tab 补全查看。")
+                .defineList("disabledStats", List.<String>of(), o -> o instanceof String);
         builder.pop();
 
         // 兼容性设置
@@ -231,6 +288,24 @@ public final class Config {
                 .comment("每提升一级随身工作台物品倍率所消耗的可分配点数（属性点数）。",
                          "降低倍率等级时会返还相同点数。")
                 .defineInRange("craftingMultiplierCost", 5, 1, 100000);
+        builder.pop();
+
+        // 自动入库设置
+        builder.push("AutoDeposit");
+        AUTO_DEPOSIT_INTERVAL = builder
+                .comment("「自动入库」的扫描间隔（tick），默认 20tick = 1 秒。",
+                         "间隔越短越及时，但每秒都会查询一次存储网络，间隔过小会带来额外开销。")
+                .defineInRange("autoDepositInterval", 20, 5, 1200);
+        AUTO_DEPOSIT_KEEP_HOTBAR = builder
+                .comment("是否保留快捷栏（0-8 号槽）中的物品不被自动入库。",
+                         "true（默认）= 只把主背包 27 格里的物品自动存入存储，随身工具/武器不会被吸走；",
+                         "false = 除当前手持的那一格之外，快捷栏也会一并存入存储。")
+                .define("autoDepositKeepHotbar", true);
+        AUTO_DEPOSIT_BLACKLIST = builder
+                .comment("自动入库黑名单（物品 ID，如 minecraft:diamond）。",
+                         "列表中的物品永远不会被自动存入存储网络。",
+                         "注：存储终端（RS / AE2 / 汤姆存储的无线终端等）与背包会被自动保护，无需在此重复配置。")
+                .defineList("autoDepositBlacklist", List.<String>of(), o -> o instanceof String);
         builder.pop();
 
         SPEC = builder.build();

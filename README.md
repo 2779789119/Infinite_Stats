@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Mod ID** | `infinitestats` |
-| **当前版本** | `1.17.2`（以 `gradle.properties` 的 `mod_version` 为准） |
+| **当前版本** | `1.20.0`（以 `gradle.properties` 的 `mod_version` 为准） |
 | **运行环境** | Minecraft `1.20.1` / Forge `47.3.0+` |
 | **许可证** | MIT |
 
@@ -14,7 +14,7 @@
 ## ✨ 核心特性
 
 - 🎯 **经验升级加点** —— 击杀怪物与挂机被动获取经验，升级发放可分配属性点
-- 📊 **72 个内置属性**，分为攻击 / 防御 / 机动 / 功能四大类
+- 📊 **86 个内置属性**，分为攻击 / 防御 / 机动 / 功能四大类
 - 🔌 **自动发现外部属性** —— 其他模组注册的属性自动收进「外部属性」分类，无需手动适配
 - 🌏 **内置 30+ 模组的外部属性中文译文** —— 装包即用，不再显示 `[gunsmithlib:bullet_damage]` 这类原始键名
 - 🖥️ **属性面板 GUI**（默认 `P`）—— 分类浏览 / 搜索 / 一键加点 / 重置
@@ -22,8 +22,10 @@
 - 🛠️ **物品编辑器**（默认 `O`）—— 可视化编辑物品的附魔、词条、NBT
 - 💎 **内置 EMC 等价交换**（默认 `V`）—— 学习 / 查询 / 转化，支持 ProjectE 联动
 - 🎒 **随身工作台 / 随身熔炉 / 随身铁砧** —— 自动补料、待炼仓排队、支持存储网络抽取
+- 🎛️ **功能开关**（属性面板标题栏右侧）—— 逐条关闭不想要的功能：面板隐藏 + 无法加点 + 指令停用，按玩家独立
 - 🔀 **Polymorph（多态合成）兼容** —— 装了 Polymorph 时，随身工作台与它共用同一套配方选择，冲突配方可在工作台里直接切换
 - 🧭 **传送点与跨维度传送**
+- 🛡️ **死亡不掉落 / 村民交易折扣 / 自动入库** —— 保命、省钱、自动整理背包（自动入库的存储优先级与白 / 黑名单过滤都在属性面板直接调整）
 - 🏆 **成就 / 统计面板**（默认 `U`）
 - 👥 **完整多人联机支持** —— 属性、EMC、传送点等数据随玩家存档同步到服务端
 
@@ -90,6 +92,8 @@
 | `/infstats craft` | 打开随身工作台 | 随身工作台 |
 | `/infstats furnace` | 打开随身熔炉 | 随身熔炉 |
 | `/infstats anvil` | 打开随身铁砧 | 随身铁砧 |
+| `/infstats enderchest` | 打开随身末影箱 | 随身末影箱 |
+| `/infstats smithing` | 打开随身锻造台 | 随身锻造台 |
 
 随身熔炉支持 **Shift 连续放料**：燃料优先放入燃料槽，可熔炼材料先补入当前输入，不同材料进入待炼仓排队。手动将木头放入材料槽或待炼仓可烧木炭。主界面和成品仓都能一键收取，背包放不下的成品继续留仓。空闲时保留余热，缺燃料时保留进度；仓库内按 Esc 可返回熔炉。物品悬停显示精确库存数量。
 
@@ -97,9 +101,106 @@
 
 ---
 
+## 🆕 新增功能说明
+
+### 🛡️ 死亡不掉落（`keep_inventory`）
+
+- 投入 **5 点**解锁。解锁后**死亡时保留主背包 36 格 + 盔甲 4 格 + 副手 1 格**，即使服务器的 `keepInventory` 游戏规则是关的也**不会掉落任何物品**。
+- 原理：死亡瞬间把上述物品移入玩家存档暂存，重生时原样归还；暂存数据写进玩家 NBT，因此在死亡界面断线、服务器重启也不会丢。
+- 与「原地复活」互不冲突：原地复活会取消死亡，此时不会动背包。Curios 饰品槽等**其他模组自己的掉落逻辑不在保护范围内**。
+- 两点已知行为：**经验值仍按原版规则掉落与扣除**（该属性只保护物品）；带「消失诅咒」的物品不会被销毁（清空发生在原版销毁逻辑之前），相当于一并保住。
+
+### 💰 村民交易折扣（`trade_discount`）
+
+- 每点使交易价格 **-1%**，最高 **-90%**。
+- 与村民声望 / 英雄效果折扣**叠加**：原版在 `Villager#startTrading` 里按声望与英雄效果 `addToSpecialPriceDiff`，本模组再把折扣加在同一份 `specialPriceDiff` 上。
+- 对**流浪商人**同样生效。
+- **不会累加**：`specialPriceDiff` 会随商人一起存档，而只有村民在 `stopTrading` 里清零、流浪商人不会。所以每个报价都有记账（本模组写进去的折扣 + 写入后的值），每次打开界面先剥离上次的贡献得到「原版此刻的价值」再重新叠加 —— 反复开关界面价格稳定，也不会把流浪商人刷到 1；把点数退掉后折扣同样会被收回。
+
+### 🎒 自动入库（`auto_deposit`）
+
+- 投入 **3 点**解锁。解锁后每隔 `AutoDeposit.autoDepositInterval`（默认 1 秒）扫描一次背包，把物品写入已连接的存储网络（RS / AE2 / 汤姆存储 / 背包）。
+- **存储优先级在主面板直接调整** —— 点属性面板搜索框右侧的「自动入库：RS › AE2 › …」按钮打开「**存储优先级**」界面：
+  - 每行一个存储，右侧 **▲ / ▼** 把它与相邻一位交换（**一次一位**，顺序一眼可见）；
+  - 行内标注该存储**是否已安装**（未安装的排在前面不会生效，浮窗里也有提示）；
+  - 底部「**重置为默认**」恢复配置文件 `NetworkPriority.networkPriority` 的顺序，「完成」返回属性面板。
+- **存储优先级按功能分开**（各功能一份，互不影响；没调整过的一律沿用配置顺序）：
+
+  | 功能 | 入口 | 作用范围 |
+  |---|---|---|
+  | **自动入库** | 主面板搜索框右侧「自动入库：…」 | 背包物品写入网络的顺序 |
+  | **随身工作台** | 工作台界面右栏「存储优先级」 | 取料 / 补料 / 退回材料 / 成品入库 |
+  | **随身熔炉** | 熔炉界面「网络」一栏「优先级」 | 抽矿物 / 抽燃料 / 成品入库 |
+  | **成品仓** | 成品仓界面右上角「优先级」 | 成品仓出库到网络 |
+
+  - 网络物品列表（供 JEI 判断哪些配方能从网络取材）**没有**优先级概念 —— 它取的是所有可用网络的并集，顺序不影响结果。
+  背包物品按该顺序写入，装不下的自动回落到下一个网络。
+- 默认**不碰快捷栏**（0-8 号槽），随身工具 / 武器不会被吸走；把 `autoDepositKeepHotbar` 设为 `false` 可改为「除手持那一格外全部入库」。
+- **白 / 黑名单过滤**：主面板「入库过滤」按钮打开过滤界面，可精确控制「哪些物品才入库」：
+  - **白名单** = 只入库名单内的物品；**黑名单** = 名单内的物品不入库；
+  - 点击列表中的物品行即**加入 / 移出**名单（在名单内的行有绿色指示条），也可用「手持加入」一键把主手物品加入；
+  - 支持按物品名或物品 ID 搜索（装了 JustEnoughCharacters 时支持拼音）；「只看已选」可把列表收窄到已选条目方便核对；
+  - **名单为空 = 不做限制**（避免清空列表后自动入库整体失效）；
+  - 名单属于**玩家个人数据**，随存档同步、跟人走。
+- **安全保护**：存储无线终端（RS / AE2）与背包本身**永不入库**（否则一次扫描就会把连网凭证自己存走），另有服务端配置黑名单兜底。
+- 打开其它容器（箱子 / 交易 / 随身工作台）时不会打扰；没有可用存储网络时自动跳过。
+
+### 🎛️ 功能开关（每个玩家独立，不是全局配置）
+
+- **入口**：属性面板（默认 `P`）标题栏**右上角的「功能开关」按钮**（关闭后返回属性面板）。
+- **作用**：87 条内置属性可以逐条关掉 —— 关掉后一律**从属性面板隐藏、不能继续加点**，页脚里对应的功能入口也一起消失；**「整条失效」还是「只隐藏」由下面的模式决定**（**全局设置，由整合包作者定**，配置项 `GUI.featureDisableMode`；OP 也可用指令改）：
+
+  | 模式 | 效果 | 已投入的点数 |
+  |---|---|---|
+  | `keep` 失效·保留点数（默认） | 整条失效：数值按 0 计（`PlayerStats` 构建数值缓存时跳过关闭项，所有读 `getStatValue()` 的效果与属性加成都归零）；开关型功能（随身工作台 / 熔炉 / 铁砧 / 末影箱 / 锻造台、定点传送 / 跨维度传送、自动入库…）的**效果与 `/infstats` 指令一并停用** | **保留**，重新开启立刻恢复 |
+  | `refund` 失效·返还点数 | 同上（数值按 0 计、效果与指令停用） | **全额退回**可用点数；重新开启后从 0 点开始，需要重新加点 |
+  | `hide` 只隐藏（不返还） | 效果与指令**照常生效**，只是面板里看不到、不能加点 | 保留 |
+
+  - 关闭 / 开启 / 切换模式都会**当场重算属性**，不必等下次加点或重登；OP 切换模式时会为全服在线玩家重算一遍。
+- **分层**：**开关是按玩家存的**（写在玩家数据里，随存档同步、跟人走，多人服务器里每个人可以有自己的面板）；**执行模式是全局配置**（整合包作者一份设置，所有人共用，玩家界面上只读显示）。
+- 界面支持分类筛选 + 搜索（属性名 / ID / 说明，装 JustEnoughCharacters 时支持拼音），点行即切换；底栏「全部开启 / 全部关闭」作用于**当前筛选结果**，下面一行显示当前执行模式（鼠标悬停看该模式的含义）。
+- 不想开界面也行，等价指令（**需要 OP，权限等级 2**：整合包里这是给管理员用的，普通玩家用界面即可；`<属性ID>` 支持 Tab 补全）：
+
+  | 指令 | 作用 |
+  |---|---|
+  | `/infstats feature` / `feature list` | 列出当前已关闭的功能 |
+  | `/infstats feature <属性ID>` | 切换该功能（开 ↔ 关） |
+  | `/infstats feature <属性ID> on\|off` | 明确开启 / 关闭 |
+  | `/infstats feature all on\|off` | 全部内置属性一次性开启 / 关闭 |
+  | `/infstats feature mode` | 查看当前「关掉时」的执行模式 |
+  | `/infstats feature mode <keep\|refund\|hide>` | 切换**全局**执行模式（写回配置，等同改 `GUI.featureDisableMode`） |
+- 点数怎么处理由模式决定（保留 / 全额返还），**任何模式都不会销毁数据**。
+
+### 🪜 N 段跳 / 爬梯加速（`multi_jump` / `climb_speed`）
+
+- 这两条是**客户端实现**（与服务端属性类加成不同）：玩家的移动由客户端主导、服务端只做校验，所以「空中再跳一次」「梯子上爬得更快」必须在本地改速度才真的动得了人。
+- `multi_jump`：等级＝空中可跳次数（最多 10 次）。**起跳后松开跳跃键、在空中再按一次**才会触发（按住不放不算），触发时带云雾粒子与音效；落地 / 入水 / 上梯子后次数重置。
+- `climb_speed`：梯子 / 藤蔓 / 脚手架的上升速度 **+20% / 点**。
+
+### 🏹 多重射击（`multi_shot`）
+
+- `multi_shot`：等级＝每次射击的额外箭数（最多 8 支）。额外箭矢由**首发箭矢的 NBT 复制**而来（光谱箭、模组自定义箭矢都能正确复制），按小角度左右散开，并一律设为**不可拾取** —— 否则它们没消耗任何背包资源，落地被捡回就等于凭空刷箭。
+
+### 💰 铁砧经验减免 / 交易即刻补货 / 死亡不掉经验
+
+- `anvil_cost`：铁砧等级消耗 **-5% / 点**（最多 -90%）。减免在「过于昂贵」判定**之前**写入最终消耗，所以该门槛也一并被压低。实现走 Mixin（`AnvilMenu#createResult`）—— Forge 的 `AnvilUpdateEvent#setCost` 只在同时设置 `output` 时才被 `ForgeHooks.onAnvilChange` 采用，而且事件在附魔消耗计算之前触发，只改 cost 是彻底无效的。
+- `trade_restock`（3 点解锁）：交易后**立刻补货**，同一条目可以连续买。只重置 `uses`，不调用 `Villager#restock()` —— 后者的 `updateDemand()` 反复执行会把需求加价越补越贵。
+- `keep_xp`（3 点解锁）：死亡**经验等级与经验条保留**（配合 `keep_inventory` 可完整保命）。
+
+### 🎒 随身末影箱 / 随身锻造台
+
+- 与随身工作台 / 熔炉 / 铁砧完全同一套做法：直接复用原版菜单（`GENERIC_9x3` 箱子菜单 / `SmithingMenu`），客户端自动套用原版界面，无需自建菜单类型。
+- 入口：属性面板页脚的「末影箱」/「锻造台」按钮，或 `/infstats enderchest` / `/infstats smithing`。
+- 随身末影箱与原版末影箱**共用同一份库存**。
+- **随身铁砧是唯一例外**：它要放宽原版「过于昂贵」门槛并把消耗封顶到 **50 级**，而客户端必须能区分「随身铁砧」与「真铁砧」，因此它拥有自己的菜单类型 `PortableAnvilMenu`（客户端仍套用原版铁砧界面），由 Mixin 在两端识别后只对随身铁砧生效。
+
+---
+
 ## ⚙️ 配置
 
 配置文件位于 **`config/infinitestats-common.toml`**（注册类型为 `COMMON`，全局生效，非 per-world）。
+
+游戏内打开方式：**暂停菜单 → 模组 → 选中本模组 →「Config」按钮** —— 这是 Forge 原生的配置编辑界面，下面这些配置项都能在里面直接查看 / 修改（改完即时生效）。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -120,6 +221,7 @@
 | `PassiveEffects.veinMinerMaxBlocks` | `64` | 连锁挖掘最大方块数 |
 | `PassiveEffects.projectileTrackingRange` | `64` | 弹射物追踪扫描半径（方块，范围 8–256） |
 | `GUI.showHiddenStats` | `false` | 是否显示隐藏属性（如 `invincibility` 无敌） |
+| `GUI.featureDisableMode` | `keep` | 功能开关「关掉时」的**全局**执行模式（`keep`/`refund`/`hide`），改完即时生效 |
 | `Compatibility.enableAttributeDiscovery` | `true` | 自动发现其他模组属性（**需重启**） |
 | `EMC.emcEnabled` | `true` | 是否启用 EMC 系统 |
 | `EMC.emcLossRate` | `0.0` | EMC 转换损耗率（0 = 无损耗） |
@@ -129,30 +231,33 @@
 | `Furnace.furnaceSpeedCost` | `5` | 每级随身熔炉速度消耗的属性点 |
 | `Crafting.craftingMultiplierCost` | `5` | 每级随身工作台倍率消耗的属性点 |
 | `NetworkPriority.networkPriority` | `[RS, AE2, TOMS, BACKPACK, BD]` | 存储网络自动选择的优先级（**需重启**） |
+| `AutoDeposit.autoDepositInterval` | `20` | 「自动入库」扫描间隔（tick，20 = 1 秒） |
+| `AutoDeposit.autoDepositKeepHotbar` | `true` | 是否保留快捷栏（0-8 号槽）物品不被自动入库 |
+| `AutoDeposit.autoDepositBlacklist` | `[]` | 服务端级自动入库黑名单（物品 ID，`#` 前缀表示物品标签，**所有玩家生效**） |
 
 > 大部分配置改后即时生效，标注「需重启」的除外。
 
 ---
 
-## 🧬 内置属性一览（共 73 个）
+## 🧬 内置属性一览（共 86 个）
 
 > 标 **[开关]** 的为功能型开关，激活后即时生效，可随时开启 / 关闭。
 
-### ⚔️ 攻击（16）
+### ⚔️ 攻击（17）
 
-`attack_damage` 攻击伤害 · `attack_speed` 攻击速度 · `crit_chance` 暴击率 · `crit_damage` 暴击伤害 · `armor_penetration` 护甲穿透 · `knockback_power` 击退力度 · `projectile_damage` 远程伤害 · `life_steal` 生命偷取 · `life_steal_aoe` 范围吸血 · `damage_reflection` 反伤 · `execute` 处决 · `true_damage` 真实伤害 · `reduce_max_health` 削弱最大生命 · `scope_attack` 范围攻击 · `repulsion` 斥力 · `infinite_arrows` **[开关]** 无限弓箭（弓 / 弩）
+`attack_damage` 攻击伤害 · `attack_speed` 攻击速度 · `crit_chance` 暴击率 · `crit_damage` 暴击伤害 · `armor_penetration` 护甲穿透 · `knockback_power` 击退力度 · `projectile_damage` 远程伤害 · `life_steal` 生命偷取 · `life_steal_aoe` 范围吸血 · `damage_reflection` 反伤 · `execute` 处决 · `true_damage` 真实伤害 · `reduce_max_health` 削弱最大生命 · `scope_attack` 范围攻击 · `repulsion` 斥力 · `infinite_arrows` **[开关]** 无限弓箭（弓 / 弩） · `multi_shot` 多重射击
 
 ### 🛡️ 防御（17，含 1 隐藏）
 
-`max_health` 最大生命 · `armor` 护甲 · `armor_toughness` 盔甲韧性 · `health_regen` 生命恢复 · `damage_reduction` 伤害减免 · `knockback_resist` 击退抗性 · `fall_resist` 摔落抗性 · `fire_immunity` **[开关]** 火焰免疫 · `projectile_immunity` **[开关]** 弹射物免疫 · `explosion_immunity` **[开关]** 爆炸免疫 · `suffocation_immunity` **[开关]** 窒息免疫 · `auto_revive` 自动复活 · `block_chance` 格挡几率 · `absorption_shield` 吸收护盾 · `dodge_chance` 闪避几率 · `debuff_immunity` **[开关]** 效果过滤 · `invincibility`（隐藏）无敌
+`max_health` 最大生命 · `armor` 护甲 · `armor_toughness` 盔甲韧性 · `health_regen` 生命恢复 · `damage_reduction` 伤害减免 · `knockback_resist` 击退抗性 · `fall_resist` 摔落抗性 · `block_chance` 格挡几率 · `dodge_chance` 闪避几率 · `absorption_shield` 吸收护盾 · `auto_revive` 自动复活 · `fire_immunity` **[开关]** 火焰免疫 · `projectile_immunity` **[开关]** 弹射物免疫 · `explosion_immunity` **[开关]** 爆炸免疫 · `suffocation_immunity` **[开关]** 窒息免疫 · `debuff_immunity` **[开关]** 效果过滤 · `invincibility`（隐藏）无敌
 
-### 🏃 机动（8）
+### 🏃 机动（10）
 
-`movement_speed` 移动速度 · `swim_speed` 游泳速度 · `jump_height` 跳跃高度 · `step_height` 抬腿高度 · `fly_speed` 飞行速度 · `fly` **[开关]** 飞行 · `no_fall_damage` **[开关]** 免摔落伤害 · `auto_step` **[开关]** 自动抬腿
+`movement_speed` 移动速度 · `swim_speed` 游泳速度 · `jump_height` 跳跃高度 · `multi_jump` N 段跳 · `step_height` 抬腿高度 · `auto_step` **[开关]** 自动抬腿 · `fly_speed` 飞行速度 · `fly` **[开关]** 飞行 · `climb_speed` 爬梯加速 · `no_fall_damage` **[开关]** 免摔落伤害
 
-### 🧰 功能（32）
+### 🧰 功能（42）
 
-`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 掉落幸运 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `item_magnet` **[开关]** 物品磁铁 · `invisibility` **[开关]** 隐身 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `xp_magnet` **[开关]** 经验磁铁 · `projectile_tracking` **[开关]** 弹射物追踪 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `double_loot` 双倍战利品 · `crafting_bonus` 合成加成 · `bow_draw_speed` 拉弓加速 · `use_speed` 使用速度 · `auto_repair` **[开关]** 自动修理 · `repair_amount` 修理量 · `cooldown_reduction` 冷却缩减 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `portable_crafting` **[开关]** 随身工作台 · `portable_furnace` **[开关]** 随身熔炉 · `portable_anvil` **[开关]** 随身铁砧 · `pe_auto_learn` **[开关]** PE 自动学习
+`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 掉落幸运 · `double_loot` 双倍战利品 · `item_magnet` **[开关]** 物品磁铁 · `xp_magnet` **[开关]** 经验磁铁 · `auto_deposit` **[开关]** 自动入库 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `breed_no_cooldown` **[开关]** 繁殖无冷却 · `instant_grow` **[开关]** 一键长大 · `crafting_bonus` 合成加成 · `auto_repair` **[开关]** 自动修理 · `repair_amount` 修理量 · `use_speed` 使用速度 · `bow_draw_speed` 拉弓加速 · `cooldown_reduction` 冷却缩减 · `projectile_tracking` **[开关]** 弹射物追踪 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `invisibility` **[开关]** 隐身 · `keep_inventory` **[开关]** 死亡不掉落 · `keep_xp` **[开关]** 死亡不掉经验 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `portable_crafting` **[开关]** 随身工作台 · `portable_furnace` **[开关]** 随身熔炉 · `portable_anvil` **[开关]** 随身铁砧 · `portable_ender_chest` **[开关]** 随身末影箱 · `portable_smithing` **[开关]** 随身锻造台 · `trade_discount` 村民交易折扣 · `trade_restock` **[开关]** 交易即刻补货 · `anvil_cost` 铁砧经验减免 · `pe_auto_learn` **[开关]** PE 自动学习
 
 ### 🌐 外部属性（动态）
 

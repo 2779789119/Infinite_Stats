@@ -13,6 +13,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.network.chat.Component;
@@ -143,6 +144,13 @@ public class StatsScreen extends Screen {
     private Button favoritesBtn;
     private boolean favoritesOnly;
 
+    /** 自动入库的存储优先级按钮（主面板直接调整「先存入哪个存储」） */
+    private Button depositBtn;
+    /** 自动入库的过滤界面入口按钮（白 / 黑名单） */
+    private Button depositFilterBtn;
+    /** 上一次已渲染的优先级签名，避免每 tick 重建文案（解锁状态 + 顺序） */
+    private String depositLabelCache;
+
     private static final String[] ADD_LABELS = {"x1", "x10", "x100", "x1000", "x10000"};
     private static final long[] ADD_VALUES = {1, 10, 100, 1000, 10000};
 
@@ -233,6 +241,19 @@ public class StatsScreen extends Screen {
         icon("portable_furnace", Items.FURNACE);
         icon("portable_anvil", Items.ANVIL);
         icon("pe_auto_learn", Items.BOOK);
+        icon("trade_discount", Items.EMERALD);
+        icon("keep_inventory", Items.SHULKER_BOX);
+        icon("auto_deposit", Items.ENDER_CHEST);
+        icon("multi_shot", Items.CROSSBOW);
+        icon("climb_speed", Items.LADDER);
+        icon("multi_jump", Items.RABBIT_FOOT);
+        icon("trade_restock", Items.EMERALD);
+        icon("anvil_cost", Items.ANVIL);
+        icon("keep_xp", Items.EXPERIENCE_BOTTLE);
+        icon("portable_ender_chest", Items.ENDER_CHEST);
+        icon("portable_smithing", Items.SMITHING_TABLE);
+        icon("breed_no_cooldown", Items.WHEAT);
+        icon("instant_grow", Items.GOLDEN_CARROT);
     }
 
     private static void icon(String statId, net.minecraft.world.item.Item item) {
@@ -291,6 +312,22 @@ public class StatsScreen extends Screen {
                 })
                 .pos(0, 0).size(14, 14).build());
 
+        // 自动入库：存储优先级按钮（与搜索框同一行，点击打开优先级界面逐个调整）
+        // 「功能开关」里关掉自动入库后，这两个入口一并隐藏
+        if (!isFeatureDisabled("auto_deposit")) {
+            depositBtn = addRenderableWidget(new PixelButton(0, 0, 10, 14,
+                    Component.empty(),
+                    0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                    b -> openDepositPriority()));
+
+            // 自动入库：白 / 黑名单过滤入口
+            depositFilterBtn = addRenderableWidget(new PixelButton(0, 0, 10, 14,
+                    Component.translatable("gui.infinitestats.deposit.filter"),
+                    0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                    b -> openDepositFilter()));
+            updateDepositLabel();
+        }
+
         // 把搜索框和按钮放到正确位置（必须在 addRenderableWidget 之后）
         repositionSearch();
     }
@@ -320,12 +357,105 @@ public class StatsScreen extends Screen {
             favoritesBtn.setX(132);
             favoritesBtn.setY(HEADER_H + TAB_H + 1);
         }
+        if (depositBtn != null) {
+            depositBtn.setX(150);
+            depositBtn.setY(HEADER_H + TAB_H + 1);
+            depositBtn.setWidth(176);
+        }
+        if (depositFilterBtn != null) {
+            depositFilterBtn.setX(330);
+            depositFilterBtn.setY(HEADER_H + TAB_H + 1);
+            depositFilterBtn.setWidth(GUI_WIDTH - SCROLLBAR_W - 8 - 330);
+        }
     }
 
     @Override
     public void tick() {
         super.tick();
         cachedStats = getPlayerStats();
+        updateDepositLabel();
+    }
+
+    // ======================== 自动入库优先级 ========================
+
+    /** 刷新优先级 / 过滤按钮的文案与提示（未解锁时显示灰色占位）。 */
+    private void updateDepositLabel() {
+        if (depositBtn == null) return;
+        boolean unlocked = cachedStats != null && cachedStats.isToggleActive("auto_deposit");
+        List<String> order = unlocked ? cachedStats.getEffectiveAutoDepositPriority() : List.of();
+        int filterSize = unlocked ? cachedStats.getAutoDepositFilterList().size() : 0;
+
+        boolean whitelist = unlocked && cachedStats.isAutoDepositUseWhitelist();
+
+        String signature = unlocked + "|" + String.join(",", order) + "|" + filterSize + "|" + whitelist;
+        if (signature.equals(depositLabelCache)) return;
+        depositLabelCache = signature;
+
+        // 过滤入口按钮：名称固定（避免与页脚导航的「过滤」混淆），明细放进浮窗
+        if (depositFilterBtn != null) {
+            depositFilterBtn.setMessage(Component.translatable("gui.infinitestats.deposit.filter"));
+            depositFilterBtn.setTooltip(Tooltip.create(unlocked
+                    ? Component.translatable("gui.infinitestats.deposit.filter_tooltip",
+                            Component.translatable(whitelist
+                                    ? "gui.infinitestats.deposit.mode_whitelist"
+                                    : "gui.infinitestats.deposit.mode_blacklist").getString(),
+                            String.valueOf(filterSize))
+                    : Component.translatable("gui.infinitestats.deposit.locked_tip")));
+        }
+
+        if (!unlocked) {
+            depositBtn.setMessage(Component.translatable("gui.infinitestats.deposit.locked"));
+            depositBtn.setTooltip(Tooltip.create(
+                    Component.translatable("gui.infinitestats.deposit.locked_tip")));
+            return;
+        }
+
+        StringBuilder orderText = new StringBuilder();
+        StringBuilder orderTip = new StringBuilder();
+        for (int i = 0; i < order.size(); i++) {
+            String name = storageShortName(order.get(i));
+            if (i > 0) {
+                orderText.append(" \u203A ");
+                orderTip.append(" \u2192 ");
+            }
+            orderText.append(name);
+            orderTip.append(name);
+        }
+        depositBtn.setMessage(Component.translatable("gui.infinitestats.deposit.priority", orderText.toString()));
+        depositBtn.setTooltip(Tooltip.create(
+                Component.translatable("gui.infinitestats.deposit.tooltip", orderTip.toString())));
+    }
+
+    /** 打开自动入库的白 / 黑名单过滤界面（需已解锁 auto_deposit）。 */
+    private void openDepositFilter() {
+        if (cachedStats == null || !cachedStats.isToggleActive("auto_deposit")) {
+            if (minecraft != null && minecraft.player != null) {
+                minecraft.player.displayClientMessage(
+                        Component.translatable("message.infinitestats.auto_deposit_locked"), true);
+            }
+            return;
+        }
+        playClickSound();
+        if (minecraft != null) minecraft.setScreen(new AutoDepositFilterScreen(this));
+    }
+
+    /** 打开「存储优先级」界面，逐个上移 / 下移各存储的先后顺序（需已解锁 auto_deposit）。 */
+    private void openDepositPriority() {
+        if (cachedStats == null || !cachedStats.isToggleActive("auto_deposit")) {
+            if (minecraft != null && minecraft.player != null) {
+                minecraft.player.displayClientMessage(
+                        Component.translatable("message.infinitestats.auto_deposit_locked"), true);
+            }
+            return;
+        }
+        playClickSound();
+        if (minecraft != null) {
+            minecraft.setScreen(new NetworkPriorityScreen(this, PlayerStats.SCOPE_AUTO_DEPOSIT));
+        }
+    }
+
+    private static String storageShortName(String key) {
+        return Component.translatable("gui.infinitestats.storage." + key).getString();
     }
 
     private PlayerStats getPlayerStats() {
@@ -346,6 +476,10 @@ public class StatsScreen extends Screen {
             for (StatType stat : StatType.ALL_STATS) {
                 if (stat.getCategory() == cat) {
                     if (!stat.isHidden() || Config.SHOW_HIDDEN_STATS.get()) {
+                        // 「功能开关」里被玩家关闭的属性：面板不显示，也不能加点
+                        if (cachedStats != null && cachedStats.isStatDisabled(stat.getId())) {
+                            continue;
+                        }
                         if (stat.getId().equals("pe_auto_learn") && !ProjectEBridge.isProjectELoaded()) {
                             continue;
                         }
@@ -465,6 +599,8 @@ public class StatsScreen extends Screen {
         // 恢复常驻组件（clearWidgets 会清掉）
         if (searchBox != null) addRenderableWidget(searchBox);
         if (favoritesBtn != null) addRenderableWidget(favoritesBtn);
+        if (depositBtn != null) addRenderableWidget(depositBtn);
+        if (depositFilterBtn != null) addRenderableWidget(depositFilterBtn);
     }
 
     private void addCategoryTabs() {
@@ -626,57 +762,92 @@ public class StatsScreen extends Screen {
                 b -> { playClickSound(); resetAll(); });
         addRenderableWidget(resetAllBtn);
 
-        // 打开传送点面板
-        Button wpBtn = new PixelButton(
-                8 + 4 * 42 + 8, footerY,
-                70, 14,
-                Component.translatable("screen.infinitestats.waypoint"),
-                0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
-                b -> {
-                    playClickSound();
-                    if (minecraft != null) minecraft.setScreen(new WaypointScreen());
-                });
-        addRenderableWidget(wpBtn);
+        // 随身末影箱 / 随身锻造台（与随身工作台 / 熔炉 / 铁砧同一家族）
+        if (!isFeatureDisabled("portable_ender_chest")) {
+            Button enderChestBtn = new PixelButton(140, footerY, 62, 14,
+                    Component.translatable("gui.infinitestats.nav.ender_chest"),
+                    0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                    b -> {
+                        playClickSound();
+                        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EnderChestOpenPacket());
+                    });
+            addRenderableWidget(enderChestBtn);
+        }
+
+        if (!isFeatureDisabled("portable_smithing")) {
+            Button smithingBtn = new PixelButton(206, footerY, 70, 14,
+                    Component.translatable("gui.infinitestats.nav.smithing"),
+                    0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                    b -> {
+                        playClickSound();
+                        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.SmithingOpenPacket());
+                    });
+            addRenderableWidget(smithingBtn);
+        }
+
+        // 传送点入口只保留页脚导航行里的那个（nav.waypoint），此处不再重复放一个「传送点管理」按钮
     }
 
     /** 页脚导航行：从主面板一键打开其它独立面板。 */
     private void addPanelNavButtons() {
         int navY = GUI_HEIGHT - FOOTER_H + 4;
-        // 10 个入口要挤进 GUI_WIDTH，按钮与间隔相应收窄
+        // 入口与功能的对应关系：在「功能开关」里被关闭的功能，其入口一并隐藏（列表自动收拢）
         int btnW = 40, gap = 3;
-        Component[] labels = {
+        List<Component> labels = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        addNav(labels, actions, "fixed_point_teleport",
                 Component.translatable("gui.infinitestats.nav.waypoint"),
+                () -> { if (minecraft != null) minecraft.setScreen(new WaypointScreen()); });
+        addNav(labels, actions, "cross_dimension_teleport",
                 Component.translatable("gui.infinitestats.nav.crossdim"),
+                () -> { if (minecraft != null) minecraft.setScreen(new CrossDimScreen()); });
+        addNav(labels, actions, null,
                 Component.translatable("gui.infinitestats.nav.filter"),
+                this::openDebuffFilter);
+        addNav(labels, actions, null,
                 Component.translatable("gui.infinitestats.nav.emc"),
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket()));
+        addNav(labels, actions, null,
                 Component.translatable("gui.infinitestats.nav.achievement"),
+                () -> { if (minecraft != null) minecraft.setScreen(new AchievementManagerScreen()); });
+        addNav(labels, actions, null,
                 Component.translatable("gui.infinitestats.nav.item_editor"),
+                () -> { if (minecraft != null) minecraft.setScreen(new ItemEditorScreen()); });
+        addNav(labels, actions, null,
                 Component.translatable("gui.infinitestats.nav.hud"),
+                () -> { if (minecraft != null) minecraft.setScreen(new HudEditScreen()); });
+        addNav(labels, actions, "portable_crafting",
                 Component.translatable("gui.infinitestats.nav.crafting"),
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.CraftingOpenPacket()));
+        addNav(labels, actions, "portable_furnace",
                 Component.translatable("gui.infinitestats.nav.furnace"),
-                Component.translatable("gui.infinitestats.nav.anvil")
-        };
-        Runnable[] actions = {
-                () -> { if (minecraft != null) minecraft.setScreen(new WaypointScreen()); },
-                () -> { if (minecraft != null) minecraft.setScreen(new CrossDimScreen()); },
-                this::openDebuffFilter,
-                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket()),
-                () -> { if (minecraft != null) minecraft.setScreen(new AchievementManagerScreen()); },
-                () -> { if (minecraft != null) minecraft.setScreen(new ItemEditorScreen()); },
-                () -> { if (minecraft != null) minecraft.setScreen(new HudEditScreen()); },
-                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.CraftingOpenPacket()),
-                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceOpenPacket()),
-                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.AnvilOpenPacket())
-        };
-        int totalW = labels.length * btnW + (labels.length - 1) * gap;
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceOpenPacket()));
+        addNav(labels, actions, "portable_anvil",
+                Component.translatable("gui.infinitestats.nav.anvil"),
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.AnvilOpenPacket()));
+
+        int totalW = labels.size() * btnW + (labels.size() - 1) * gap;
         int startX = (GUI_WIDTH - totalW) / 2;
-        for (int i = 0; i < labels.length; i++) {
+        for (int i = 0; i < labels.size(); i++) {
             final int idx = i;
             Button btn = new PixelButton(startX + i * (btnW + gap), navY, btnW, 16,
-                    labels[i], 0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
-                    b -> { playClickSound(); actions[idx].run(); });
+                    labels.get(i), 0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                    b -> { playClickSound(); actions.get(idx).run(); });
             addRenderableWidget(btn);
         }
+    }
+
+    /** 添加一个页脚入口；statId 对应功能被「功能开关」关闭时直接跳过。 */
+    private void addNav(List<Component> labels, List<Runnable> actions,
+                        String statId, Component label, Runnable action) {
+        if (statId != null && isFeatureDisabled(statId)) return;
+        labels.add(label);
+        actions.add(action);
+    }
+
+    /** 该功能是否已被玩家在「功能开关」里关闭（关闭则不在面板显示入口）。 */
+    private boolean isFeatureDisabled(String statId) {
+        return cachedStats != null && cachedStats.isStatDisabled(statId);
     }
 
     private void openDebuffFilter() {

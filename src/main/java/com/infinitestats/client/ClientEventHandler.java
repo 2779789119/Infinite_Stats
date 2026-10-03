@@ -16,8 +16,12 @@ import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.MenuScreens;
+import net.minecraft.client.gui.screens.inventory.AnvilScreen;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.CrossbowItem;
 import net.minecraft.world.item.TridentItem;
@@ -179,7 +183,75 @@ public final class ClientEventHandler {
 
             // 自动跨越：客户端本地同步 maxUpStep
             syncStepHeight(player, stats);
+            // N 段跳 / 爬梯加速：移动是客户端权威的，必须本地改速度
+            applyMovementExtras(player, stats);
         });
+    }
+
+    // ========== N 段跳 / 爬梯加速 ==========
+
+    /** 上一次客户端 tick 跳跃键是否按下（用于取"刚按下"的边沿）。 */
+    private static boolean jumpKeyWasDown;
+    /** 本次离地后已经用掉的空中跳跃次数。 */
+    private static int airJumpsUsed;
+    /** 最近一次站在地面上的 tick，用于排除"刚起跳那一下"。 */
+    private static int lastGroundTick = -1000;
+
+    /**
+     * N 段跳与爬梯加速。
+     * <p>
+     * 必须放在客户端：玩家的移动是客户端权威的（服务端只做校验），
+     * 所以"梯子上爬得更快""在空中再跳一次"这类改变速度的效果只有本地改才真的动得了人 ——
+     * 与服务端属性类加成（会被同步到两端）不同，这里没有可用的属性通道。
+     * <p>
+     * 计数口径：站地 / 水中 / 梯子上时清零；离地不足 6 tick 的"起跳那一下"不消耗次数，
+     * 因此"从地面起跳 + 空中再跳 N 次"正好等于面板上加出来的 N 段。
+     */
+    private static void applyMovementExtras(LocalPlayer player, PlayerStats stats) {
+        var mc = Minecraft.getInstance();
+        boolean onGround = player.onGround();
+        boolean climbable = player.onClimbable();
+        boolean inFluid = player.isInWater() || player.isInLava();
+
+        // ---- 爬梯加速：原版爬梯的竖直速度写死为 0.2，这里按比例放大 ----
+        float climbBonus = stats.getStatValue("climb_speed");
+        if (climbable && climbBonus > 0) {
+            Vec3 motion = player.getDeltaMovement();
+            if (motion.y > 0.02 && motion.y <= 0.21) {
+                player.setDeltaMovement(motion.x, motion.y * (1.0 + climbBonus), motion.z);
+                player.hasImpulse = true;
+            }
+        }
+
+        // ---- N 段跳 ----
+        int maxAirJumps = (int) Math.round(stats.getStatValue("multi_jump"));
+        boolean jumpDown = mc.options.keyJump.isDown() && mc.screen == null;
+        boolean pressed = jumpDown && !jumpKeyWasDown;
+        jumpKeyWasDown = jumpDown;
+
+        if (onGround || climbable || inFluid) airJumpsUsed = 0;
+        if (onGround) lastGroundTick = player.tickCount;
+
+        if (maxAirJumps <= 0 || !pressed) return;
+        if (onGround || climbable || inFluid) return;              // 第一段交给原版
+        if (player.isPassenger()) return;
+        if (player.getAbilities().flying || player.isFallFlying() || player.isSpectator()) return;
+        if (player.tickCount - lastGroundTick < 6) return;         // 刚起跳那一下不算
+        if (airJumpsUsed >= maxAirJumps) return;
+
+        airJumpsUsed++;
+        Vec3 motion = player.getDeltaMovement();
+        player.setDeltaMovement(motion.x, 0.42, motion.z);
+        player.hasImpulse = true;
+        player.fallDistance = 0;
+        player.playSound(SoundEvents.SLIME_JUMP_SMALL, 0.6F, 1.2F);
+        for (int i = 0; i < 6; i++) {
+            player.level().addParticle(ParticleTypes.CLOUD,
+                    player.getX() + (player.getRandom().nextDouble() - 0.5D) * 0.6D,
+                    player.getY() + 0.05D,
+                    player.getZ() + (player.getRandom().nextDouble() - 0.5D) * 0.6D,
+                    0.0D, 0.02D, 0.0D);
+        }
     }
 
     // ========== 自动跨越高度（客户端同步） ==========
@@ -221,6 +293,8 @@ public final class ClientEventHandler {
                 MenuScreens.register(ModMenuTypes.FURNACE_PRODUCT_BUFFER_MENU.get(), FurnaceProductBufferScreen::new);
                 MenuScreens.register(ModMenuTypes.FURNACE_ORE_PRIORITY_MENU.get(), FurnaceOrePriorityScreen::new);
                 MenuScreens.register(ModMenuTypes.PORTABLE_CRAFTING_MENU.get(), PortableCraftingScreen::new);
+                // 随身铁砧沿用原版铁砧界面
+                MenuScreens.register(ModMenuTypes.PORTABLE_ANVIL_MENU.get(), AnvilScreen::new);
             });
         }
 

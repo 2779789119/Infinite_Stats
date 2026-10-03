@@ -4,6 +4,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 
 import com.infinitestats.Config;
+import com.infinitestats.stats.PlayerStatsProvider;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,9 +40,30 @@ public final class NetworkIO {
      * 列表为空表示没有任何可用存储。
      */
     public static List<NetworkHandle> getNetworks(Player player) {
+        return getNetworks(player, Config.NETWORK_PRIORITY.get());
+    }
+
+    /**
+     * 按**某个功能（作用域）**的存储优先级取网络：玩家自定义优先，未设置时回退配置顺序。
+     * <p>
+     * 各功能互不影响：随身工作台传 {@code PlayerStats.SCOPE_CRAFTING}、随身熔炉传
+     * {@code SCOPE_FURNACE}、成品仓传 {@code SCOPE_PRODUCT_BUFFER}、自动入库传
+     * {@code SCOPE_AUTO_DEPOSIT}；只有玩家主动调整过的那个作用域才会偏离配置默认顺序。
+     */
+    public static List<NetworkHandle> getNetworks(Player player, String scope) {
+        List<? extends String> order = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .map(stats -> stats.getEffectiveNetworkPriority(scope))
+                .orElse(null);
+        return getNetworks(player, order);
+    }
+
+    /**
+     * 与 {@link #getNetworks(Player)} 相同，但使用调用方给定的优先级顺序。
+     * 「自动入库」会传入玩家在属性面板里自定义的存储优先级，让写入顺序由玩家决定。
+     */
+    public static List<NetworkHandle> getNetworks(Player player, List<? extends String> order) {
         List<NetworkHandle> result = new ArrayList<>();
-        List<? extends String> order = Config.NETWORK_PRIORITY.get();
-        if (order == null) order = List.of("RS", "AE2", "TOMS", "BACKPACK", "BD");
+        if (order == null) order = Config.NETWORK_PRIORITY.get();
         for (String raw : order) {
             NetworkHandle h = tryBridge(raw, player);
             if (h != null) result.add(h);

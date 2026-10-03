@@ -8,7 +8,13 @@ buildscript {
     }
 }
 
+plugins {
+    // Mixin（用于接管 AnvilMenu 的「过于昂贵」门槛与最终消耗计算）
+    id 'org.spongepowered.mixin' version '0.7.+' apply false
+}
+
 apply plugin: 'net.minecraftforge.gradle'
+apply plugin: 'org.spongepowered.mixin'
 apply plugin: 'eclipse'
 apply plugin: 'maven-publish'
 
@@ -35,6 +41,9 @@ minecraft {
             workingDirectory project.file('run')
             property 'forge.logging.markers', 'REGISTRIES'
             property 'forge.logging.console.level', 'debug'
+            // Mixin 调试运行：refmap 里存的是 SRG 名，dev 环境需要按映射反查回 official 名
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
             mods {
                 "${mod_id}" {
                     source sourceSets.main
@@ -68,6 +77,10 @@ repositories {
         // JEI
         url "https://maven.blamejared.com/"
     }
+    maven {
+        // Cloth Config API（配置界面控件库）
+        url "https://maven.shedaniel.me/"
+    }
 }
 
 dependencies {
@@ -77,6 +90,21 @@ dependencies {
     compileOnly fg.deobf("mezz.jei:jei-${minecraft_version}-common-api:${jei_version}")
     compileOnly fg.deobf("mezz.jei:jei-${minecraft_version}-forge-api:${jei_version}")
     runtimeOnly fg.deobf("mezz.jei:jei-${minecraft_version}-forge:${jei_version}")
+
+    // Cloth Config API（用来画模组列表 →「Config」按钮打开的配置界面）
+    compileOnly fg.deobf("me.shedaniel.cloth:cloth-config-forge:${cloth_config_version}")
+    runtimeOnly fg.deobf("me.shedaniel.cloth:cloth-config-forge:${cloth_config_version}")
+
+    // Mixin 注解处理器：生成 refmap（把 official 名映射成生产环境的 SRG 名）
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+}
+
+// ============================================================
+// Mixin 配置
+// ============================================================
+mixin {
+    add sourceSets.main, "${mod_id}.refmap.json"
+    config "${mod_id}.mixins.json"
 }
 
 sourceSets.main.resources { srcDir 'src/generated/resources' }

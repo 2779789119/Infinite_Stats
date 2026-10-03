@@ -20,13 +20,18 @@ import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 public final class InfiniteStats {
 
     public static final String MODID = "infinitestats";
-    public static final String VERSION = "1.9.16";
+    public static final String VERSION = "1.27.0";
 
     public InfiniteStats() {
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
 
         // 注册配置
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+
+        // 仅在客户端注册「Config」按钮的配置界面（专用服务器不加载客户端类）
+        if (net.minecraftforge.fml.loading.FMLEnvironment.dist.isClient()) {
+            com.infinitestats.client.ClientSetup.registerConfigScreen();
+        }
 
         // 注册事件总线
         modEventBus.addListener(this::setup);

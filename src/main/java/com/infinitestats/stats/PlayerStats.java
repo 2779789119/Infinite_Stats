@@ -5,6 +5,7 @@ import com.infinitestats.furnace.PlayerFurnaceData;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.world.item.ItemStack;
 
 import java.util.*;
 
@@ -24,12 +25,16 @@ public class PlayerStats {
     private float shieldAbsorption = 0;
 
     /**
-     * 已移除的「魔法」分类属性 id。
+     * 已经移除的属性 id。
      * 旧存档里投入这些属性的点数，在加载时全额退还到可用点数（见 {@link #deserializeNBT}），
-     * 避免整合包升级后玩家凭空损失点数。
+     * 避免整合包升级后玩家凭空损失点数（属性定义删掉后 {@code StatType.fromId} 会返回 null，
+     * 条目会被静默丢弃 —— 必须在这里显式退还）。
      */
-    private static final Set<String> LEGACY_MAGIC_STATS = Set.of(
-            "max_mana", "mana_regen", "magic_damage", "mana_shield", "mana_steal", "mana_on_kill");
+    private static final Set<String> LEGACY_REMOVED_STATS = Set.of(
+            // 「魔法」分类（1.9.x 移除）
+            "max_mana", "mana_regen", "magic_damage", "mana_shield", "mana_steal", "mana_on_kill",
+            // 弹射物暴击（1.21.0 移除：收益不明显，近战与弹射物回到同一条蓄力判定）
+            "crit_projectile");
 
     // 使用 Map 存储属性点数 - 支持动态属性发现
     // statId → points
@@ -42,6 +47,20 @@ public class PlayerStats {
     // 开关属性激活状态缓存
     private final Map<String, Boolean> toggleCache = new HashMap<>();
     private boolean toggleCacheValid = false;
+
+    /**
+     * 「功能开关」中被玩家关闭的属性 id（每个玩家独立，不是全局配置）。
+     * 关闭后：属性面板不再显示该条目、无法继续加点，并且<b>整条失效</b> ——
+     * 数值按 0 计（见 {@link #ensureCacheValid()}）、开关型功能的效果与指令一并停用；
+     * 已投入的点数保留，重新开启即恢复。
+     */
+    private final Set<String> disabledStats = new HashSet<>();
+
+    /**
+     * 是否已把作者预设的「开局默认禁用」列表（{@code Config#DISABLED_STATS}）写入过本玩家。
+     * 只在玩家数据首次加载时应用一次：之后作者改配置不影响已有玩家，任务奖励指令负责后续开放。
+     */
+    private boolean defaultDisabledApplied = false;
 
     // 每个玩家独立的被动经验tick计数器
     private int passiveTickCounter = 0;
@@ -75,6 +94,142 @@ public class PlayerStats {
 
     // 收藏的属性 ID 集合
     private final Set<String> favorites = new HashSet<>();
+
+    // ========== 存储优先级（按功能分作用域） ==========
+
+    /** 作用域：自动入库 —— 背包物品写入存储网络时的顺序 */
+    public static final String SCOPE_AUTO_DEPOSIT = "auto_deposit";
+    /** 作用域：随身工作台 —— 取料 / 补料 / 退回材料 / 成品入库 */
+    public static final String SCOPE_CRAFTING = "crafting";
+    /** 作用域：随身熔炉 —— 抽矿物 / 抽燃料 / 成品入库 */
+    public static final String SCOPE_FURNACE = "furnace";
+    /** 作用域：成品仓 —— 出库到存储网络 */
+    public static final String SCOPE_PRODUCT_BUFFER = "product_buffer";
+
+    /** 全部作用域（用于校验与界面枚举） */
+    public static final List<String> NETWORK_SCOPES =
+            List.of(SCOPE_AUTO_DEPOSIT, SCOPE_CRAFTING, SCOPE_FURNACE, SCOPE_PRODUCT_BUFFER);
+
+    /**
+     * 各功能的存储优先级：作用域 → 存储键顺序（RS / AE2 / TOMS / BACKPACK / BD，靠前者优先）。
+     * <p>
+     * 某作用域不存在（或列表为空）表示**沿用配置** {@code NetworkPriority.networkPriority}
+     * 的默认顺序 —— 所以各功能默认行为与旧版本完全一致，只有玩家主动调整过的那个功能才会不同。
+     */
+    private final Map<String, List<String>> networkPriorities = new HashMap<>();
+
+    /**
+     * 自动入库的过滤模式：true = 白名单（只入库列表中的物品），false = 黑名单（列表中的物品不入库）。
+     */
+    private boolean autoDepositUseWhitelist = false;
+
+    /** 自动入库过滤列表：物品 ID（如 {@code minecraft:diamond}）。 */
+    private final Set<String> autoDepositFilterList = new HashSet<>();
+
+    /**
+     * 死亡不掉落（keep_inventory）的暂存物品。
+     * <p>
+     * 死亡瞬间把主背包 / 盔甲 / 副手清空并暂存在这里，重生时（{@code PlayerEvent.Clone}）
+     * 原样归还，从而绕过原版「未开启 keepInventory 游戏规则就掉落全部物品」的行为。
+     * 顺序固定为：36 格主背包 → 4 格盔甲 → 1 格副手。
+     */
+    private final List<ItemStack> pendingKeptInventory = new ArrayList<>();
+
+    /** 某作用域的原始优先级（空列表 = 未自定义，沿用配置）。 */
+    public List<String> getNetworkPriority(String scope) {
+        List<String> list = networkPriorities.get(scope);
+        return list == null ? List.of() : Collections.unmodifiableList(list);
+    }
+
+    /** 某作用域生效的优先级：玩家自定义优先，未设置时回退到配置的默认顺序。 */
+    public List<String> getEffectiveNetworkPriority(String scope) {
+        List<String> list = networkPriorities.get(scope);
+        if (list != null && !list.isEmpty()) return new ArrayList<>(list);
+        List<? extends String> cfg = Config.NETWORK_PRIORITY.get();
+        return cfg == null ? new ArrayList<>() : new ArrayList<>(cfg);
+    }
+
+    /** 设置某作用域的优先级；传空列表表示恢复成配置默认。 */
+    public void setNetworkPriority(String scope, List<String> order) {
+        if (scope == null || !NETWORK_SCOPES.contains(scope)) return;
+        if (order == null || order.isEmpty()) {
+            networkPriorities.remove(scope);
+            return;
+        }
+        networkPriorities.put(scope, new ArrayList<>(order));
+    }
+
+    /** 便捷入口：自动入库生效的存储优先级。 */
+    public List<String> getEffectiveAutoDepositPriority() {
+        return getEffectiveNetworkPriority(SCOPE_AUTO_DEPOSIT);
+    }
+
+    // ========== 自动入库过滤（白 / 黑名单） ==========
+
+    public boolean isAutoDepositUseWhitelist() {
+        return autoDepositUseWhitelist;
+    }
+
+    public Set<String> getAutoDepositFilterList() {
+        return Collections.unmodifiableSet(autoDepositFilterList);
+    }
+
+    /** 是否设置了过滤条目（为空时无论白/黑名单都不做限制）。 */
+    public boolean hasAutoDepositFilter() {
+        return !autoDepositFilterList.isEmpty();
+    }
+
+    public void addAutoDepositFilter(String itemId) {
+        if (itemId != null && !itemId.isEmpty()) autoDepositFilterList.add(itemId);
+    }
+
+    public void removeAutoDepositFilter(String itemId) {
+        autoDepositFilterList.remove(itemId);
+    }
+
+    public void clearAutoDepositFilters() {
+        autoDepositFilterList.clear();
+    }
+
+    /** 设置完整过滤列表（从网络同步 / 界面提交时调用）。 */
+    public void setAutoDepositFilterList(Set<String> list, boolean useWhitelist) {
+        autoDepositFilterList.clear();
+        if (list != null) autoDepositFilterList.addAll(list);
+        this.autoDepositUseWhitelist = useWhitelist;
+    }
+
+    /**
+     * 判断某个物品是否允许自动入库。
+     * <p>
+     * 列表为空时视为「不做限制」——白名单为空若理解为「什么都不入库」，
+     * 玩家一旦清空列表就会完全失去自动入库能力，容易误操作；这里统一按放行处理。
+     * 白名单：只允许列表内的物品；黑名单：不允许列表内的物品。
+     */
+    public boolean allowsAutoDeposit(String itemId) {
+        if (itemId == null || autoDepositFilterList.isEmpty()) return true;
+        return autoDepositUseWhitelist == autoDepositFilterList.contains(itemId);
+    }
+
+    // ========== 死亡不掉落暂存 ==========
+
+    public boolean hasPendingKeptInventory() {
+        return !pendingKeptInventory.isEmpty();
+    }
+
+    public void setPendingKeptInventory(List<ItemStack> items) {
+        pendingKeptInventory.clear();
+        if (items == null) return;
+        for (ItemStack stack : items) {
+            pendingKeptInventory.add(stack == null ? ItemStack.EMPTY : stack.copy());
+        }
+    }
+
+    /** 取出并清空暂存物品（重生归还时调用，避免重复归还）。 */
+    public List<ItemStack> takePendingKeptInventory() {
+        List<ItemStack> out = new ArrayList<>(pendingKeptInventory);
+        pendingKeptInventory.clear();
+        return out;
+    }
 
     public long getCraftingMultiplier() {
         return Math.max(1, craftingMultiplier);
@@ -341,6 +496,14 @@ public class PlayerStats {
     }
 
     /**
+     * 有效属性点数：被「功能开关」关闭时按 0 计（投入的点数仍然保留，重新开启即恢复）。
+     * 效果类代码若需要按「等级」而非「数值」计算，请用这个而不是 {@link #getStatLevel(String)}。
+     */
+    public long getEffectiveStatLevel(String statId) {
+        return isStatInactive(statId) ? 0L : getStatLevel(statId);
+    }
+
+    /**
      * 获取属性值 - 使用缓存
      */
     public float getStatValue(StatType stat) {
@@ -358,11 +521,98 @@ public class PlayerStats {
     }
 
     /**
-     * 检查开关属性是否激活
+     * 检查开关属性是否激活。
+     * <p>
+     * 被「功能开关」关闭的属性一律视为未激活：这样效果、指令、GUI 入口都会自动停用，
+     * 无需在每个使用点重复判断。
      */
     public boolean isToggleActive(String statId) {
+        if (isStatInactive(statId)) return false;
         ensureToggleCacheValid();
         return toggleCache.getOrDefault(statId, false);
+    }
+
+    // ========== 功能开关（每个玩家独立） ==========
+
+    /**
+     * 该属性是否已被玩家在「功能开关」中关闭（<b>面板层面</b>：不显示、不能加点）。
+     * 与执行模式无关 —— 三种模式下面板都不显示它。
+     */
+    public boolean isStatDisabled(String statId) {
+        return statId != null && disabledStats.contains(statId);
+    }
+
+    /**
+     * 该属性是否**整条失效**（数值按 0 计、开关型功能的效果与指令停用）。
+     * 「只隐藏」（{@link FeatureDisableMode#HIDDEN_ONLY}）模式下恒为 {@code false}。
+     * <p>
+     * 模式来自整合包配置（{@code GUI.featureDisableMode}），不是玩家个人设置。
+     */
+    public boolean isStatInactive(String statId) {
+        return statId != null && FeatureDisableMode.current().isInactive()
+                && disabledStats.contains(statId);
+    }
+
+    /**
+     * 设置某个属性的开关状态（true = 关闭）。
+     * 在 {@link FeatureDisableMode#INACTIVE_REFUND_POINTS} 模式下，关闭会同时返还该属性已投入的点数。
+     */
+    public void setStatDisabled(String statId, boolean disabled) {
+        if (statId == null) return;
+        if (disabled) {
+            if (!disabledStats.add(statId)) return;
+        } else if (!disabledStats.remove(statId)) {
+            return;
+        }
+        if (disabled && FeatureDisableMode.current().isRefund()) refundAllocatedPoints(statId);
+        invalidateCache();
+    }
+
+    /** 批量设置（用于「全部关闭 / 全部开启」）。 */
+    public void setStatsDisabled(Collection<String> statIds, boolean disabled) {
+        if (statIds == null) return;
+        boolean changed = false;
+        for (String id : statIds) {
+            if (id == null) continue;
+            if (disabled) {
+                if (!disabledStats.add(id)) continue;
+                if (FeatureDisableMode.current().isRefund()) refundAllocatedPoints(id);
+                changed = true;
+            } else {
+                changed |= disabledStats.remove(id);
+            }
+        }
+        if (changed) invalidateCache();
+    }
+
+    /** 返还某个属性已投入的点数（整条失效 + 返还模式使用）。 */
+    private void refundAllocatedPoints(String statId) {
+        StatType stat = StatType.fromId(statId);
+        if (stat != null) resetStat(stat);
+    }
+
+    /** 已关闭的属性 id（只读视图，供界面显示）。 */
+    public Set<String> getDisabledStats() {
+        return Collections.unmodifiableSet(disabledStats);
+    }
+
+    /**
+     * 首次加载玩家数据时，把整合包作者预设的「开局默认禁用」列表写入本玩家。
+     * 只执行一次（用 NBT 标志 {@code defaultDisabledApplied} 保证幂等）；
+     * 之后作者改配置不会影响已有玩家，功能开放由任务奖励指令 {@code /infstats feature <id> on} 负责。
+     */
+    public void applyDefaultDisabledStatsIfNeeded() {
+        if (defaultDisabledApplied) return;
+        defaultDisabledApplied = true;
+        List<String> defaults = Config.defaultDisabledStats();
+        if (defaults.isEmpty()) return;
+        boolean changed = false;
+        for (String id : defaults) {
+            if (StatType.fromId(id) != null && disabledStats.add(id)) {
+                changed = true;
+            }
+        }
+        if (changed) invalidateCache();
     }
 
     // ========== 属性分配 ==========
@@ -501,11 +751,25 @@ public class PlayerStats {
         toggleCacheValid = false;
     }
 
+    /**
+     * 重新读取「功能开关」的执行模式（全局配置）并让缓存失效。
+     * <p>
+     * 模式本身不按玩家存，读取时直接查配置；所以运行时改了 {@code GUI.featureDisableMode}
+     * （例如 OP 用 {@code /infstats feature mode} 切换）后，调一次这个方法即可让
+     * {@link #isStatInactive(String)} 与数值缓存按新模式重算。
+     */
+    public void refreshFeatureMode() {
+        invalidateCache();
+    }
+
     private void ensureCacheValid() {
         if (cacheValid) return;
 
         valueCache.clear();
         for (Map.Entry<String, Long> entry : allocatedPoints.entrySet()) {
+            // 「功能开关」里整条失效的属性：数值按 0 计（点数是否保留取决于模式）。
+            // 放在缓存层统一处理，所有读取 getStatValue 的效果、属性加成都自动跟随。
+            if (isStatInactive(entry.getKey())) continue;
             StatType stat = StatType.fromId(entry.getKey());
             if (stat != null) {
                 valueCache.put(entry.getKey(), stat.calculateValue(entry.getValue()));
@@ -639,6 +903,46 @@ public class PlayerStats {
         // 序列化随身工作台倍率
         tag.putLong("craftingMultiplier", craftingMultiplier);
 
+        // 序列化各功能的存储优先级（作用域 → 存储键列表）
+        CompoundTag priorityTag = new CompoundTag();
+        for (Map.Entry<String, List<String>> entry : networkPriorities.entrySet()) {
+            ListTag orderList = new ListTag();
+            for (String key : entry.getValue()) {
+                CompoundTag keyTag = new CompoundTag();
+                keyTag.putString("id", key);
+                orderList.add(keyTag);
+            }
+            priorityTag.put(entry.getKey(), orderList);
+        }
+        tag.put("networkPriorities", priorityTag);
+
+        // 序列化自动入库过滤（白 / 黑名单）
+        tag.putBoolean("depositUseWhitelist", autoDepositUseWhitelist);
+        ListTag depositFilter = new ListTag();
+        for (String id : autoDepositFilterList) {
+            CompoundTag fTag = new CompoundTag();
+            fTag.putString("id", id);
+            depositFilter.add(fTag);
+        }
+        tag.put("depositFilterList", depositFilter);
+
+        // 序列化死亡不掉落暂存物品（必须落盘：玩家在死亡界面断线 / 服务器重启也不能丢）
+        ListTag keptList = new ListTag();
+        for (ItemStack stack : pendingKeptInventory) {
+            keptList.add(stack.save(new CompoundTag()));
+        }
+        tag.put("pendingKeptInventory", keptList);
+
+        // 序列化「功能开关」中已关闭的属性与执行模式
+        ListTag disabledList = new ListTag();
+        for (String id : disabledStats) {
+            CompoundTag d = new CompoundTag();
+            d.putString("id", id);
+            disabledList.add(d);
+        }
+        tag.put("disabledStats", disabledList);
+        tag.putBoolean("defaultDisabledApplied", defaultDisabledApplied);
+
         return tag;
     }
 
@@ -658,8 +962,8 @@ public class PlayerStats {
             CompoundTag entryTag = pointsList.getCompound(i);
             String statId = entryTag.getString("id");
             long points = entryTag.getLong("points");
-            if (LEGACY_MAGIC_STATS.contains(statId)) {
-                // 「魔法」分类已移除。必须放在 StatType.fromId 判断之前：
+            if (LEGACY_REMOVED_STATS.contains(statId)) {
+                // 该属性定义已移除。必须放在 StatType.fromId 判断之前：
                 // 属性定义删掉后 fromId 会返回 null，条目会被直接丢弃，点数就白丢了。
                 // 按绝对值退还，负值（透支方向）同样返还。
                 availablePoints += Math.abs(points);
@@ -721,6 +1025,62 @@ public class PlayerStats {
             craftingMultiplier = tag.getLong("craftingMultiplier");
         }
 
+        // 反序列化各功能的存储优先级；老存档只有 autoDepositPriority，迁移成自动入库作用域
+        networkPriorities.clear();
+        if (tag.contains("networkPriorities")) {
+            CompoundTag priorityTag = tag.getCompound("networkPriorities");
+            for (String scope : priorityTag.getAllKeys()) {
+                if (!NETWORK_SCOPES.contains(scope)) continue;
+                ListTag orderList = priorityTag.getList(scope, Tag.TAG_COMPOUND);
+                List<String> order = new ArrayList<>();
+                for (int i = 0; i < orderList.size(); i++) {
+                    String key = orderList.getCompound(i).getString("id");
+                    if (!key.isEmpty()) order.add(key);
+                }
+                if (!order.isEmpty()) networkPriorities.put(scope, order);
+            }
+        } else if (tag.contains("autoDepositPriority")) {
+            ListTag depositList = tag.getList("autoDepositPriority", Tag.TAG_COMPOUND);
+            List<String> order = new ArrayList<>();
+            for (int i = 0; i < depositList.size(); i++) {
+                String key = depositList.getCompound(i).getString("id");
+                if (!key.isEmpty()) order.add(key);
+            }
+            if (!order.isEmpty()) networkPriorities.put(SCOPE_AUTO_DEPOSIT, order);
+        }
+
+        // 反序列化自动入库过滤（白 / 黑名单）
+        autoDepositUseWhitelist = tag.contains("depositUseWhitelist") && tag.getBoolean("depositUseWhitelist");
+        autoDepositFilterList.clear();
+        if (tag.contains("depositFilterList")) {
+            ListTag depositFilter = tag.getList("depositFilterList", Tag.TAG_COMPOUND);
+            for (int i = 0; i < depositFilter.size(); i++) {
+                String id = depositFilter.getCompound(i).getString("id");
+                if (!id.isEmpty()) autoDepositFilterList.add(id);
+            }
+        }
+
+        // 反序列化死亡不掉落暂存物品
+        pendingKeptInventory.clear();
+        if (tag.contains("pendingKeptInventory")) {
+            ListTag keptList = tag.getList("pendingKeptInventory", Tag.TAG_COMPOUND);
+            for (int i = 0; i < keptList.size(); i++) {
+                pendingKeptInventory.add(ItemStack.of(keptList.getCompound(i)));
+            }
+        }
+
+        // 反序列化「功能开关」中已关闭的属性与执行模式
+        disabledStats.clear();
+        if (tag.contains("disabledStats")) {
+            ListTag disabledList = tag.getList("disabledStats", Tag.TAG_COMPOUND);
+            for (int i = 0; i < disabledList.size(); i++) {
+                String id = disabledList.getCompound(i).getString("id");
+                if (!id.isEmpty()) disabledStats.add(id);
+            }
+        }
+        defaultDisabledApplied = tag.contains("defaultDisabledApplied") && tag.getBoolean("defaultDisabledApplied");
+
+
         invalidateCache();
     }
 
@@ -747,6 +1107,21 @@ public class PlayerStats {
         this.craftingMultiplier = other.craftingMultiplier;
         this.favorites.clear();
         this.favorites.addAll(other.favorites);
+        // 死亡不掉落暂存的物品必须随玩家实体克隆一起带走，否则重生后就找不回来了
+        this.pendingKeptInventory.clear();
+        for (ItemStack stack : other.pendingKeptInventory) {
+            this.pendingKeptInventory.add(stack.copy());
+        }
+        this.networkPriorities.clear();
+        for (Map.Entry<String, List<String>> entry : other.networkPriorities.entrySet()) {
+            this.networkPriorities.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+        }
+        this.autoDepositUseWhitelist = other.autoDepositUseWhitelist;
+        this.autoDepositFilterList.clear();
+        this.autoDepositFilterList.addAll(other.autoDepositFilterList);
+        this.disabledStats.clear();
+        this.disabledStats.addAll(other.disabledStats);
+        this.defaultDisabledApplied = other.defaultDisabledApplied;
         invalidateCache();
     }
 
@@ -762,8 +1137,21 @@ public class PlayerStats {
                 new HashSet<>(buffFilterList),
                 new HashMap<>(waypoints),
                 reviveInvulnUntilTick,
-                new HashSet<>(favorites)
+                new HashSet<>(favorites),
+                copyNetworkPriorities(),
+                autoDepositUseWhitelist,
+                new HashSet<>(autoDepositFilterList),
+                new HashSet<>(disabledStats)
         );
+    }
+
+    /** 深拷贝各功能的存储优先级（快照/同步用）。 */
+    private Map<String, List<String>> copyNetworkPriorities() {
+        Map<String, List<String>> copy = new HashMap<>();
+        for (Map.Entry<String, List<String>> entry : networkPriorities.entrySet()) {
+            copy.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+        }
+        return copy;
     }
 
     /**
@@ -785,6 +1173,17 @@ public class PlayerStats {
         this.waypoints.putAll(snapshot.waypoints);
         this.favorites.clear();
         this.favorites.addAll(snapshot.favorites);
+        this.networkPriorities.clear();
+        if (snapshot.networkPriorities != null) {
+            for (Map.Entry<String, List<String>> entry : snapshot.networkPriorities.entrySet()) {
+                this.networkPriorities.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+            }
+        }
+        this.autoDepositUseWhitelist = snapshot.autoDepositUseWhitelist;
+        this.autoDepositFilterList.clear();
+        if (snapshot.autoDepositFilterList != null) this.autoDepositFilterList.addAll(snapshot.autoDepositFilterList);
+        this.disabledStats.clear();
+        if (snapshot.disabledStats != null) this.disabledStats.addAll(snapshot.disabledStats);
         invalidateCache();
     }
 
@@ -802,12 +1201,23 @@ public class PlayerStats {
         public final Map<String, Waypoint> waypoints;
         public final long reviveInvulnUntilTick;
         public final Set<String> favorites;
+        /** 各功能的存储优先级（作用域 → 存储键顺序；缺失的作用域 = 使用配置默认顺序） */
+        public final Map<String, List<String>> networkPriorities;
+        /** 自动入库过滤模式：true = 白名单 */
+        public final boolean autoDepositUseWhitelist;
+        /** 自动入库过滤列表（物品 ID） */
+        public final Set<String> autoDepositFilterList;
+        /** 「功能开关」中已关闭的属性 id */
+        public final Set<String> disabledStats;
 
         public StatsSnapshot(long level, long experience, long availablePoints,
                 long lastReviveTime, int passiveTickCounter,
                 Map<String, Long> allocatedPoints,
                 boolean buffUseBlacklist, Set<String> buffFilterList,
-                Map<String, Waypoint> waypoints, long reviveInvulnUntilTick, Set<String> favorites) {
+                Map<String, Waypoint> waypoints, long reviveInvulnUntilTick, Set<String> favorites,
+                Map<String, List<String>> networkPriorities,
+                boolean autoDepositUseWhitelist, Set<String> autoDepositFilterList,
+                Set<String> disabledStats) {
             this.level = level;
             this.experience = experience;
             this.availablePoints = availablePoints;
@@ -819,6 +1229,10 @@ public class PlayerStats {
             this.waypoints = waypoints;
             this.reviveInvulnUntilTick = reviveInvulnUntilTick;
             this.favorites = favorites;
+            this.networkPriorities = networkPriorities;
+            this.autoDepositUseWhitelist = autoDepositUseWhitelist;
+            this.autoDepositFilterList = autoDepositFilterList;
+            this.disabledStats = disabledStats;
         }
     }
 }

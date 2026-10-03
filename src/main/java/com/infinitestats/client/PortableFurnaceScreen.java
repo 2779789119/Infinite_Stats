@@ -2,6 +2,7 @@ package com.infinitestats.client;
 
 import com.infinitestats.furnace.PortableFurnaceMenu;
 import com.infinitestats.network.NetworkHandler;
+import com.infinitestats.stats.PlayerStats;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
@@ -66,6 +67,15 @@ public class PortableFurnaceScreen extends AbstractContainerScreen<PortableFurna
                 () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceRSRefillFuelPacket()), text("rs_fuel_tip"));
         button(text("network_deposit"), 184, 196, 106,
                 () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceRSDepositPacket()), text("rs_deposit_tip"));
+
+        // 存储优先级：只影响随身熔炉自己的抽矿物 / 抽燃料 / 成品入库顺序
+        // （放在「网络」标签右侧：标签横向只到 ~204，按钮从 240 起，纵向 136..154 与下方按钮不重叠）
+        button(text("network_priority"), 240, 136, 50,
+                () -> {
+                    if (minecraft != null) {
+                        minecraft.setScreen(new NetworkPriorityScreen(this, PlayerStats.SCOPE_FURNACE));
+                    }
+                }, text("network_priority_tip"));
     }
 
     @Override

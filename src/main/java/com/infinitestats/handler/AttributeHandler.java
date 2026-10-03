@@ -78,28 +78,38 @@ public class AttributeHandler implements StatEffectHandler {
 
     /**
      * 应用单个属性修改
+     * 一个属性可能同时写入多份等价的注册名（主属性 + 镜像属性），
+     * 未安装对应模组时该注册名解析为 null，自动跳过。
      */
     private static void applyAttribute(ServerPlayer player, PlayerStats stats, StatType stat) {
-        Attribute attribute = stat.getAttribute();
-        if (attribute == null) return;
+        Map<String, Attribute> targets = stat.resolveAttributes();
+        if (targets.isEmpty()) return;
 
-        AttributeInstance instance = player.getAttribute(attribute);
-        if (instance == null) return;
-
-        UUID modifierId = getOrCreateUUID(stat.getId());
-
-        // 移除旧修改器
-        instance.removeModifier(modifierId);
-
-        // 计算并添加新修改器
         float value = stats.getStatValue(stat);
-        if (value != 0) {
-            instance.addPermanentModifier(new AttributeModifier(
-                    modifierId,
-                    "infinitestats:" + stat.getId(),
-                    value,
-                    AttributeModifier.Operation.ADDITION
-            ));
+        String primaryName = stat.getAttributeName();
+
+        for (Map.Entry<String, Attribute> entry : targets.entrySet()) {
+            AttributeInstance instance = player.getAttribute(entry.getValue());
+            if (instance == null) continue;
+
+            // 主属性沿用旧 UUID，避免升级后旧存档里的修改器残留
+            boolean primary = entry.getKey().equals(primaryName);
+            UUID modifierId = getOrCreateUUID(primary
+                    ? stat.getId()
+                    : stat.getId() + "@" + entry.getKey());
+
+            // 移除旧修改器
+            instance.removeModifier(modifierId);
+
+            // 计算并添加新修改器
+            if (value != 0) {
+                instance.addPermanentModifier(new AttributeModifier(
+                        modifierId,
+                        "infinitestats:" + stat.getId(),
+                        value,
+                        AttributeModifier.Operation.ADDITION
+                ));
+            }
         }
     }
 

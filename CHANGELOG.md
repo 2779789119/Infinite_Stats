@@ -1,5 +1,421 @@
 # 更新日志 (Changelog)
 
+## [1.27.0] - 2026-10-03
+
+### 🖥️ 修好「模组列表 → Config」按钮（用 Cloth Config 重画配置界面）
+
+之前 1.26.0 把 `ConfigScreenFactory` 注册删了，导致 Forge 的「Config」按钮一直是灰的——
+而 Cloth Config 只是画控件的库，不会替本模组注册界面。这次重新接上：
+
+- **新增 `client/ClothConfigScreen`**：遍历 `Config.SPEC` 自动把全部配置项摊成可编辑的表，按 `Experience / Leveling / AutoRevive / PassiveEffects / GUI / Compatibility / EMC / TimeAccel / Furnace / StoragePriority / Crafting / AutoDeposit` 分组，
+  数字带范围限制、枚举（功能禁用模式）带翻译名、列表（开局禁用属性 / 存储优先级 / 入库黑名单）可逐项编辑，每项都带配置注释作为说明。
+- **`ClientSetup.registerConfigScreen()` 重新注册 `ConfigScreenHandler.ConfigScreenFactory`**：只在客户端构造期注册
+  （专用服务器不加载 `ClothConfigScreen`），`InfiniteStats` 构造器里 `FMLEnvironment.dist.isClient()` 分支调用。
+- **`mods.toml` 声明 Cloth Config（cloth_config，可选，仅客户端）**：缺失时按钮点击无反应但不会崩。
+- **依赖**：`build.gradle` 从 `maven.shedaniel.me` 拉取 `cloth-config-forge:11.1.106`（compileOnly + runtimeOnly）。
+- 配置改动保存即写回 `config/infinitestats-common.toml`；`en_us.json` / `zh_cn.json` 补全了分类、字段、枚举的中文 / 英文翻译。
+- 纯客户端配置入口调整，无存档结构变化。
+
+## [1.26.0] - 2026-10-03
+
+### 🎛️ 功能开关改为「作者预设 + 任务指令开放」，移除玩家自编辑界面
+
+原方案是给玩家一个「功能开关」界面（模组列表 → Config），让玩家自己按需开关属性。这对整合包场景是反的：
+开关本质是整合包作者的「进度设计」——作者决定开局哪些功能可用，玩家做任务后用奖励指令逐步解锁，玩家不该能自己改。
+这次把它拆成「作者预设的开局禁用列表（配置项）+ 指令开放」，玩家不再有任何编辑入口。
+
+- **移除玩家自编辑界面**：删除 `client/FeatureToggleScreen` 及其网络包 `FeatureTogglePacket`（客户端 → 服务器），
+  协议版本 `13 → 14`。开关仍然**按玩家独立存储**（`PlayerStats.disabledStats` 不变），只是不再有界面去改它。
+- **Config 按钮交还 Configured 配置界面**：删除 `ClientSetup.registerConfigScreen()`（不再注册 `ConfigScreenFactory`）。
+  整合包自带的 Configured 会接管「Config」按钮，`config/infinitestats-common.toml` 的全部配置项都能直接查看 / 修改。
+- **新增配置项 `GUI.disabledStats`**（`defineList`，属性 id 列表）：整合包作者预设的「开局默认禁用」属性。
+  - 新玩家（以及未带标记的老存档）首次登录时，这些属性会**一次性**写入该玩家（`PlayerStats.applyDefaultDisabledStatsIfNeeded`，
+    NBT 标记 `defaultDisabledApplied` 保证幂等）；之后作者改这份配置**不影响已有玩家**。
+  - 配合既有的 `GUI.featureDisableMode`（keep / refund / hide）决定禁用后是整条失效还是仅隐藏。
+- **指令 `/infstats feature` 保留**（要求权限等级 2，仍给管理员 / 任务奖励用）：`<id>` / `<id> on|off` / `all on|off` / `list` / `mode`。
+  任务奖励里用 `/infstats feature <属性ID> on` 即可逐个开放功能；相关提示文案同步改为「尚未开放」。
+- 纯客户端入口 + 配置 + 协议调整，无存档结构变化（`disabledStats` 序列化格式不变）。
+
+## [1.25.2] - 2026-10-03
+
+### ↩️ 撤掉属性面板的「功能开关」按钮，入口回到模组列表的「Config」
+
+1.25.1 把「功能开关」入口塞进了属性面板标题栏，理由是「Config 按钮已交还给 Forge 原生配置界面」——
+但 Forge 47.4.x 压根没有内建配置编辑界面（`ModListScreen` 只认模组自己注册的 `ConfigScreenFactory`），
+所以交还之后 Config 按钮等于空的，属性面板上还多了一颗与面板无关的按钮。
+
+- **删掉 `StatsScreen.addFeatureToggleEntry()` 及其调用**：属性面板标题栏右侧不再有「功能开关」按钮。
+- **改回注册 `ConfigScreenFactory`**：新增 `ClientSetup.registerConfigScreen()`（只在客户端构造期注册，专用服务器不加载该类），
+  模组列表 → 本模组 →「Config」重新打开 `FeatureToggleScreen`（按玩家开关，行为与 1.24.x 一致）。
+- `FeatureToggleScreen` 类注释同步改为「入口 = 模组列表 → Config」。
+- 纯客户端入口调整，网络包与协议版本不变（仍为 13）。
+- 版本号 `1.25.1 → 1.25.2`。
+
+## [1.25.1] - 2026-10-03
+
+### 🔧 模组列表的「Config」按钮交还给 Forge 原生配置界面
+
+1.25.0 把这颗按钮抢过来指向了自制的「功能开关」界面，结果配置菜单里只剩一份开关列表，
+`config/infinitestats-common.toml` 的其它配置项（`featureDisableMode`、网络优先级、EMC 速率等）既看不到也改不了。这次把入口还原：
+
+- **删掉 `ClientConfigEntry`**（不再注册 `ConfigScreenFactory`）：模组列表 → 本模组 →「Config」现在打开的是 Forge
+  内建的配置编辑界面，`infinitestats-common.toml` 里的全部配置项都能直接查看 / 修改，改完即时生效。
+- **「功能开关」入口移入属性面板**：`StatsScreen` 标题栏右侧新增「功能开关」按钮（悬停有说明），点开仍是原来的
+  `FeatureToggleScreen`（按玩家开关，行为与之前一致），关闭后返回属性面板。
+- 文案同步：`ModServerCommands` 里「『X』已在功能开关中关闭」的提示、`Config` 中 `featureDisableMode` 的注释，
+  都从「模组列表 → Config」改为「属性面板 → 功能开关」。
+- 新增语言键 `gui.infinitestats.nav.feature_toggle`（中英）。
+- 纯客户端入口调整，协议版本不变（仍为 13）。
+- 版本号 `1.25.0 → 1.25.1`。
+
+## [1.25.0] - 2026-10-03
+
+### ⚙️ 「关掉时」的执行模式改为**全局配置**（整合包作者用，不再按玩家存）
+
+1.24.0 把三种模式做成了玩家自选，这次按整合包场景收回成**作者的一份全局设置**：
+
+- **模式来源**：只读配置 `GUI.featureDisableMode`（`config/infinitestats-common.toml`，枚举 `keep` / `refund` / `hide`，默认 `keep`），改完即时生效。
+  `FeatureDisableMode.current()` 是唯一取值入口，`PlayerStats` 判断失效 / 返还点数时直接查它 —— 不再往玩家数据里写任何模式字段。
+- **玩家数据瘦身**：`PlayerStats` 去掉 `disableMode` 字段、NBT 存取、`copyFrom` 拷贝与快照字段；`SyncStatsPacket` 也去掉该字段（同步包回到「只带开关集合」）。
+  开关本身**仍然按玩家存**（这是玩家整理自己面板用的）。
+- **界面**：底栏那三个可点按钮撤掉，改成**只读一行**「关掉时（整合包设置）：整条失效·保留点数」，鼠标悬停显示该模式的完整含义与「由整合包配置决定，玩家不能改」。
+- **指令**（仍在要求 OP 权限等级 2 的 `feature` 子树里，因为它是作者 / 管理员设置）：
+  - `/infstats feature mode` —— 查看当前全局模式与配置文件路径；
+  - `/infstats feature mode <keep|refund|hide>` —— 改写全局配置（`Config.SPEC.save()` 落盘），并**为全服在线玩家当场重算属性 + 同步**，反馈里会带上受影响人数。
+- 顺带新增 `PlayerStats#refreshFeatureMode()`：模式变了之后让数值 / 开关缓存失效，避免读到旧值。
+- 协议版本 `12 → 13`（同步包字段减少，两端必须同为 1.25.0）。
+- 版本号 `1.24.1 → 1.25.0`。
+
+## [1.24.1] - 2026-10-03
+
+### 🔒 `/infstats feature` 指令改为需要 OP
+
+- `/infstats feature`（含 `list` / `<属性ID>` / `all` / `mode`）现在要求**权限等级 2**（OP）：
+  这是给整合包管理员用的命令，普通玩家不会被补全出来、也无法执行。
+- 其余 `/infstats` 子命令（`craft` / `furnace` / `anvil` / `enderchest` / `smithing` / `wp` / `crossdim`）**不受影响** ——
+  那几条本来就是玩家操作自己的随身功能，仍然人人可用。
+- 权限只加在**指令**上：功能开关界面（模组列表 → Config）仍对玩家开放，因为玩家需要能整理自己的面板。
+  若希望连界面也一并锁给 OP，说一声即可。
+- 界面浮窗与 README 的措辞同步为「管理员也可用 `/infstats feature mode`」。
+- 版本号 `1.24.0 → 1.24.1`。
+
+## [1.24.0] - 2026-10-03
+
+### 🎛️ 功能开关：三种「关掉时」模式，玩家自选（配置项管默认）
+
+> 注：1.25.0 起改为**全局配置**（不再按玩家存），下方「按玩家存」的描述已作废，详见 1.25.0。
+
+
+关闭某项时不再只有一种行为，改成三选一（**按玩家存**，与开关本身一样随存档同步）：
+
+| 模式 | 效果 | 已投入的点数 |
+|---|---|---|
+| `keep` 失效·保留点数（默认） | 整条失效：数值按 0 计、开关效果与 `/infstats` 指令停用 | 保留，重新开启立刻恢复 |
+| `refund` 失效·返还点数 | 同上 | **全额退回**可用点数；重新开启从 0 点开始 |
+| `hide` 只隐藏（不返还） | **效果与指令照常生效**，仅面板隐藏 + 禁止加点 | 保留 |
+
+- **实现**：新增 `stats/FeatureDisableMode`（枚举）与 `PlayerStats#disableMode`；把「面板层面」和「效果层面」拆成两个判断 ——
+  - `isStatDisabled()`：是否被关闭（三种模式下面板都隐藏、都禁止加点）；
+  - `isStatInactive()`：是否**整条失效**（`hide` 模式恒为 `false`，只有它会进数值缓存与 `isToggleActive()`）。
+  这样「只隐藏」不会误伤已投入的加成，而另外两种模式依旧整条归零。
+- **返还点数**：`setStatDisabled(id, true)` / 批量关闭在 `refund` 模式下会调用 `resetStat()` 全额退回（含负投入按绝对值返还），并立即 `applyAllAttributes()` + 同步；**切换模式只影响之后的关闭操作**，已经关掉的想拿回点数就先开启再关闭。
+- **界面**：底栏新增「关掉时：」一行，三个按钮直接点选、当前模式高亮，浮窗写好各自含义；执行模式随玩家数据同步。
+- **指令**：`/infstats feature mode`（查看）/ `/infstats feature mode <keep|refund|hide>`（切换，Tab 补全）。
+- **配置项**：新增 `GUI.featureDisableMode`（枚举，默认 `keep`）—— 只作为**新玩家**的初始值，整合包作者可改默认，玩家仍能各自修改、互不影响。
+- 协议版本 `11 → 12`（新增 `FeatureModePacket`，且同步包多带一个模式字段）；版本号 `1.23.0 → 1.24.0`。
+
+## [1.23.0] - 2026-10-03
+
+### 🎛️ 功能开关：关掉即「整条失效」+ 新增 `/infstats feature` 指令
+
+- **语义调整（覆盖 1.22.0 的行为）**：关闭不再只是「隐藏 + 停用开关」，而是**整条失效**：
+  - 数值类属性（攻击力 / 生命上限 / 挖掘速度…）关闭后按 **0** 计 —— `PlayerStats#ensureCacheValid()` 构建数值缓存时跳过被关闭的属性，所以所有读 `getStatValue()` 的效果与属性修饰符（`AttributeHandler`）一并归零；
+  - 开关型功能依旧同时停用效果与指令（`isToggleActive()` 对关闭项返回 `false`）；
+  - **投入的点数与可用点数都不变**（`allocatedPoints` 原样保留），重新开启立刻恢复；
+  - 开关变化会**当场重算属性**（`AttributeHandler.applyAllAttributes`），不必等下一次加点或重登；其余按 tick 核对的效果最多 1 秒内收敛。
+  - 顺带：全局唯一按「等级」取量的效果是「自动修理」，已改用新增的 `PlayerStats#getEffectiveStatLevel()` —— 关闭 `repair_amount` 时退化为最小修理量。
+- **新增指令**（按玩家，与 Config 界面完全等价，不需要 OP）：
+
+  | 指令 | 作用 |
+  |---|---|
+  | `/infstats feature` 或 `/infstats feature list` | 列出当前已关闭的功能 |
+  | `/infstats feature <属性ID>` | 切换该功能（开 ↔ 关） |
+  | `/infstats feature <属性ID> on\|off` | 明确开启 / 关闭 |
+  | `/infstats feature all on\|off` | 全部内置属性一次性开启 / 关闭 |
+
+  - `<属性ID>` 支持 **Tab 补全**（87 条内置 + 外部发现的属性），未知 ID 会给出「可用 Tab 补全」的提示。
+- 界面浮窗里的说明同步改成「整条失效」并附上指令用法。
+- 版本号 `1.22.0 → 1.23.0`。
+
+## [1.22.0] - 2026-10-03
+
+### 🎛️ 新增「功能开关」：87 条内置属性可以逐条关掉（按玩家独立）
+
+- **入口**：暂停菜单 → 模组 → 选中本模组 → **Config** 按钮（走 Forge 的 `ConfigScreenHandler.ConfigScreenFactory` 扩展点；标题界面也能打开，但没有玩家时只能查看，界面会提示「进入世界后才能修改」）。
+- **关闭后的表现**：
+  - 属性面板**不再显示**该条目（收藏视图同样过滤），也无法继续加点 —— 服务端也会拒绝 `ModifyStatPacket` 的加点请求（返还点数仍允许，避免卡住已投入的点数）；
+  - 开关型功能的**效果与指令一并停用**：`isToggleActive()` 对被关闭的属性一律返回 `false`，因此所有开关效果、`/infstats craft|furnace|anvil|enderchest|smithing|wp|crossdim` 与面板里的 GUI 入口（`CraftingOpenPacket` 等）自动全部拦住，不需要在几十个使用点各写一遍判断；
+  - 面板页脚的对应入口（传送点 / 跨维度 / 工作台 / 熔炉 / 铁砧 / 末影箱 / 锻造台）一起隐藏并自动收拢排布。
+- **点数与效果**：已投入的点数**保留**，重新开启即恢复。因此这是一个**个人功能总闸**（隐藏 + 停用），不是销毁数据。
+  > 注：1.23.0 起语义升级为「关掉即整条失效」（数值按 0 计），并新增 `/infstats feature` 指令。
+- **按玩家存，不是全局配置**：开关集合存在 `PlayerStats` 里（NBT 落盘 + `SyncStatsPacket` 同步 + 死亡克隆），多人服务器里每个人各有自己的面板。
+- **界面**（新 `client/FeatureToggleScreen`）：分类筛选 + 搜索（属性名 / ID / 说明，装 JustEnoughCharacters 支持拼音）+ 滚动 + 行内一键切换 + 底栏「全部开启 / 全部关闭」（作用于当前筛选结果）+ 每行显示已投点数。视觉沿用 `EditorUi` 规范，与效果过滤器 / 物品编辑器一致。
+- 指令的拒绝提示会区分原因：被功能开关关掉时提示「『随身工作台』已在「功能开关」中关闭（模组列表 → 本模组 → Config）」，未加点时仍是原来的「未激活…」。
+- 协议版本 `10 → 11`（新增 `FeatureTogglePacket`），客户端与服务端版本不一致时会在连接阶段直接报错，而不是无声不同步。
+- 版本号 `1.21.1 → 1.22.0`。
+
+## [1.21.1] - 2026-10-03
+
+### 🧰 随身工作台界面重做：改用随身熔炉那套布局
+
+- **问题**：原布局把倍率 ± 按钮塞在 176 宽的方块界面右上角（x=158 处两个 16×16 小按钮），位置又窄又不显眼；实际渲染时整排按钮（含「成品去向」「优先级」）完全不可见。
+- **现在**：界面加宽到 **300 × 166**，左侧保留原版合成台槽位（3×3 合成格 + 结果槽 + 背包 + 快捷栏），右侧一整列功能按钮 —— 与随身熔炉同一列几何（起点 x=184、宽 106）：
+  - 倍率：`-` / `×N` / `+`（24 宽，与熔炉加速 ± 同款排布），下方一行「每级消耗 N 点」；
+  - 「成品去向：背包 / 存储空间」（106 宽，不再用 20 宽的「包」「储」缩写）；
+  - 「存储优先级」；
+  - 底部一行 JEI 提示（配方界面按 `+` 一键放入）。
+- **面板改为程序化绘制**：外框 / 白描边 / 底板 / 中缝分隔线 / 槽位全部自绘（合成箭头取自模组自带的合成台贴图），与随身熔炉完全一致 —— 不再贴原版 GUI 贴图，也就不会再因为贴图裁切或资源包替换而看不见内容。
+- **顺手加固**：`init()` 改为**先创建控件、再做** JEI 网络物品预加载，且预加载包了 `try/catch` —— 即使 JEI 缺失或网络未就绪，也不会让整列按钮消失。
+- **与熔炉一致的按钮状态**：`+` 在点数不足时置灰并提示「需要 N 点可用属性点」，`-` 在倍率为 1 时置灰；倍率与可升级状态都走容器数据同步（同随身熔炉 `canUpgrade` 的机制），倍率数值也改为读取同步值，显示与实际扣费口径一致。
+- 版本号 `1.21.0 → 1.21.1`。
+
+## [1.21.0] - 2026-10-03
+
+### 🐄 新增 2 个属性（内置属性 85 → 87）
+
+| 属性 | 分类 | 形式 | 说明 |
+|---|---|---|---|
+| `breed_no_cooldown` 繁殖无冷却 | 功能 | 开关（3 点） | 自己喂食繁殖出的动物不再进入 5 分钟冷却，可立刻再次繁殖 |
+| `instant_grow` 一键长大 | 功能 | 开关（2 点） | 手持该动物的饲料右键幼年动物，一次喂食即可长大 |
+
+- **`breed_no_cooldown`**（新增 `mixin/AnimalMixin`）：原版在 `Animal#spawnChildFromBreeding` 里把两只亲本的年龄写成 6000（5 分钟），而 `Animal#mobInteract` 要求年龄为 0 才能喂食进入恋爱状态 —— 这就是「冷却」。`BabyEntitySpawnEvent` 是在写年龄**之前**触发的，事件返回后原版照样写 6000，所以只能 Mixin：注入 `TAIL`（方法最后一个 return）把年龄改回 0。
+  - **按喂食者判定**：用 `Animal#getLoveCause()`（喂食时记录、`resetLove()` 不会清除），两只亲本各自检查「喂它的人」是否解锁，混养时不会互相蹭效果；
+  - **不干扰别人的拦截**：TAIL 只覆盖正常繁殖路径，若事件被其它模组取消（原版走早退分支）我们完全不插手。
+- **`instant_grow`**（`StatEventHandler#onEntityInteract`）：走 `PlayerInteractEvent.EntityInteract` —— 它在 `Player#interactOn` 里、原版 `mobInteract` **之前**触发且可取消，因此不会出现「原版先长 10%、我们再补满」的双重结算。判定为「目标是幼年 `Animal` 且手持物是它的饲料」，消耗 1 个后按剩余年龄一次性 `ageUp`（保留原版长大粒子），两端同步预测。
+
+### 🎛️ 存储优先级：按功能分开设置（各界面各一个入口）
+
+- **改动**：原先只有「自动入库」能调优先级，工作台 / 熔炉 / 成品仓统统走配置 `NetworkPriority.networkPriority`。现在**每个用到存储网络的功能各有一份独立优先级**（默认仍沿用配置，没调整过的功能行为与旧版完全一致）：
+
+  | 功能 | 入口 | 作用域键 |
+  |---|---|---|
+  | 自动入库 | 主面板「自动入库：…」按钮 | `auto_deposit` |
+  | 随身工作台（取料 / 补料 / 退回 / 成品入库） | 工作台界面右侧「优先级」 | `crafting` |
+  | 随身熔炉（抽矿物 / 抽燃料 / 成品入库） | 熔炉界面「网络」栏「优先级」 | `furnace` |
+  | 成品仓（出库到网络） | 成品仓界面右上角「优先级」 | `product_buffer` |
+
+- **界面**：4 个入口共用同一个 `client/NetworkPriorityScreen`（按作用域取标题与说明），逐行 **▲ / ▼** 只与相邻一位交换，「重置为默认」清空自定义、回落到配置顺序；行内标注该存储**是否已安装**。
+- **数据与同步**：`PlayerStats` 里单一的 `autoDepositPriority` 换成 `networkPriorities`（作用域 → 顺序表），NBT 键改为 `networkPriorities` —— **老存档的 `autoDepositPriority` 会在读取时自动迁移**成自动入库作用域，设置不丢；`SyncStatsPacket`/快照同步改为携带整张表。
+- **协议**：`SetDepositPriorityPacket` → `SetNetworkPriorityPacket`（多带一个作用域字段），`PROTOCOL_VERSION` `9 → 10`。
+- **说明**：`RequestNetworkItemsPacket`（网络物品列表，供 JEI 判断哪些配方能从网络取材）**不需要优先级** —— 它取的是所有可用网络的**并集**，顺序不影响结果，因此保持读配置顺序、也不给入口按钮。
+
+### 🎛️ 存储优先级改为独立界面（可逐个调整）
+
+- **改动**：原先靠面板那行按钮「点击 = 把队首移到末尾 / Shift+点击 = 把队尾移到队首」循环调整 —— 想排到目标顺序要点很多次，中途也看不出每一步是谁越过了谁。现在点击按钮打开新的 **`client/DepositPriorityScreen`**：
+  - 每行一个存储，右侧 **▲ / ▼** 只与相邻一位交换（一次一位，顺序一眼可见，边界按钮自动禁用）；
+  - 行内标注该存储**是否已安装**（`RSNetworkBridge#isRSLoaded` 等客户端查询），未安装的在浮窗里补一句「排在这里不会生效」；
+  - 底部「**重置为默认**」= 给服务端发空列表，`normalizeDepositOrder` 会按配置 `NetworkPriority.networkPriority` 补全成完整顺序；「完成」返回属性面板（沿用入库过滤界面的「返回父界面」模式），回来后按钮标签自动刷新。
+- **协议未变**：提交仍走既有 `SetDepositPriorityPacket`，服务端归一化与 `syncToClient` 逻辑复用 —— 没有新增数据包、协议版本不变。
+- **作用范围不变**：该顺序依旧只作用于「自动入库」的写入顺序（随身工作台 / 熔炉 / 成品仓继续按配置顺序），本次未做统一。
+- 语言文件新增 8 条界面键，并把主面板按钮的浮窗从「点击按钮：把队首存储移到末尾…」改成「点击打开优先级界面…」。
+
+### 🧹 属性面板：整理属性排列顺序
+
+- **面板顺序由 `StatType.registerAllStats()` 的数组顺序决定**（`StatsScreen` 先按 `StatCategory.values()` 分页，再按数组顺序列出，之后没有再做排序）。此前新属性一律就地追加，于是分类互相交错：`multi_shot`（攻击）被甩在 30 多条功能属性之后、`climb_speed` / `multi_jump`（机动）被夹在功能属性中间、功能分类本身也被拆成前后两段。
+- **现在的排列**：分类连续存放 + 同类按主题成组（仅调整顺序，不额外加注释）——
+  - 攻击：输出 → 暴击 → 穿透/击退 → 吸血反伤 → 处决真伤 → 范围 → 弓弩
+  - 防御：基础属性 → 受击反应（格挡 / 闪避 / 护盾 / 复活）→ 免疫
+  - 机动：移动 → 跳跃 → 跨越 → 飞行 → 攀爬 → 免摔
+  - 功能：收获掉落 → 拾取入库 → 生产 → 合成修理 → 使用辅助 → 战斗辅助 → 生存 → 时间 → 传送 → 随身 → 交易铁砧 → 联动
+- **条目本身一字未改**（数值、解锁点数、行为、注释全部原样搬运，仅调换位置）；README 的四类清单同步为同一顺序。
+- **无存档影响**：属性点数按 id 存储，这次只改排列，不涉及任何 id 的增删或改名。
+
+### 🗑️ 移除 `crit_projectile`（弹射物暴击）
+
+- **原因**：收益不明显 —— 弹射物本来就极少吃到满蓄力判定，独立掷暴击的体感提升有限，却要在伤害管线里长期多养一条分支。
+- **行为回退**：伤害管线恢复为**单一暴击分支**（近战与弹射物共用 `player.getAttackStrengthScale(0.5f) > 0.9f` 的蓄力判定 → `AttackHandler.calculateCritMultiplier`）；同时删掉属性定义、界面图标与中英文本地化键。`multi_shot`（多重射击）不受影响。
+- **老存档不亏点数**：`crit_projectile` 已加入 `PlayerStats#LEGACY_REMOVED_STATS`（由原 `LEGACY_MAGIC_STATS` 改名并扩充）—— 属性定义删掉后 `StatType.fromId` 会返回 null、条目会被静默丢弃，所以必须在读 NBT 时显式按绝对值退还到可用点数，否则投过点的玩家会凭空少 5 点。
+- 内置属性 `87 → 86`（攻击 `18 → 17`）。
+
+### 🩹 修复：交易即刻补货会把村民的「等级 + 经验进度条」抹掉
+
+- **现象**：开着「交易即刻补货」与村民交易时，界面标题里的「等级 N」和经验进度条消失（关掉重开界面又出现）。
+- **原因**：补货后重推报价时用了菜单上的同名 getter —— `MerchantMenu#getTraderLevel()`、`showProgressBar()`、`canRestock()` 这三项**只在客户端**由 `ClientPacketListener#handleMerchantOffers` 写入（`setMerchantLevel` / `setShowProgressBar` / `setCanRestock`），服务端恒为 `0 / false / false`。于是下发的包把客户端的 `merchantLevel` 覆盖成 0、进度条开关覆盖成 false，`MerchantScreen#renderLabels` 的 `i > 0 && showProgressBar()` 判定直接不成立。
+- **修复**：补货重推时改用**商人实体**的值，与原版 `Merchant#openTradingScreen` 完全对齐 —— 等级取 `Villager#getVillagerData().getLevel()`（流浪商人固定 1），经验取 `Merchant#getVillagerXp()`，进度条与补货开关取 `Merchant#showProgressBar()` / `Merchant#canRestock()`（后者对流浪商人是 false，之前硬编码 true 也会让"可补货"提示出现得不对）。
+- **顺带**：新增 `mixin/MerchantMenuAccessor` 暴露 `MerchantMenu#trader`（private final），服务端才能拿到实体。
+- **核查结论**：村民的经验值本身没有丢（`uses` 重置与 `MerchantOffer#rewardExp` 无关，`increaseUses` 只做 `++uses`），受影响的只是客户端的等级 / 进度条显示。
+
+### 💰 村民交易折扣：改为与声望 / 英雄效果折扣叠加
+
+- **改动**：`trade_discount` 原先按「取更优惠者」写入 `specialPriceDiff`（只保证至少减这么多，不与声望 / 英雄效果叠加），现在改为**叠加** —— 原版在 `Villager#startTrading` 里按声望（`-floor(声望 × priceMultiplier)`）与英雄效果（`-(30% + 6.25% × 等级) × 基础数量`）`addToSpecialPriceDiff`，之后本模组再把折扣加在同一份 diff 上。
+- **为什么不能无脑叠加**：`MerchantOffer#specialPriceDiff` **会随商人一起存档**（`write()` 里的 `specialPrice` 字段），而只有村民会在 `stopTrading → resetSpecialPrices()` 里清零，流浪商人（`AbstractVillager#stopTrading` 只解除交易玩家）不会 —— 每开一次界面加一次，价格会一路跌到 1 并被永久保存。
+- **做法**（`StatEventHandler#applyTradeDiscount` + `TRADE_DISCOUNT_STATE` 记账）：每个报价记下「本模组写进去的折扣」与「写入后的 diff」，每次打开界面时先还原出原版此刻的价值：
+  - 值没变（流浪商人）或变得更便宜（原版又在我们的基础上加了折扣）→ 减掉我们的贡献；
+  - 变贵了（村民关界面时清零并按声望重算）→ 当前值就是原版值。
+  反复开关界面价格稳定；玩家把点数退掉（`rate == 0`）后也会把写进流浪商人报价里的折扣收回来。
+
+### ⚒️ 随身铁砧：取消「过于昂贵」门槛，经验消耗封顶 50 级
+
+- **效果**：随身铁砧（`portable_anvil`）不再受原版「≥40 级 = 过于昂贵」限制，任何操作都能完成；**经验最多只扣 50 级**，界面显示与实际扣费都是封顶后的值。
+- **为什么事件做不到**：`AnvilUpdateEvent#setCost` 在不设 `output` 时会被 `ForgeHooks.onAnvilChange` 直接忽略（只有 `e.getOutput()` 非空才会 `setMaximumCost`），而且事件在附魔消耗计算**之前**触发，参数只是基础修理费；「过于昂贵」的门槛 40 又是 `AnvilMenu#createResult` 里的硬编码常量，没有任何事件可拦截。因此这一版引入 **Mixin**。
+- **实现**：新增 `mixin/AnvilMenuMixin`
+  - `@ModifyArg` 挂在 `createResult` 里最终写消耗的 `DataSlot.set(j + i)`（该方法内第 6 次 `DataSlot.set`，序号 5）：先施加 `anvil_cost` 减免，再对随身铁砧取 `min(50)`；
+  - `@ModifyConstant` 把门槛常量 40 在随身铁砧上换成 `Integer.MAX_VALUE`（`createResult` 内字面量 40 共 3 处：栈堆叠 `i = 40`、改名钳制、过于昂贵门槛，取最后一处，序号 2）。
+  - 两处序号都用 `javap` 反编译字节码核对过（`bipush 40` × 3、`DataSlot.set` × 7），不靠猜。
+  - 客户端 `mixin/AnvilScreenMixin` 同步放开界面文案（`renderLabels` 内唯一的 40），否则会出现「界面写着过于昂贵、其实能点」。
+- **如何识别随身铁砧**：新增 `PortableAnvilMenu` + `ModMenuTypes.PORTABLE_ANVIL_MENU`，客户端注册原版 `AnvilScreen`。客户端菜单是**由菜单类型工厂创建**的，沿用 `MenuType.ANVIL` 时客户端拿到的是普通 `AnvilMenu`，无从判断来源；改独立类型后两端都能用 `instanceof` 精确识别（`getType()` 需覆写，否则 `NetworkHooks.openScreen` 会把父类构造器写死的 `MenuType.ANVIL` 下发下去）。
+- **顺带修复**：`anvil_cost`（铁砧经验减免）此前**完全不生效**，原因就是上面那条 `setCost` 语义坑。现在由 Mixin 直接改写最终消耗，且减免在门槛判定之前生效（保持「同时降低过于昂贵门槛」的原有承诺），界面与实际扣费必然一致。已删除失效的 `StatEventHandler#onAnvilUpdate`。
+
+### 🩹 修复：与 Apotheosis 的 Mixin 撞车导致启动崩溃
+
+- **现象**：装了 Apotheosis 的整合包启动即崩 —— `latest.log` 里先是 `@ModifyConstant conflict. Skipping infinitestats.mixins.json:AnvilMenuMixin`，紧接着 `Critical injection failure: Constant modifier method infinitestats$liftPortableGate(I)I ... (0/1) succeeded`。
+- **原因**：Apotheosis 的 `apotheosis.mixins.json:AnvilMenuMixin#apoth_removeLevelCap` 与我一样是在 `AnvilMenu#createResult` 里**同一个常量 40 上做 `@ModifyConstant`**（它也在去掉「过于昂贵」上限）。同优先级（1000）下 Mixin 判为冲突并跳过后者的注入，而配置里的 `defaultRequire = 1` 把「0 个注入点成功」升级成致命错误；又因为 Apotheosis 的 coremod 在启动阶段就会触达 `AnvilMenu`，所以是**启动崩**而不是开铁砧才崩。
+- **修复**：门槛那处改用 `@Redirect` 拦门槛比较里的 `DataSlot.get()`（`createResult` 内第 2 次，已用 `javap` 核对序号），随身铁砧返回 `Integer.MIN_VALUE` —— 注入目标与任何 `@ModifyConstant` 都不同，可与 Apotheosis 共存；并且无论门槛被原版还是被别的模组改成多少，比较恒为 false。消耗封顶 / 显示 / 扣费逻辑不变。
+- **顺带加固**：客户端 `AnvilScreenMixin` 的 `@ModifyConstant` 加了 `require = 0` —— 它只影响界面文案，万一将来也撞车就按 WARN 跳过（最坏是继续显示「过于昂贵」），不再让游戏崩在启动阶段。
+
+### 🔧 构建
+
+- 接入 **MixinGradle 0.7.38**：`id 'org.spongepowered.mixin'` + `annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'`，`infinitestats.mixins.json` 与 `infinitestats.refmap.json` 会自动打进 jar（清单已含 `MixinConfigs`）。
+- dev 运行（`runClient` / `runServer` / `runGameTestServer`）追加 `mixin.env.remapRefMap` 与 `refMapRemappingFile`，否则 refmap 里的 SRG 名在开发环境对不上号。
+- 版本号 `1.20.1 → 1.21.0`。
+
+## [1.20.1] - 2026-10-03
+
+### 🔍 修复：Connector 系整合包里「距离」属性完全失效
+
+- **现象**：装了 `reach-entity-attributes` 的整合包里，`reach` / `entity_reach` 加多少点都没有任何变化。
+- **原因**：这两个属性原本只写 Forge 的 `forge:block_reach` / `forge:entity_reach`。而 Connector 系整合包（Sinytra Connector + `ConnectorExtras`）会用 **jarJar** 塞进 Fabric 侧的 `reach-entity-attributes`（modId `reach_entity_attributes`，属性为 `reach-entity-attributes:reach` / `reach-entity-attributes:attack_range`），它的 mixin 接管了原版交互距离与攻击距离的读取，Forge 那对属性加了也没人消费。
+- **排查要点**：该库**不是 `mods/` 里的独立 jar**，而是嵌套在 `ConnectorExtras-<版本>.jar` 的 `META-INF/jarjar/` 内 —— 按文件名永远搜不到，但 Forge 仍把它当作独立模组加载（因此游戏内模组列表里能看到）。
+- **修复**：
+  - `StatType.Builder#attribute` 支持镜像写入：`attribute(String 主属性, String... 镜像属性)`；
+  - `AttributeHandler` 改为遍历 `StatType#resolveAttributes()`（主属性 + 镜像的注册名 → Attribute），把同一份点数写进所有**已注册**的目标属性，模组不存在时自动跳过、不报错；
+  - `reach` → `forge:block_reach` + `reach-entity-attributes:reach`；`entity_reach` → `forge:entity_reach` + `reach-entity-attributes:attack_range`。
+- **兼容性**：
+  - 主属性沿用原 UUID，旧存档升级后不会残留孤儿修改器；镜像属性使用 `statId@属性名` 派生的新 UUID。
+  - 镜像属性一并加入 `COVERED_ATTRIBUTES`，不会再被动态发现成两条独立的外部属性；若此前把点数投在自动发现的 `attr.reach-entity-attributes.*` 上，这些条目会从面板消失（点数保留但不再生效），可用面板的「**全部重置**」退还。
+- 版本号 `1.20.0 → 1.20.1`。
+
+## [1.20.0] - 2026-10-03
+
+### ✨ 新增 9 个属性（内置属性 76 → 85）
+
+| 属性 | 分类 | 形式 | 说明 |
+|---|---|---|---|
+| `crit_projectile` 弹射物暴击 | 攻击 | 开关（5 点） | 弹射物独立掷暴击，不再受近战蓄力限制 |
+| `multi_shot` 多重射击 | 攻击 | 每点 +1 支（上限 8） | 每次射击多射出 N 支箭 |
+| `climb_speed` 爬梯加速 | 机动 | 每点 +20% | 梯子 / 藤蔓 / 脚手架上升更快 |
+| `multi_jump` N 段跳 | 机动 | 每点 +1 段（上限 10） | 空中可再跳 N 次 |
+| `trade_restock` 交易即刻补货 | 功能 | 开关（3 点） | 交易后立刻补货，可连续交易 |
+| `anvil_cost` 铁砧经验减免 | 功能 | 每点 -5%（上限 -90%） | 铁砧等级消耗降低 |
+| `keep_xp` 死亡不掉经验 | 功能 | 开关（3 点） | 保留经验等级与经验条 |
+| `portable_ender_chest` 随身末影箱 | 功能 | 开关（1 点） | 随时打开自己的末影箱 |
+| `portable_smithing` 随身锻造台 | 功能 | 开关（1 点） | 随时打开锻造台 |
+
+### 🏹 弓弩流派补全：弹射物暴击 + 多重射击
+
+- **`crit_projectile`**：伤害管线里的暴击原本是一条共享路径 —— `isFullAttack = player.getAttackStrengthScale(0.5f) > 0.9f` 成立时，近战与弹射物共用一个 `1.5 + crit_damage` 倍率。解锁本属性后，**弹射物走独立分支**：用同一套 `crit_chance` / `crit_damage` 自己掷一次，且**不再依赖蓄力**；未解锁时完全维持原行为，老玩家不会被削弱。
+- **`multi_shot`**：在既有的 `EntityJoinLevelEvent`（原本负责收紧虚拟弩箭的拾取权限）里挂钩 ——
+  - 用 `arrow.saveWithoutId(tag)` + 补 `id` 标签 + `EntityType.create(tag, level)` **复制首发箭矢**，而不是自己 `new Arrow`，因此光谱箭、模组自定义箭矢都能被正确复制；
+  - 原版箭矢 NBT **不保存发射者**，所以复制后必须手动 `Projectile#setOwner`，否则伤害无法归因到玩家，`life_steal` / `projectile_damage` 等一整套攻击加成都会失效；
+  - 复制体一律 `Pickup.CREATIVE_ONLY`（它们没消耗背包资源，落地被捡回＝凭空刷箭），并写入实体持久化 NBT 标记避免复制体再触发一次复制；
+  - 用「玩家 UUID → 本 tick 是否已补箭」的表做防重：原版多重射击一次会生成 3 支箭，只有首发那一支负责补箭，不会 3 倍膨胀。
+
+### 🪜 机动补全：N 段跳 + 爬梯加速（客户端实现）
+
+- **为什么放在客户端**：玩家的移动是客户端权威的（服务端只做位置校验），而这两条都没有可用的属性通道 —— 服务端改 `setDeltaMovement` 只会改到服务端自己那份速度，玩家本人感觉不到。所以实现在 `ClientEventHandler#onClientTick`，与已有 `syncStepHeight`（抬腿高度）同一套路数。
+- **`multi_jump`**：取跳跃键的**按下边沿**（按住不放不算），并额外要求「离地 ≥ 6 tick」——否则从地面起跳的那一次按击会被同一次边沿误判成空中跳，白白吃掉一段。落地 / 入水 / 上梯子清零；触发时补云雾粒子与 `SLIME_JUMP_SMALL` 音效，并清零 `fallDistance`，避免"空中跳一下反而摔死"。
+- **`climb_speed`**：原版爬梯的竖直速度写死为 `0.2`，这里只在 `0.02 < y ≤ 0.21` 的窗口内按比例放大，因此不会干扰跳跃 / 漂浮等其它竖直速度来源。
+
+### 💰 三项"省钱保命"属性
+
+- **`anvil_cost`**：接 Forge 的 `AnvilUpdateEvent`（由 `AnvilMenu#createResult` 触发）改 `cost`。之所以能保证"界面显示 = 实际扣费"，是因为客户端显示的是服务端通过菜单 data 槽同步下来的真实消耗。
+- **`trade_restock`**：玩家 tick 里检测 `containerMenu instanceof MerchantMenu`，把 `uses > 0` 的报价 `resetUses()` 后重新 `sendMerchantOffers(...)` 推给客户端（否则界面仍显示售罄）。**刻意不走 `Villager#restock()`**：那条路会顺手 `updateDemand()`，反复调用会把需求加价越补越贵。
+- **`keep_xp`**：Forge 的 `LivingExperienceDropEvent` 把掉落量改成 0（经验球不生成），等级/经验条留存在老实体上，由 `PlayerEvent.Clone` 原样搬给新实体。刚好补上 `keep_inventory` 留下的"只保物品、经验照扣"缺口。
+
+### 🎒 随身末影箱 / 随身锻造台
+
+- 复用 `PortableAnvil` 的同一套思路（`SimpleMenuProvider` + 原版菜单，客户端自动套用原版界面）：末影箱用 `ChestMenu.threeRows(id, inv, player.getEnderChestInventory())`（与原版末影箱共用同一份库存），锻造台用 `SmithingMenu(id, inv, ContainerLevelAccess.NULL)`（`NULL` 让 `isValidBlock` 的方块校验失效，从而不依赖世界里的锻造台）。
+- 新增 `crafting/PortableGuis`；入口为属性面板页脚新增的「末影箱」/「锻造台」两个按钮（放在上次移除「传送点管理」后空出来的位置），以及新增命令 `/infstats enderchest` / `/infstats smithing`。
+
+### 🔢 其它
+
+- 协议版本 `8 → 9`（新增 `EnderChestOpenPacket` / `SmithingOpenPacket`）。
+- 版本号 `1.19.1 → 1.20.0`；README 同步（属性总数、四类属性清单、命令表、新增功能说明章节）；中英文语言文件补齐 18 条属性键与 4 条界面/提示键。
+
+## [1.19.1] - 2026-10-02
+
+### 🧹 属性面板按钮整理
+
+- **移除重复的「传送点管理」按钮**：页脚控制行里的那个按钮（`screen.infinitestats.waypoint`）与页脚导航行的「传送」（`gui.infinitestats.nav.waypoint`）功能完全重复，现只保留导航行里的入口；`Y` 键与 `/infstats wp` 命令不受影响。
+- **去掉重名的「过滤」按钮**：1.19.0 新增的自动入库过滤入口原本也叫「过滤」，与页脚导航行里已有的**效果过滤**按钮（`nav.filter` → `DebuffFilterScreen`）重名，容易点错。现改名为「**入库过滤**」（英文 `Deposit Filter`），并把名单明细从按钮文字移到浮窗（写明当前模式与名单条目数），避免按钮文字过长在英文环境下溢出。
+- **宽度重新分配**：搜索行内自动入库优先级按钮 `200 → 176`、入库过滤按钮 `72 → 96`，中文与英文标签都能完整显示。
+- **影响范围**：`client/StatsScreen`（`addResetButtons` 移除 wpBtn、`repositionSearch` 调整宽度、`updateDepositLabel` 改为动态浮窗）；中英文语言文件更新 `gui.infinitestats.deposit.filter` / `filter_tooltip`，新增 `deposit.mode_whitelist` / `mode_blacklist`，移除已无引用的 `deposit.filter_on`。
+
+## [1.19.0] - 2026-10-02
+
+### 🎯 「自动入库」支持按物品白 / 黑名单过滤
+
+- **效果**：自动入库不再只能「全存」或「全不存」，而是可以精确指定哪些物品才进存储网络。
+  - **白名单** = 只入库名单内的物品；**黑名单** = 名单内的物品不入库；
+  - **名单为空时不做任何限制** —— 若把「白名单为空」理解为「什么都不入库」，玩家一键清空列表就会彻底失去自动入库能力，属易误操作的高代价行为，因此统一按放行处理。
+- **入口在主面板**：自动入库优先级按钮右侧新增「过滤」按钮（有名单时显示为「过滤(N)」），点击打开专属过滤界面；未解锁 `auto_deposit` 时会提示先加点。
+- **过滤界面（新增 `client/AutoDepositFilterScreen`）**：沿用 `EditorUi` 视觉规范，与物品编辑器 / 效果过滤保持一致：
+  - 列表列出**全部注册物品**（自动跳过空气），按名称排序，每行带物品图标、名称与物品 ID；
+  - **点击行即加入 / 移出名单**，在名单内的行有绿色指示条 + 绿色名称；
+  - 搜索框支持物品名与物品 ID（装了 JustEnoughCharacters 时走拼音匹配，与模组其它搜索一致）；
+  - 底栏「**手持加入**」一键把主手物品加入 / 移出名单，省去搜索；「**只看已选**」把列表收窄到已选条目，方便核对与批量移除；「清空」一键清空；
+  - 顶部实时显示当前模式语义与「已选 N 项」；关闭界面用 `onClose` 返回属性面板（沿用物品编辑器的「返回父界面」模式）。
+- **数据与同步**：名单属于**玩家个人数据**，存在 `PlayerStats.autoDepositFilterList` + `autoDepositUseWhitelist`，随 NBT 落盘、随 `copyFrom` 过继、随 `SyncStatsPacket` 同步；新增 `UpdateDepositFilterPacket`（客户端 → 服务端），服务端用 `normalizeFilterIds` 校验（剔除非法 `ResourceLocation`、上限 512 条），防止客户端注入垃圾数据。
+- **过滤判定**：`PlayerStats.allowsAutoDeposit(itemId)` 用一句 `whitelist == listed` 覆盖四种组合，且列表为空直接放行；`AutoDeposit.deposit` 里把物品 ID 提前取出，顺便复用于服务端配置黑名单判断，避免重复查注册表。
+- **与服务端配置的分工**：配置项 `AutoDeposit.autoDepositBlacklist` 是**服务器级**约束（对所有玩家生效、支持 `#物品标签`），玩家界面维护的是**个人级**名单，两者同时生效。
+
+### 🔢 其它
+
+- 协议版本 `7 → 8`（`SyncStatsPacket` 增加过滤模式与名单字段）。
+- 版本号 `1.18.0 → 1.19.0`；中英文语言文件补齐 23 条界面键；README 同步（过滤用法、配置项说明、核心特性）。
+
+## [1.18.0] - 2026-10-02
+
+### 🎒 新增「自动入库」（功能分类，3 点解锁）
+
+- **效果**：解锁后每隔一段时间扫描一次背包，把物品自动写入已连接的存储网络（RS / AE2 / 汤姆存储 / Sophisticated Backpacks），实现「边打怪边自动整理背包」。
+- **存储优先级由玩家决定**：主面板搜索框右侧新增「自动入库：RS › AE2 › …」按钮，直接显示当前写入顺序；
+  - **点击** = 把队首存储移到末尾；**Shift + 点击** = 把队尾移到队首。
+  - 顺序存储在玩家自己的属性数据里（`PlayerStats.autoDepositPriority`），随存档同步、跟人走，不是全局配置。
+  - 客户端只负责算新顺序并发送，服务端用 `normalizeDepositOrder` 做**归一化校验**（只接受 RS/AE2/TOMS/BACKPACK/BD、去重、按配置顺序补齐缺失项），保证两端对顺序的理解不会分叉。
+- **写入顺序即回落顺序**：`NetworkIO` 新增 `getNetworks(player, order)` 重载，`insert` 会按给定顺序逐个网络尝试，装不下的自动进入下一个网络。
+- **安全保护（重点）**：
+  - 存储**无线终端**（RS 的 `findWirelessTerminals`、AE2 的 `findWirelessTerminal`）与 **Sophisticated Backpacks 背包本身**永不入库 —— 否则一次扫描就会把「连网凭证」自己存进网络，玩家当场失联；汤姆存储的无线终端按命名空间 + 路径识别保护。
+  - 新增配置 `AutoDeposit.autoDepositBlacklist`（物品 ID，`#` 前缀表示物品标签）兜底。
+  - 玩家**正在和别的容器交互时**（箱子 / 交易 / 随身工作台）跳过本轮；没有可用存储网络时直接跳过。
+- **默认不碰快捷栏**：`autoDepositKeepHotbar = true` 时只扫描主背包 27 格，随身工具/武器不会被吸走；设为 `false` 则除「当前手持那一格」外全部入库。
+- **性能**：扫描间隔由 `AutoDeposit.autoDepositInterval` 控制（默认 20 tick = 1 秒），异常隔离在独立 try 中，不会影响其它功能处理器。
+- **实现位置**：新增 `compat/AutoDeposit`；`stats/StatType`、`stats/PlayerStats`、`network/SyncStatsPacket`（同步优先级）、`network/NetworkHandler`（新增 `SetDepositPriorityPacket`，协议版本 6 → 7）、`handler/UtilityHandler`（tick 调度）、`client/StatsScreen`（优先级按钮）。
+
+### 🛡️ 新增「死亡不掉落」（功能分类，5 点解锁）
+
+- **效果**：解锁后死亡时**保留主背包 36 格 + 盔甲 4 格 + 副手 1 格**，即使服务器未开启 `keepInventory` 游戏规则也不会掉落任何物品。
+- **为什么不能用现成事件**：原版的掉落发生在 `Player.dropAllDeathLoot → Inventory.dropAll()`，这一段**没有任何可拦截的 Forge 事件**（`LivingDropsEvent` 只覆盖战利品表掉落，不覆盖玩家背包）。
+- **做法**：在 `LivingDeathEvent`（LOWEST）里把三个 `NonNullList`（`items` / `armor` / `offhand`）整体移入 `PlayerStats.pendingKeptInventory` 并清空原列表 —— 原版随后执行的 `dropAll()` 面对空背包自然什么都掉不出来；重生时在 `PlayerEvent.Clone` 里原样归还。
+- **两个必须处理的坑**：
+  1. 死亡事件对玩家会**触发两次**（`Player.die` 与 `super.die()` 各调一次 `ForgeHooks.onLivingDeath`），因此用 `hasPendingKeptInventory()` 做幂等保护，避免第二轮用空背包覆盖暂存；
+  2. 必须挂在 **LOWEST**：自动复活（HIGHEST）会在自己那一轮 `setCanceled(true)`，取消后不应清空背包，所以要先判 `event.isCanceled()`。
+- **不丢档**：暂存物品随 `PlayerStats` 写入玩家 NBT，因此在死亡界面断线、服务器重启（只要玩家数据落盘）都能找回；暂存列表也随 `copyFrom` 一起过继给重生后的新玩家实体。
+- **已知行为**：**经验值仍按原版规则掉落与扣除**（该属性只保护物品）；带「消失诅咒」的物品不会被销毁（清空发生在原版 `destroyVanishingCursedItems` 之前），相当于一并保住。
+- **实现位置**：`event/StatEventHandler` 新增 `onLivingDeathKeepInventory` / `restoreKeptInventory` 并扩展 `onPlayerClone`；`stats/PlayerStats` 新增暂存字段与 NBT（反）序列化。
+
+### 💰 新增「村民交易折扣」（功能分类，每点 -1%）
+
+- **效果**：每点使村民 / 流浪商人的交易价格降低 1%，最高 90%。
+- **落点**：价格由 `MerchantOffer.getCostA()` 现算（基础数量 + 需求加价 + `specialPriceDiff`），而 `Merchant#openTradingScreen` 是**先 `openMenu`（`PlayerContainerEvent.Open` 在此触发）再发送交易列表**，所以在这个事件里改价，客户端收到的就是折后价，服务端扣物品走同一份 `offers`，不会出现价格不一致。
+- **防刷价**：折扣按「取更优惠者」写入（`if (getSpecialPriceDiff() > -discount) setSpecialPriceDiff(-discount)`），**只保证至少减这么多、不累加** —— 村民在 `stopTrading` 会重置 `specialPriceDiff`，但流浪商人不会，累加会让价格一路跌到 1。
+- **实现位置**：`event/StatEventHandler#onContainerOpen`。
+
+### 🔢 其它
+
+- 协议版本 `6 → 7`（`SyncStatsPacket` 增加自动入库优先级字段，两端版本不一致会被 Forge 直接拒绝连接，属预期行为）。
+- 版本号 `1.17.2 → 1.18.0`；README 同步（属性总数 73 → 76、新增配置项、新增功能说明章节）；中英文语言文件补齐 6 条属性键与 12 条界面键。
+
 ## [1.17.2] - 2026-10-01
 
 ### 🌏 补充外部属性中文译文（+22 条）

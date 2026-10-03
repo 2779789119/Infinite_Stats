@@ -26,7 +26,7 @@ public final class PortableAnvil {
     /** 为玩家打开随身铁砧界面（调用方需先校验属性开关）。 */
     public static void open(ServerPlayer player) {
         NetworkHooks.openScreen(player, new SimpleMenuProvider(
-                (windowId, inv, p) -> new AnvilMenu(windowId, inv, ContainerLevelAccess.NULL),
+                (windowId, inv, p) -> new PortableAnvilMenu(windowId, inv),
                 Component.translatable("container.repair")));
     }
 }

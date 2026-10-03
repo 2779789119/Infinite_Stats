@@ -1,6 +1,7 @@
 package com.infinitestats.handler;
 
 import com.infinitestats.Config;
+import com.infinitestats.mixin.MerchantMenuAccessor;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.StatCategory;
 import com.infinitestats.stats.StatType;
@@ -14,6 +15,7 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.food.FoodData;
 import net.minecraft.world.item.ItemStack;
@@ -21,6 +23,10 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.inventory.MerchantMenu;
+import net.minecraft.world.item.trading.Merchant;
+import net.minecraft.world.item.trading.MerchantOffer;
+import net.minecraft.world.item.trading.MerchantOffers;
 import net.minecraft.world.item.crafting.AbstractCookingRecipe;
 import net.minecraft.world.item.crafting.RecipeManager;
 import net.minecraft.world.item.crafting.RecipeType;
@@ -79,6 +85,25 @@ public class UtilityHandler implements StatEffectHandler {
             applyAutoRepair(player, stats);
         }
 
+        // 自动入库：按配置间隔扫描背包，把物品写入存储网络（隔离异常，避免影响其它功能）
+        int depositInterval = Math.max(1, Config.AUTO_DEPOSIT_INTERVAL.get());
+        if (tickCount % depositInterval == 0 && stats.isToggleActive("auto_deposit")) {
+            try {
+                com.infinitestats.compat.AutoDeposit.deposit(player, stats);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }
+
+        // 交易即刻补货：正在与村民交易时把已消耗的条目立刻补满
+        if (tickCount % 5 == 0 && stats.isToggleActive("trade_restock")) {
+            try {
+                restockTrade(player);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }
+
         // 火焰免疫时清除火焰
         if (stats.isToggleActive("fire_immunity")) {
             player.clearFire();
@@ -106,6 +131,48 @@ public class UtilityHandler implements StatEffectHandler {
     @Override
     public boolean isEnabled() {
         return true;
+    }
+
+    /**
+     * 交易即刻补货：玩家正在与村民 / 流浪商人交易时，把已消耗过的报价条目立刻重置为可交易，
+     * 并把新的报价列表重新推给客户端（否则界面仍显示成"已售罄"）。
+     * <p>
+     * 刻意不走 {@code Villager#restock()}：那条路会顺手 {@code updateDemand()}，
+     * 反复调用会把需求加价一路顶上去、越补越贵；这里只重置 {@code uses}，价格保持不变。
+     * <p>
+     * <b>重推报价必须带商人实体侧的等级 / 经验</b>：{@code MerchantMenu#getTraderLevel()}、
+     * {@code showProgressBar()}、{@code canRestock()} 这三个都是**客户端**由
+     * {@code ClientPacketListener#handleMerchantOffers} 写入的字段，服务端恒为 0 / false。
+     * 早先照抄菜单 getter，等于把客户端的「等级 N」标题与经验进度条一起抹掉（"村民经验等级消失"的成因）。
+     * 原版 {@code Merchant#openTradingScreen} 用的也正是实体侧的值，这里与之对齐。
+     */
+    private static void restockTrade(ServerPlayer player) {
+        if (!(player.containerMenu instanceof MerchantMenu menu)) return;
+
+        MerchantOffers offers = menu.getOffers();
+        if (offers == null || offers.isEmpty()) return;
+
+        boolean changed = false;
+        for (int i = 0; i < offers.size(); i++) {
+            MerchantOffer offer = offers.get(i);
+            if (offer.getUses() > 0) {
+                offer.resetUses();
+                changed = true;
+            }
+        }
+        if (!changed) return;
+
+        Merchant trader = ((MerchantMenuAccessor) menu).infinitestats$getTrader();
+        player.sendMerchantOffers(menu.containerId, offers, traderLevel(trader), trader.getVillagerXp(),
+                trader.showProgressBar(), trader.canRestock());
+    }
+
+    /**
+     * 原版 {@code Merchant#openTradingScreen} 下发的等级：村民取职业等级，流浪商人固定为 1
+     * （{@code WanderingTrader} 的 {@code showProgressBar()} 为 false，等级本身不显示）。
+     */
+    private static int traderLevel(Merchant trader) {
+        return trader instanceof Villager villager ? villager.getVillagerData().getLevel() : 1;
     }
 
     /**
@@ -342,7 +409,8 @@ public class UtilityHandler implements StatEffectHandler {
     private void applyAutoRepair(ServerPlayer player, PlayerStats stats) {
         if (!stats.isToggleActive("auto_repair")) return;
 
-        long repairAmount = stats.getStatLevel(StatType.fromId("repair_amount"));
+        // 用「有效点数」：repair_amount 被「功能开关」关闭时按 0 计（退化为最小修理量 1）
+        long repairAmount = stats.getEffectiveStatLevel("repair_amount");
         if (repairAmount <= 0) repairAmount = 1;
 
         // 修理所有物品栏（主物品栏 + 盔甲 + 副手 + Curios饰品）

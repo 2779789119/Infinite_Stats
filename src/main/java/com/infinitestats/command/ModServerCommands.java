@@ -1,17 +1,26 @@
 package com.infinitestats.command;
 
+import com.infinitestats.Config;
 import com.infinitestats.InfiniteStats;
 import com.infinitestats.crafting.PortableAnvil;
 import com.infinitestats.crafting.PortableCraftingMenu;
+import com.infinitestats.crafting.PortableGuis;
 import com.infinitestats.furnace.PortableFurnaceMenu;
+import com.infinitestats.handler.AttributeHandler;
+import com.infinitestats.network.NetworkHandler;
+import com.infinitestats.stats.FeatureDisableMode;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
+import com.infinitestats.stats.StatType;
 import com.infinitestats.stats.Waypoint;
 import com.infinitestats.util.TeleportUtil;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
@@ -21,6 +30,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.MinecraftServer;
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import net.minecraft.world.MenuProvider;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
@@ -63,6 +73,36 @@ public final class ModServerCommands {
                                 .executes(ModServerCommands::openFurnace))
                         .then(Commands.literal("anvil")
                                 .executes(ModServerCommands::openAnvil))
+                        .then(Commands.literal("enderchest")
+                                .executes(ModServerCommands::openEnderChest))
+                        .then(Commands.literal("smithing")
+                                .executes(ModServerCommands::openSmithing))
+                        // 功能开关（按玩家）：/infstats feature [id] [on|off]
+                        // 给整合包作者用的：开局默认禁用由配置 disabledStats 决定，做任务后用指令逐步开放；
+                        // 玩家没有界面可自行开关，指令一律要求权限等级 2（OP），普通玩家连子命令都看不到。
+                        .then(Commands.literal("feature")
+                                .requires(source -> source.hasPermission(2))
+                                .executes(ModServerCommands::featureList)
+                                .then(Commands.literal("list")
+                                        .executes(ModServerCommands::featureList))
+                                .then(Commands.literal("all")
+                                        .then(Commands.literal("on")
+                                                .executes(ctx -> featureAll(ctx, false)))
+                                        .then(Commands.literal("off")
+                                                .executes(ctx -> featureAll(ctx, true))))
+                                .then(Commands.literal("mode")
+                                        .executes(ModServerCommands::featureModeShow)
+                                        .then(Commands.argument("mode", StringArgumentType.word())
+                                                .suggests((ctx, b) -> SharedSuggestionProvider.suggest(
+                                                        List.of("keep", "refund", "hide"), b))
+                                                .executes(ModServerCommands::featureModeSet)))
+                                .then(Commands.argument("id", StringArgumentType.word())
+                                        .suggests(ModServerCommands::suggestFeatureIds)
+                                        .executes(ModServerCommands::featureToggle)
+                                        .then(Commands.literal("on")
+                                                .executes(ctx -> featureSet(ctx, false)))
+                                        .then(Commands.literal("off")
+                                                .executes(ctx -> featureSet(ctx, true)))))
         );
     }
 
@@ -87,7 +127,8 @@ public final class ModServerCommands {
 
         PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
         if (stats == null || !stats.isToggleActive("cross_dimension_teleport")) {
-            source.sendFailure(Component.literal("未激活『跨维度传送』属性，无法跨维度传送"));
+            source.sendFailure(featureDisabledReason(stats, "cross_dimension_teleport",
+                    "跨维度传送", "未激活『跨维度传送』属性，无法跨维度传送"));
             return 0;
         }
 
@@ -163,7 +204,8 @@ public final class ModServerCommands {
         String name = StringArgumentType.getString(ctx, "name");
         PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
         if (stats == null || !stats.isToggleActive("fixed_point_teleport")) {
-            source.sendFailure(Component.literal("未激活『定点传送』属性，无法保存传送点"));
+            source.sendFailure(featureDisabledReason(stats, "fixed_point_teleport",
+                    "定点传送", "未激活『定点传送』属性，无法保存传送点"));
             return 0;
         }
 
@@ -183,7 +225,8 @@ public final class ModServerCommands {
         String name = StringArgumentType.getString(ctx, "name");
         PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
         if (stats == null || !stats.isToggleActive("fixed_point_teleport")) {
-            source.sendFailure(Component.literal("未激活『定点传送』属性，无法使用传送点"));
+            source.sendFailure(featureDisabledReason(stats, "fixed_point_teleport",
+                    "定点传送", "未激活『定点传送』属性，无法使用传送点"));
             return 0;
         }
 
@@ -213,7 +256,8 @@ public final class ModServerCommands {
         String name = StringArgumentType.getString(ctx, "name");
         PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
         if (stats == null || !stats.isToggleActive("fixed_point_teleport")) {
-            source.sendFailure(Component.literal("未激活『定点传送』属性"));
+            source.sendFailure(featureDisabledReason(stats, "fixed_point_teleport",
+                    "定点传送", "未激活『定点传送』属性"));
             return 0;
         }
         if (!stats.hasWaypoint(name)) {
@@ -226,6 +270,194 @@ public final class ModServerCommands {
         return 1;
     }
 
+    /**
+     * 统一的「功能不可用」提示：被玩家在「功能开关」里关闭时给出明确原因，
+     * 否则沿用原来的「未激活 / 未解锁」提示。
+     */
+    private static Component featureDisabledReason(PlayerStats stats, String statId,
+                                                   String feature, String fallback) {
+        if (stats != null && stats.isStatInactive(statId)) {
+            return Component.literal("『" + feature + "』尚未开放"
+                    + "（完成对应任务 / 由整合包作者开启）");
+        }
+        return Component.literal(fallback);
+    }
+
+    // ========== 功能开关（按玩家，整合包作者通过指令控制开放进度） ==========
+
+    /** 列出当前已关闭的功能。 */
+    private static int featureList(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) return 0;
+
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+        if (stats == null) return 0;
+
+        Set<String> disabled = stats.getDisabledStats();
+        source.sendSuccess(() -> Component.literal("§6功能开关：§7共 " + StatType.getBuiltinCount()
+                + " 条内置属性，当前已关闭 §c" + disabled.size() + " §7条"), false);
+        if (disabled.isEmpty()) {
+            source.sendSuccess(() -> Component.literal(
+                    "§7全部功能均为开启状态。用法：§f/infstats feature <属性ID> [on|off]"), false);
+            return 1;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String id : disabled) {
+            if (sb.length() > 0) sb.append("§7, §c");
+            sb.append(id);
+        }
+        source.sendSuccess(() -> Component.literal("§7已关闭：§c" + sb), false);
+        source.sendSuccess(() -> Component.literal(
+                "§7开启：§f/infstats feature <属性ID> on§7；关闭：§f/infstats feature <属性ID> off"
+                        + "§7；不带参数则切换"), false);
+        return 1;
+    }
+
+    /** /infstats feature <id>：切换单个功能。 */
+    private static int featureToggle(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) return 0;
+
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+        if (stats == null) return 0;
+
+        String id = StringArgumentType.getString(ctx, "id");
+        StatType stat = StatType.fromId(id);
+        if (stat == null) {
+            source.sendFailure(Component.literal("未知属性 ID：" + id + "（可用 Tab 补全）"));
+            return 0;
+        }
+        return applyFeature(source, player, stats, List.of(stat.getId()),
+                !stats.isStatDisabled(stat.getId()));
+    }
+
+    /** /infstats feature <id> <on|off>：明确设定单个功能。 */
+    private static int featureSet(CommandContext<CommandSourceStack> ctx, boolean disabled) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) return 0;
+
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+        if (stats == null) return 0;
+
+        String id = StringArgumentType.getString(ctx, "id");
+        StatType stat = StatType.fromId(id);
+        if (stat == null) {
+            source.sendFailure(Component.literal("未知属性 ID：" + id + "（可用 Tab 补全）"));
+            return 0;
+        }
+        return applyFeature(source, player, stats, List.of(stat.getId()), disabled);
+    }
+
+    /** /infstats feature all <on|off>：一次开关全部内置属性。 */
+    private static int featureAll(CommandContext<CommandSourceStack> ctx, boolean disabled) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) return 0;
+
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+        if (stats == null) return 0;
+
+        List<String> ids = new ArrayList<>();
+        for (StatType stat : StatType.ALL_STATS) {
+            if (stat.isBuiltin()) ids.add(stat.getId());
+        }
+        return applyFeature(source, player, stats, ids, disabled);
+    }
+
+    /** 应用功能开关：写入玩家数据、立刻重算属性加成，并同步给客户端。 */
+    private static int applyFeature(CommandSourceStack source, ServerPlayer player, PlayerStats stats,
+                                    List<String> ids, boolean disabled) {
+        if (ids == null || ids.isEmpty()) return 0;
+
+        stats.setStatsDisabled(ids, disabled);
+        AttributeHandler.applyAllAttributes(player, stats);
+        NetworkHandler.syncToClient(player);
+
+        String what = ids.size() == 1 ? "『" + ids.get(0) + "』" : ids.size() + " 项功能";
+        source.sendSuccess(() -> Component.literal(disabled
+                ? "§c已关闭 " + what + "§7：面板隐藏、整条失效（已投入的点数保留）"
+                : "§a已开启 " + what + "§7：面板恢复显示，效果与指令恢复可用"), true);
+        return ids.size();
+    }
+
+    /** /infstats feature mode：显示当前执行模式（全局，整合包设置）。 */
+    private static int featureModeShow(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        FeatureDisableMode mode = FeatureDisableMode.current();
+
+        source.sendSuccess(() -> Component.literal(
+                "§6功能开关执行模式（全局）：§f" + describeMode(mode)), false);
+        source.sendSuccess(() -> Component.literal(
+                "§7keep = 整条失效·保留点数；refund = 整条失效·返还点数；hide = 只隐藏（效果照常）"), false);
+        source.sendSuccess(() -> Component.literal(
+                "§7切换：§f/infstats feature mode <keep|refund|hide>§7；或直接改配置文件 "
+                        + "§fconfig/infinitestats-common.toml §7→ §fGUI.featureDisableMode"), false);
+        return 1;
+    }
+
+    /**
+     * /infstats feature mode <keep|refund|hide>：改写**全局**配置（影响所有玩家，包括新玩家）。
+     * 这是整合包作者的设置项，所以也放在要求权限等级 2 的 {@code feature} 子树里。
+     */
+    private static int featureModeSet(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+
+        FeatureDisableMode mode = FeatureDisableMode.byId(StringArgumentType.getString(ctx, "mode"));
+        if (mode == null) {
+            source.sendFailure(Component.literal("可用值：keep / refund / hide"));
+            return 0;
+        }
+        if (mode == FeatureDisableMode.current()) {
+            source.sendSuccess(() -> Component.literal(
+                    "§7执行模式已经是：" + describeMode(mode)), false);
+            return 1;
+        }
+
+        Config.FEATURE_DISABLE_MODE.set(mode);
+        try {
+            Config.SPEC.save();
+        } catch (Throwable ignored) {
+            // 配置文件只读或尚未生成：内存里的值立刻生效，重启后会回到文件里的值
+        }
+
+        // 模式决定「数值是否归零」，当场给所有在线玩家重算属性并同步
+        int affected = 0;
+        if (source.getServer() != null) {
+            for (ServerPlayer online : source.getServer().getPlayerList().getPlayers()) {
+                online.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    stats.refreshFeatureMode();
+                    AttributeHandler.applyAllAttributes(online, stats);
+                    NetworkHandler.syncToClient(online);
+                });
+                affected++;
+            }
+        }
+
+        final int count = affected;
+        source.sendSuccess(() -> Component.literal("§a执行模式已设为（全局）：" + describeMode(mode)
+                + "§7，已为 " + count + " 名在线玩家重算"), true);
+        return 1;
+    }
+
+    private static String describeMode(FeatureDisableMode mode) {
+        return switch (mode) {
+            case INACTIVE_KEEP_POINTS -> "整条失效（保留点数）";
+            case INACTIVE_REFUND_POINTS -> "整条失效（返还点数）";
+            case HIDDEN_ONLY -> "只隐藏（不返还点数，效果与指令照常）";
+        };
+    }
+
+    /** Tab 补全：所有属性 ID（内置 + 外部发现）。 */
+    private static CompletableFuture<Suggestions> suggestFeatureIds(
+            CommandContext<CommandSourceStack> ctx, SuggestionsBuilder builder) {
+        List<String> ids = new ArrayList<>();
+        for (StatType stat : StatType.ALL_STATS) ids.add(stat.getId());
+        return SharedSuggestionProvider.suggest(ids, builder);
+    }
+
     private static int openCrafting(CommandContext<CommandSourceStack> ctx) {
         CommandSourceStack source = ctx.getSource();
         ServerPlayer player = source.getPlayer();
@@ -233,7 +465,8 @@ public final class ModServerCommands {
 
         PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
         if (stats == null || !stats.isToggleActive("portable_crafting")) {
-            source.sendFailure(Component.literal("未激活『内置工作台』属性，无法打开随身工作台"));
+            source.sendFailure(featureDisabledReason(stats, "portable_crafting",
+                    "随身工作台", "未激活『内置工作台』属性，无法打开随身工作台"));
             return 0;
         }
 
@@ -251,11 +484,44 @@ public final class ModServerCommands {
 
         PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
         if (stats == null || !stats.isToggleActive("portable_anvil")) {
-            source.sendFailure(Component.literal("未激活『随身铁砧』属性，无法打开随身铁砧"));
+            source.sendFailure(featureDisabledReason(stats, "portable_anvil",
+                    "随身铁砧", "未激活『随身铁砧』属性，无法打开随身铁砧"));
             return 0;
         }
 
         PortableAnvil.open(player);
+        return 1;
+    }
+
+    private static int openEnderChest(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) return 0;
+
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+        if (stats == null || !stats.isToggleActive("portable_ender_chest")) {
+            source.sendFailure(featureDisabledReason(stats, "portable_ender_chest",
+                    "随身末影箱", "未激活『随身末影箱』属性，无法打开随身末影箱"));
+            return 0;
+        }
+
+        PortableGuis.openEnderChest(player);
+        return 1;
+    }
+
+    private static int openSmithing(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) return 0;
+
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+        if (stats == null || !stats.isToggleActive("portable_smithing")) {
+            source.sendFailure(featureDisabledReason(stats, "portable_smithing",
+                    "随身锻造台", "未激活『随身锻造台』属性，无法打开随身锻造台"));
+            return 0;
+        }
+
+        PortableGuis.openSmithing(player);
         return 1;
     }
 
@@ -266,7 +532,8 @@ public final class ModServerCommands {
 
         PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
         if (stats == null || !stats.isToggleActive("portable_furnace")) {
-            source.sendFailure(Component.literal("未激活『内置熔炉』属性，无法打开随身熔炉"));
+            source.sendFailure(featureDisabledReason(stats, "portable_furnace",
+                    "随身熔炉", "未激活『内置熔炉』属性，无法打开随身熔炉"));
             return 0;
         }
 
@@ -292,7 +559,8 @@ public final class ModServerCommands {
 
         PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
         if (stats == null || !stats.isToggleActive("fixed_point_teleport")) {
-            source.sendFailure(Component.literal("未激活『定点传送』属性"));
+            source.sendFailure(featureDisabledReason(stats, "fixed_point_teleport",
+                    "定点传送", "未激活『定点传送』属性"));
             return 0;
         }
 

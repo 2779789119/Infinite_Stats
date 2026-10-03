@@ -38,3 +38,11 @@ issueTrackerURL = "https://github.com/example/infinitestats/issues"
     versionRange = "[1.0,)"
     ordering = "NONE"
     side = "CLIENT"
+
+# 可选：配置界面（Cloth Config API）——「模组列表 → Config」按钮用它画配置界面
+[[dependencies.infinitestats]]
+    modId = "cloth_config"
+    mandatory = false
+    versionRange = "[11.0,)"
+    ordering = "NONE"
+    side = "CLIENT"

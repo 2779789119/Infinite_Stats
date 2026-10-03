@@ -93,7 +93,7 @@ public class FurnaceProductBufferMenu extends BulkStorageMenu {
     /** 将成品储备箱（成品仓）中的成品存入 RS 网络。 */
     public void depositToNetwork() {
         if (!(player instanceof ServerPlayer sp)) return;
-        List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+        List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_PRODUCT_BUFFER);
         if (nets.isEmpty()) {
             sp.sendSystemMessage(Component.literal(NetworkIO.diagnose(player)));
             return;

@@ -7,8 +7,10 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraftforge.network.NetworkEvent;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -30,6 +32,10 @@ public final class SyncStatsPacket {
     private Set<String> buffFilterList;
     private Map<String, Waypoint> waypoints;
     private Set<String> favorites;
+    private Map<String, List<String>> networkPriorities;
+    private boolean autoDepositUseWhitelist;
+    private Set<String> autoDepositFilterList;
+    private Set<String> disabledStats;
 
     /**
      * 从快照创建
@@ -45,6 +51,10 @@ public final class SyncStatsPacket {
         this.buffFilterList = snapshot.buffFilterList;
         this.waypoints = snapshot.waypoints;
         this.favorites = snapshot.favorites;
+        this.networkPriorities = snapshot.networkPriorities;
+        this.autoDepositUseWhitelist = snapshot.autoDepositUseWhitelist;
+        this.autoDepositFilterList = snapshot.autoDepositFilterList;
+        this.disabledStats = snapshot.disabledStats;
     }
 
     /**
@@ -91,6 +101,28 @@ public final class SyncStatsPacket {
         favorites = new HashSet<>();
         int favoriteCount = buf.readVarInt();
         for (int i = 0; i < favoriteCount; i++) favorites.add(buf.readUtf());
+
+        // 读取各功能的存储优先级（作用域 → 存储键列表）
+        int scopeCount = buf.readVarInt();
+        this.networkPriorities = new HashMap<>();
+        for (int i = 0; i < scopeCount; i++) {
+            String scope = buf.readUtf();
+            int keyCount = buf.readVarInt();
+            List<String> keys = new ArrayList<>();
+            for (int k = 0; k < keyCount; k++) keys.add(buf.readUtf());
+            networkPriorities.put(scope, keys);
+        }
+
+        // 读取自动入库过滤（白 / 黑名单）
+        this.autoDepositUseWhitelist = buf.readBoolean();
+        int depositFilterCount = buf.readVarInt();
+        this.autoDepositFilterList = new HashSet<>();
+        for (int i = 0; i < depositFilterCount; i++) autoDepositFilterList.add(buf.readUtf());
+
+        // 读取「功能开关」中已关闭的属性
+        int disabledCount = buf.readVarInt();
+        this.disabledStats = new HashSet<>();
+        for (int i = 0; i < disabledCount; i++) disabledStats.add(buf.readUtf());
     }
 
     /**
@@ -133,6 +165,28 @@ public final class SyncStatsPacket {
         }
         buf.writeVarInt(msg.favorites.size());
         for (String id : msg.favorites) buf.writeUtf(id);
+
+        // 写入各功能的存储优先级（作用域 → 存储键列表）
+        Map<String, List<String>> priorities =
+                msg.networkPriorities != null ? msg.networkPriorities : Map.of();
+        buf.writeVarInt(priorities.size());
+        for (Map.Entry<String, List<String>> entry : priorities.entrySet()) {
+            buf.writeUtf(entry.getKey());
+            List<String> keys = entry.getValue() != null ? entry.getValue() : List.of();
+            buf.writeVarInt(keys.size());
+            for (String key : keys) buf.writeUtf(key);
+        }
+
+        // 写入自动入库过滤（白 / 黑名单）
+        buf.writeBoolean(msg.autoDepositUseWhitelist);
+        Set<String> depositFilter = msg.autoDepositFilterList != null ? msg.autoDepositFilterList : Set.of();
+        buf.writeVarInt(depositFilter.size());
+        for (String id : depositFilter) buf.writeUtf(id);
+
+        // 写入「功能开关」中已关闭的属性
+        Set<String> disabled = msg.disabledStats != null ? msg.disabledStats : Set.of();
+        buf.writeVarInt(disabled.size());
+        for (String id : disabled) buf.writeUtf(id);
     }
 
     /**
@@ -162,7 +216,11 @@ public final class SyncStatsPacket {
                         msg.buffFilterList,
                         msg.waypoints,
                         msg.reviveInvulnUntilTick,
-                        msg.favorites
+                        msg.favorites,
+                        msg.networkPriorities,
+                        msg.autoDepositUseWhitelist,
+                        msg.autoDepositFilterList,
+                        msg.disabledStats
                 );
                 stats.restoreFromSnapshot(snapshot);
             });
@@ -183,7 +241,11 @@ public final class SyncStatsPacket {
                 buffFilterList,
                 waypoints,
                 reviveInvulnUntilTick,
-                favorites
+                favorites,
+                networkPriorities,
+                autoDepositUseWhitelist,
+                autoDepositFilterList,
+                disabledStats
         );
     }
 }

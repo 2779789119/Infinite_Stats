@@ -54,27 +54,34 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
         this.level = inv.player.level();
         this.stats = inv.player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElseGet(PlayerStats::new);
         // 倍率视图与成品去向：随容器数据自动同步到客户端
-        //   index 0 = 倍率；index 1 = 成品去向（0=背包，1=存储）
+        //   index 0 = 倍率；index 1 = 成品去向（0=背包，1=存储）；index 2 = 点数是否够再升一级
         this.data = new ContainerData() {
+            /** 客户端读这份同步值，服务端按实时数据计算（同随身熔炉的写法）。 */
+            private final int[] synced = new int[3];
+
             @Override
             public int getCount() {
-                return 2;
+                return synced.length;
             }
 
             @Override
             public int get(int index) {
+                if (level.isClientSide()) return synced[index];
                 return switch (index) {
                     case 0 -> (int) Math.min(Integer.MAX_VALUE, stats.getCraftingMultiplier());
                     case 1 -> outputToStorage ? 1 : 0;
+                    case 2 -> stats.getAvailablePoints() >= Config.CRAFTING_MULTIPLIER_COST.get() ? 1 : 0;
                     default -> 0;
                 };
             }
 
             @Override
             public void set(int index, int value) {
+                if (index >= 0 && index < synced.length) synced[index] = value;
                 switch (index) {
                     case 0 -> stats.setCraftingMultiplier(value);
                     case 1 -> outputToStorage = value != 0;
+                    default -> { }
                 }
             }
         };
@@ -105,9 +112,14 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
         return true;
     }
 
-    /** 当前随身工作台物品倍率（用于界面显示）。 */
+    /** 当前随身工作台物品倍率（用于界面显示，读取已同步的容器数据）。 */
     public int getCraftingMultiplier() {
-        return (int) Math.max(1, stats.getCraftingMultiplier());
+        return Math.max(1, data.get(0));
+    }
+
+    /** 可分配点数是否足够再升一级倍率（用于界面按钮状态与提示）。 */
+    public boolean canMultiplyUp() {
+        return data.get(2) != 0;
     }
 
     /** 提升一级倍率所需的可分配点数（用于界面显示）。 */
@@ -176,7 +188,7 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
             if (index == 0) {
                 // 结果槽：按当前去向设置，把成品送往背包或存储空间
                 if (this.outputToStorage) {
-                    List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+                    List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_CRAFTING);
                     if (!nets.isEmpty()) {
                         // 优先把成品存入网络，存不下的剩余再退回背包
                         ItemStack remaining = NetworkIO.insert(nets, stack.copy());
@@ -212,7 +224,7 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
     public void removed(Player player) {
         super.removed(player);
         if (level.isClientSide()) return;
-        List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+        List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_CRAFTING);
         for (int i = 0; i < craftSlots.getContainerSize(); i++) {
             ItemStack stack = craftSlots.removeItemNoUpdate(i);
             returnMaterial(nets, stack);
@@ -238,7 +250,7 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
      */
     public void fillGridFromIngredients(Ingredient[] grid) {
         if (level.isClientSide() || !(player instanceof ServerPlayer sp) || grid.length != 9) return;
-        List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+        List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_CRAFTING);
         ItemStack[] spare = new ItemStack[9];
         ItemStack[] result = new ItemStack[9];
         ItemStack[] inventory = new ItemStack[player.getInventory().getContainerSize()];
@@ -339,7 +351,7 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
             // 交给原版逻辑消耗一份材料（每个槽 -1，并处理余料/容器物）
             super.onTake(player, stack);
             if (player.level().isClientSide() || !(player instanceof ServerPlayer)) return;
-            List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+            List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_CRAFTING);
             boolean changed = false;
             for (int i = 0; i < before.length; i++) {
                 ItemStack pre = before[i];

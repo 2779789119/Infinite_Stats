@@ -1,7 +1,10 @@
 package com.infinitestats.event;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.infinitestats.Config;
@@ -20,10 +23,17 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.AbstractArrow;
+import net.minecraft.world.inventory.MerchantMenu;
+import net.minecraft.world.item.trading.MerchantOffer;
+import net.minecraft.world.item.trading.MerchantOffers;
 import net.minecraft.world.item.ArrowItem;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.CrossbowItem;
@@ -48,9 +58,11 @@ import net.minecraftforge.event.entity.living.LivingEntityUseItemEvent;
 import net.minecraftforge.event.entity.living.LivingEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.event.entity.living.LivingDamageEvent;
+import net.minecraftforge.event.entity.living.LivingExperienceDropEvent;
 import net.minecraftforge.event.entity.living.LivingAttackEvent;
 import net.minecraftforge.event.entity.player.ArrowLooseEvent;
 import net.minecraftforge.event.entity.player.AttackEntityEvent;
+import net.minecraftforge.event.entity.player.PlayerContainerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.entity.living.MobEffectEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
@@ -119,6 +131,195 @@ public final class StatEventHandler {
                 addXpAndSync(player, stats, xp);
             });
         }
+    }
+
+    // ========== 死亡不掉落 ==========
+
+    /**
+     * 死亡不掉落：原版只在游戏规则 {@code keepInventory} 开启时才保留背包，而「掉落」发生在
+     * {@code Player.dropAllDeathLoot → Inventory.dropAll()} 里，全程没有可拦截的 Forge 事件。
+     * 因此改为在死亡事件的最后一刻把主背包 / 盔甲 / 副手整体挪进 {@link PlayerStats} 暂存：
+     * 原版随后执行的 {@code dropAll()} 面对空背包自然什么都不会掉；玩家重生时
+     * （{@code PlayerEvent.Clone}）再把物品原样归还。
+     * <p>
+     * 必须挂在 LOWEST：自动复活（HIGHEST）会在自己那一轮取消死亡，取消后不应清空背包。
+     * <p>
+     * 注意：死亡事件对玩家会触发两次（{@code Player.die} 与 {@code super.die} 各一次），
+     * 因此用 {@code hasPendingKeptInventory()} 做幂等保护，避免第二轮用空背包覆盖暂存。
+     */
+    @SubscribeEvent(priority = EventPriority.LOWEST)
+    public static void onLivingDeathKeepInventory(LivingDeathEvent event) {
+        if (event.isCanceled()) return;
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            if (!stats.isToggleActive("keep_inventory")) return;
+            if (stats.hasPendingKeptInventory()) return;
+
+            Inventory inv = player.getInventory();
+            List<ItemStack> saved = new ArrayList<>();
+            for (ItemStack stack : inv.items) saved.add(stack.copy());
+            for (ItemStack stack : inv.armor) saved.add(stack.copy());
+            for (ItemStack stack : inv.offhand) saved.add(stack.copy());
+
+            stats.setPendingKeptInventory(saved);
+            inv.items.clear();
+            inv.armor.clear();
+            inv.offhand.clear();
+            inv.setChanged();
+        });
+    }
+
+    /** 把暂存的 41 格（36 主背包 + 4 盔甲 + 1 副手）物品放回玩家背包，多出来的就地掉落。 */
+    private static void restoreKeptInventory(Player player, List<ItemStack> saved) {
+        if (saved == null || saved.isEmpty()) return;
+        Inventory inv = player.getInventory();
+        for (int i = 0; i < saved.size(); i++) {
+            ItemStack stack = saved.get(i);
+            if (stack == null || stack.isEmpty()) continue;
+            if (i < inv.items.size()) {
+                inv.items.set(i, stack);
+            } else if (i < inv.items.size() + inv.armor.size()) {
+                inv.armor.set(i - inv.items.size(), stack);
+            } else {
+                int k = i - inv.items.size() - inv.armor.size();
+                if (k < inv.offhand.size()) inv.offhand.set(k, stack);
+                else player.drop(stack, false);
+            }
+        }
+        inv.setChanged();
+    }
+
+    // ========== 村民交易折扣 ==========
+
+    /**
+     * 每个报价的折扣记账：[0] = 本模组写进去的折扣（正数，0 表示没写），[1] = 写入后的 specialPriceDiff。
+     * <p>
+     * 键用 {@link MerchantOffer} 自身（它没有覆写 equals/hashCode，等价于按实例），WeakHashMap 保证
+     * 商人被卸载后条目能自动回收。之所以要记账：{@code specialPriceDiff} **会随商人一起存档**，
+     * 而只有村民会在 {@code stopTrading} 里清零、流浪商人不会 —— 若无脑叠加，反复开关界面
+     * 会把价格一路刷到 1 并被永久保存。
+     */
+    private static final Map<MerchantOffer, int[]> TRADE_DISCOUNT_STATE = new WeakHashMap<>();
+
+    /**
+     * 村民交易折扣（与声望 / 英雄效果折扣**叠加**）。
+     * <p>
+     * 交易价格由 {@code MerchantOffer.getCostA()} 现算：{@code 基础数量 + 需求加价 + specialPriceDiff}。
+     * 原版 {@code Villager#startTrading} 先按声望与英雄效果 {@code addToSpecialPriceDiff}，
+     * 之后 {@code Merchant#openTradingScreen} 才 openMenu（本事件在此触发）并发送交易列表，
+     * 所以在事件里改价，客户端收到的是折后价，服务端扣物品也走同一份 offers，价格不会分叉。
+     * <p>
+     * 叠加方式：把本模组的折扣**加在原版折扣之上**（而不是「取更优惠者」）。为了不累加，
+     * 每次先按记账剥离出「本模组上一次写进去的折扣」，得到原版此刻的价值：
+     * <ul>
+     *   <li>值没变（流浪商人不会重置）或变得更便宜（原版又在我们的基础上加了折扣）→ 减掉我们的贡献；</li>
+     *   <li>变贵了（村民关界面时 {@code resetSpecialPriceDiff} 清零并按声望重算）→ 当前值即原版值。</li>
+     * </ul>
+     */
+    @SubscribeEvent
+    public static void onContainerOpen(PlayerContainerEvent.Open event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        if (!(event.getContainer() instanceof MerchantMenu menu)) return;
+
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            float rate = Math.min(0.9f, Math.max(0f, stats.getStatValue("trade_discount")));
+            MerchantOffers offers = menu.getOffers();
+            for (int i = 0; i < offers.size(); i++) {
+                applyTradeDiscount(offers.get(i), rate);
+            }
+        });
+    }
+
+    /**
+     * 把本模组的交易折扣叠加到单个报价上。
+     * <p>
+     * 即使 {@code rate} 为 0 也会走一遍：玩家把点数退掉之后，需要把之前写进流浪商人报价里的
+     * 折扣收回来（村民自己会清零，流浪商人不会）。
+     *
+     * @param rate 每点折扣率（已夹在 [0, 0.9]）
+     */
+    private static void applyTradeDiscount(MerchantOffer offer, float rate) {
+        ItemStack base = offer.getBaseCostA();
+        if (base.isEmpty()) return;
+
+        int[] state = TRADE_DISCOUNT_STATE.get(offer);
+        if (state == null && rate <= 0f) return; // 没折扣也没历史，不动价格
+
+        int current = offer.getSpecialPriceDiff();
+        int vanilla = (state != null && current <= state[1]) ? current + state[0] : current;
+
+        // 至少保留 1 个基础物品（getCostA 自身也会把结果夹在 [1, 堆叠上限]）
+        int room = Math.max(0, base.getCount() - 1 + vanilla);
+        int discount = Math.min(room, Mth.floor(base.getCount() * rate));
+        int total = vanilla - discount;
+
+        offer.setSpecialPriceDiff(total);
+        TRADE_DISCOUNT_STATE.put(offer, new int[]{discount, total});
+    }
+
+    // ========== 死亡不掉经验 ==========
+
+    /**
+     * 死亡不掉经验：原版玩家死亡的掉落量由 {@code Player#getExperienceReward()} 决定
+     * （未开 keepInventory 时为 等级×7，上限 100），最终走
+     * {@code LivingEntity#dropExperience → ForgeEventFactory.getExperienceDrop}，也就是本事件。
+     * 把掉落量改成 0 之后经验球就不会生成；等级/经验条留存在老实体上，由
+     * {@link #onPlayerClone} 原样搬给重生后的新实体。
+     */
+    @SubscribeEvent
+    public static void onLivingExperienceDrop(LivingExperienceDropEvent event) {
+        if (event.getDroppedExperience() <= 0) return;
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            if (stats.isToggleActive("keep_xp")) event.setDroppedExperience(0);
+        });
+    }
+
+    // ========== 铁砧经验减免 ==========
+    //
+    // 走的是 Mixin（com.infinitestats.mixin.AnvilMenuMixin），而不是 AnvilUpdateEvent：
+    // Forge 的 AnvilUpdateEvent#setCost 只在同时设置了 output 时才会被采用
+    // （ForgeHooks.onAnvilChange 内部才调 setMaximumCost），且事件在附魔消耗计算之前触发，
+    // 拿不到最终值 —— 从这里改 cost 是彻底无效的。
+
+    // ========== 畜牧：一键长大 ==========
+    //
+    // 「繁殖无冷却」在 AnimalMixin 里（要改的是 setAge(6000) 之后的最终年龄，事件拿不到时机），
+    // 这里只处理右键喂食的一键长大。
+
+    /**
+     * 一键长大：手持该动物的饲料右键幼年动物时，一次喂食直接长到成年。
+     * <p>
+     * 用 {@link PlayerInteractEvent.EntityInteract}：它在 {@code Player#interactOn} 里、原版
+     * {@code mobInteract} 之前触发，可以取消，所以不会出现「原版先长 10%、我们再补满」的双重结算。
+     * 两端都会跑（与其它属性处理一致）：客户端做同样的本地预测，服务端权威。
+     */
+    @SubscribeEvent
+    public static void onEntityInteract(PlayerInteractEvent.EntityInteract event) {
+        if (!(event.getTarget() instanceof Animal animal)) return;
+        if (!animal.isBaby()) return;
+
+        ItemStack stack = event.getItemStack();
+        if (!animal.isFood(stack)) return;
+
+        Player player = event.getEntity();
+        boolean active = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .map(stats -> stats.isToggleActive("instant_grow"))
+                .orElse(false);
+        if (!active) return;
+
+        // 消耗一个（与原版 Animal#usePlayerItem 一致）
+        if (!player.getAbilities().instabuild) {
+            stack.shrink(1);
+        }
+
+        // 剩余年龄按「秒」换算后一次性补满：ageUp 会把结果钳到 0，并播放长大粒子
+        int remaining = -animal.getAge();
+        animal.ageUp(Math.max(1, remaining / 20 + 1), true);
+
+        event.setCancellationResult(InteractionResult.sidedSuccess(animal.level().isClientSide));
+        event.setCanceled(true);
     }
 
     // ========== 跳跃事件 ==========
@@ -477,13 +678,82 @@ public final class StatEventHandler {
     public static void onEntityJoinLevel(EntityJoinLevelEvent event) {
         if (event.getLevel().isClientSide()) return;
         if (!(event.getEntity() instanceof AbstractArrow arrow)) return;
-        if (!arrow.shotFromCrossbow()) return;
         if (!(arrow.getOwner() instanceof Player player)) return;
+
+        // 多重射击：为同一次射击补出额外的箭矢（复制体带标记，不会二次触发）
+        if (player instanceof ServerPlayer shooter
+                && !arrow.getPersistentData().getBoolean(MULTI_SHOT_CLONE)) {
+            handleMultiShot(shooter, arrow, event.getLevel());
+        }
+
+        if (!arrow.shotFromCrossbow()) return;
 
         Long shotTick = VIRTUAL_CROSSBOW_SHOTS.get(player.getUUID());
         if (shotTick == null || shotTick != event.getLevel().getGameTime()) return;
 
         arrow.pickup = AbstractArrow.Pickup.CREATIVE_ONLY;
+    }
+
+    // ========== 多重射击 ==========
+
+    /** 多重射击复制体的标记（写进实体持久化 NBT），避免复制体再触发一次复制。 */
+    private static final String MULTI_SHOT_CLONE = "infinitestats_multi_shot_clone";
+    /** 玩家 UUID → 最近一次补箭的 gameTime：同一次射击（同 tick）只补一轮。 */
+    private static final Map<UUID, Long> MULTI_SHOT_TICKS = new ConcurrentHashMap<>();
+
+    /**
+     * 多重射击：把首发箭矢复制成 N 支并按小角度散开。
+     * <p>
+     * 用 NBT 复制而不是自己 {@code new Arrow}，是为了让光谱箭、模组自定义箭矢也能被正确复制
+     * （实体类型由 {@code id} 标签决定）；原版的箭矢 NBT 不保存发射者，所以复制后必须手动
+     * {@link net.minecraft.world.entity.projectile.Projectile#setOwner}，否则伤害无法归因到玩家、
+     * 一系列攻击加成都会失效。
+     * <p>
+     * 复制体一律设为 {@code CREATIVE_ONLY}：它们没消耗任何背包资源，落地被捡回就等于凭空刷箭。
+     */
+    private static void handleMultiShot(ServerPlayer shooter, AbstractArrow arrow, Level level) {
+        shooter.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            int extra = (int) Math.round(stats.getStatValue("multi_shot"));
+            if (extra <= 0) return;
+
+            long now = level.getGameTime();
+            Long last = MULTI_SHOT_TICKS.get(shooter.getUUID());
+            if (last != null && last == now) return;
+            MULTI_SHOT_TICKS.put(shooter.getUUID(), now);
+
+            Vec3 velocity = arrow.getDeltaMovement();
+            if (velocity.lengthSqr() < 1.0E-4) return;
+
+            net.minecraft.resources.ResourceLocation typeId =
+                    net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(arrow.getType());
+            if (typeId == null) return;
+
+            CompoundTag tag = arrow.saveWithoutId(new CompoundTag());
+            tag.putString("id", typeId.toString());
+            // 必须去掉 UUID：否则 N 支复制箭会与首发箭共用同一个实体 UUID，
+            // 实体索引（ServerLevel#getEntity(uuid) 等）会互相覆盖，删除/存档都会出问题。
+            // 去掉后新实体沿用构造时生成的随机 UUID。
+            tag.remove("UUID");
+
+            for (int i = 0; i < extra; i++) {
+                // 左右交替散开，越后面的箭偏得越多
+                double angle = Math.toRadians((i % 2 == 0 ? 1.0 : -1.0) * (3.0 + i * 2.0));
+                double cos = Math.cos(angle);
+                double sin = Math.sin(angle);
+                Vec3 dir = new Vec3(velocity.x * cos - velocity.z * sin,
+                        velocity.y, velocity.x * sin + velocity.z * cos);
+
+                EntityType.create(tag, level).ifPresent(created -> {
+                    if (!(created instanceof AbstractArrow copy)) return;
+                    copy.setOwner(arrow.getOwner());
+                    copy.setPos(arrow.getX(), arrow.getY(), arrow.getZ());
+                    copy.setDeltaMovement(dir);
+                    copy.pickup = AbstractArrow.Pickup.CREATIVE_ONLY;
+                    copy.getPersistentData().putBoolean(MULTI_SHOT_CLONE, true);
+                    level.addFreshEntity(copy);
+                });
+            }
+        });
     }
 
     /** 玩家背包（含副手）里是否还有弩能用的箭，判定口径与 {@code Player#getProjectile} 一致。 */
@@ -510,12 +780,16 @@ public final class StatEventHandler {
             player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
                 float amount = event.getAmount();
 
-                // 暴击
+                // 弹射物标记（弓弩箭矢、投掷物等）
+                boolean isProjectile = event.getSource().getDirectEntity()
+                        instanceof net.minecraft.world.entity.projectile.Projectile;
+
+                // 暴击：近战与弹射物共用同一条蓄力判定
+                // （「弹射物暴击」属性已在 1.21.0 移除，这里回到原来的单一分支）
                 boolean isFullAttack = player.getAttackStrengthScale(0.5f) > 0.9f;
                 amount *= AttackHandler.calculateCritMultiplier(player, stats, isFullAttack);
 
                 // 弹射物伤害
-                boolean isProjectile = event.getSource().getDirectEntity() instanceof net.minecraft.world.entity.projectile.Projectile;
                 amount *= AttackHandler.calculateProjectileBonus(stats, isProjectile);
 
                 event.setAmount(amount);
@@ -844,6 +1118,8 @@ public final class StatEventHandler {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
 
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            // 首次登录：把整合包作者预设的「开局默认禁用」属性写入本玩家（只执行一次）
+            stats.applyDefaultDisabledStatsIfNeeded();
             // 重新计算可用点数，修复旧存档可能为负的问题
             stats.recalculateAvailablePoints();
             NetworkHandler.syncToClient(player);
@@ -855,6 +1131,8 @@ public final class StatEventHandler {
     public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         // 虚拟弩箭的发射标记只在「当个 tick」有意义，玩家离开时顺手清掉，避免长期留存
         VIRTUAL_CROSSBOW_SHOTS.remove(event.getEntity().getUUID());
+        // 多重射击的「本 tick 已补箭」记录同理
+        MULTI_SHOT_TICKS.remove(event.getEntity().getUUID());
     }
 
     // ========== 玩家重生 ==========
@@ -879,8 +1157,20 @@ public final class StatEventHandler {
     public static void onPlayerClone(PlayerEvent.Clone event) {
         event.getOriginal().reviveCaps();
         event.getOriginal().getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(oldStats -> {
+            // 死亡不掉经验：老实体上的经验条没有被清过（只有经验球被拦下了），这里整份搬过来
+            if (event.isWasDeath() && oldStats.isToggleActive("keep_xp")) {
+                Player origin = event.getOriginal();
+                Player fresh = event.getEntity();
+                fresh.experienceLevel = origin.experienceLevel;
+                fresh.experienceProgress = origin.experienceProgress;
+                fresh.totalExperience = origin.totalExperience;
+            }
             event.getEntity().getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(newStats -> {
                 newStats.copyFrom(oldStats);
+                // 死亡不掉落：把死亡时暂存的背包原样归还给重生后的玩家
+                if (newStats.hasPendingKeptInventory()) {
+                    restoreKeptInventory(event.getEntity(), newStats.takePendingKeptInventory());
+                }
             });
         });
         event.getOriginal().invalidateCaps();

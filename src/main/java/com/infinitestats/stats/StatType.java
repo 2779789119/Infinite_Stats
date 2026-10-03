@@ -25,6 +25,9 @@ public final class StatType {
     private final StatValueCalculator calculator;
     private final Supplier<Attribute> attributeSupplier;
     private final String attributeName; // 储存 attribute 注册名，用于排重
+    /** 镜像写入的额外属性注册名（例如 Connector 环境下 Fabric 侧的等价属性） */
+    private final List<String> mirrorAttributeNames;
+    private final List<Supplier<Attribute>> mirrorAttributeSuppliers;
     private final float perPointValue;
     private final int maxLevel;
     private final String description;
@@ -72,6 +75,8 @@ public final class StatType {
         this.calculator = builder.calculator;
         this.attributeSupplier = builder.attributeSupplier;
         this.attributeName = builder.attributeName;
+        this.mirrorAttributeNames = List.copyOf(builder.mirrorAttributeNames);
+        this.mirrorAttributeSuppliers = List.copyOf(builder.mirrorAttributeSuppliers);
         this.perPointValue = builder.perPointValue;
         this.maxLevel = builder.maxLevel;
         this.description = builder.description;
@@ -92,6 +97,8 @@ public final class StatType {
         private StatValueCalculator calculator = SCALING_CALCULATOR;
         private Supplier<Attribute> attributeSupplier = null;
         private String attributeName = null;
+        private final List<String> mirrorAttributeNames = new ArrayList<>();
+        private final List<Supplier<Attribute>> mirrorAttributeSuppliers = new ArrayList<>();
         private float perPointValue = 1.0f;
         private int maxLevel = Integer.MAX_VALUE;
         private String description = "";
@@ -127,11 +134,24 @@ public final class StatType {
             return this;
         }
 
-        public Builder attribute(String attributeName) {
+        /**
+         * 绑定属性
+         * @param attributeName 主属性注册名（用于排重与界面显示）
+         * @param mirrors 需要同时写入的等价属性注册名（例如 reach-entity-attributes:reach），不存在时自动跳过
+         */
+        public Builder attribute(String attributeName, String... mirrors) {
             this.attributeName = attributeName;
-            this.attributeSupplier = () -> ForgeRegistries.ATTRIBUTES.getValue(
-                    new ResourceLocation(attributeName));
+            this.attributeSupplier = attributeSupplier(attributeName);
+            for (String mirror : mirrors) {
+                if (mirror == null || mirror.equals(attributeName)) continue;
+                this.mirrorAttributeNames.add(mirror);
+                this.mirrorAttributeSuppliers.add(attributeSupplier(mirror));
+            }
             return this;
+        }
+
+        private static Supplier<Attribute> attributeSupplier(String name) {
+            return () -> ForgeRegistries.ATTRIBUTES.getValue(new ResourceLocation(name));
         }
 
         public Builder perPointValue(float value) {
@@ -195,6 +215,8 @@ public final class StatType {
             if (stat.attributeName != null) {
                 COVERED_ATTRIBUTES.add(stat.attributeName);
             }
+            // 镜像属性同样视为已覆盖，避免又被动态发现成一条独立的外部属性
+            COVERED_ATTRIBUTES.addAll(stat.getMirrorAttributeNames());
         }
     }
 
@@ -395,7 +417,6 @@ public final class StatType {
 
     private static StatType[] registerAllStats() {
         return new StatType[] {
-            // ===== 攻击属性 =====
             create("attack_damage").category(StatCategory.ATTACK)
                 .attribute("minecraft:generic.attack_damage")
                 .perPointValue(0.05f)
@@ -478,7 +499,12 @@ public final class StatType {
                 .description("投入5点解锁：背包中没有箭也能拉弓 / 弩蓄力并射出箭矢，箭不消耗背包")
                 .build(),
 
-            // ===== 防御属性 =====
+            create("multi_shot").category(StatCategory.ATTACK)
+                .perPointValue(1.0f)
+                .maxLevel(8)
+                .description("每点让每次射击额外射出一支箭（等级＝额外箭数，最多 8 支）；额外箭矢小幅散开且不可拾取")
+                .build(),
+
             create("max_health").category(StatCategory.DEFENSE)
                 .attribute("minecraft:generic.max_health")
                 .perPointValue(2.0f)
@@ -513,6 +539,24 @@ public final class StatType {
                 .perPointValue(0.01f)
                 .build(),
 
+            create("block_chance").category(StatCategory.DEFENSE)
+                .percentage()
+                .perPointValue(0.01f)
+                .build(),
+
+            create("dodge_chance").category(StatCategory.DEFENSE)
+                .percentage()
+                .perPointValue(0.008f)
+                .build(),
+
+            create("absorption_shield").category(StatCategory.DEFENSE)
+                .perPointValue(1.0f)
+                .build(),
+
+            create("auto_revive").category(StatCategory.DEFENSE)
+                .behavior(StatBehavior.TOGGLE).maxLevel(8).perPointValue(0)
+                .build(),
+
             create("fire_immunity").category(StatCategory.DEFENSE)
                 .behavior(StatBehavior.TOGGLE).maxLevel(3).perPointValue(0)
                 .build(),
@@ -529,24 +573,6 @@ public final class StatType {
                 .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
                 .build(),
 
-            create("auto_revive").category(StatCategory.DEFENSE)
-                .behavior(StatBehavior.TOGGLE).maxLevel(8).perPointValue(0)
-                .build(),
-
-            create("block_chance").category(StatCategory.DEFENSE)
-                .percentage()
-                .perPointValue(0.01f)
-                .build(),
-
-            create("absorption_shield").category(StatCategory.DEFENSE)
-                .perPointValue(1.0f)
-                .build(),
-
-            create("dodge_chance").category(StatCategory.DEFENSE)
-                .percentage()
-                .perPointValue(0.008f)
-                .build(),
-
             create("debuff_immunity").category(StatCategory.DEFENSE)
                 .behavior(StatBehavior.TOGGLE).maxLevel(4).perPointValue(0)
                 .build(),
@@ -556,7 +582,6 @@ public final class StatType {
                 .hidden()
                 .build(),
 
-            // ===== 机动属性 =====
             create("movement_speed").category(StatCategory.MOBILITY)
                 .attribute("minecraft:generic.movement_speed")
                 .perPointValue(0.001f)
@@ -572,9 +597,19 @@ public final class StatType {
                 .perPointValue(0.005f)
                 .build(),
 
+            create("multi_jump").category(StatCategory.MOBILITY)
+                .perPointValue(1.0f)
+                .maxLevel(10)
+                .description("每点获得一次空中跳跃机会（等级＝可跳次数，最多 10 次）：起跳后松开再按跳跃键即可二段跳")
+                .build(),
+
             create("step_height").category(StatCategory.MOBILITY)
                 .percentage()
                 .perPointValue(0.006f)
+                .build(),
+
+            create("auto_step").category(StatCategory.MOBILITY)
+                .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
                 .build(),
 
             create("fly_speed").category(StatCategory.MOBILITY)
@@ -586,15 +621,16 @@ public final class StatType {
                 .behavior(StatBehavior.TOGGLE).maxLevel(8).perPointValue(0)
                 .build(),
 
+            create("climb_speed").category(StatCategory.MOBILITY)
+                .percentage()
+                .perPointValue(0.2f)
+                .description("爬梯子 / 藤蔓 / 脚手架时的上升速度 +20% / 点")
+                .build(),
+
             create("no_fall_damage").category(StatCategory.MOBILITY)
                 .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
                 .build(),
 
-            create("auto_step").category(StatCategory.MOBILITY)
-                .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
-                .build(),
-
-            // ===== 功能属性 =====
             create("luck").category(StatCategory.UTILITY)
                 .attribute("minecraft:generic.luck")
                 .perPointValue(0.1f)
@@ -609,13 +645,17 @@ public final class StatType {
                 .perPointValue(1.0f)
                 .build(),
 
+            // 方块交互距离：同时写入 Forge 与 Fabric(REA) 两套属性。
+            // reach-entity-attributes 由 Connector 系整合包（ConnectorExtras 的 jarJar）提供，
+            // 它的 mixin 会接管原版交互距离，只写 forge:block_reach 会完全失效。
             create("reach").category(StatCategory.UTILITY)
-                .attribute("forge:block_reach")
+                .attribute("forge:block_reach", "reach-entity-attributes:reach")
                 .perPointValue(0.04f)
                 .build(),
 
+            // 实体攻击距离：同理，Fabric 侧对应 reach-entity-attributes:attack_range
             create("entity_reach").category(StatCategory.UTILITY)
-                .attribute("forge:entity_reach")
+                .attribute("forge:entity_reach", "reach-entity-attributes:attack_range")
                 .perPointValue(0.04f)
                 .build(),
 
@@ -627,6 +667,83 @@ public final class StatType {
             create("loot_luck").category(StatCategory.UTILITY)
                 .percentage()
                 .perPointValue(0.01f)
+                .build(),
+
+            create("double_loot").category(StatCategory.UTILITY)
+                .percentage()
+                .perPointValue(0.005f)
+                .build(),
+
+            create("item_magnet").category(StatCategory.UTILITY)
+                .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
+                .description("立即收集范围内的掉落物，范围由配置 magnetRange 决定（默认 10 格）")
+                .build(),
+
+            create("xp_magnet").category(StatCategory.UTILITY)
+                .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
+                .build(),
+
+            create("auto_deposit").category(StatCategory.UTILITY)
+                .behavior(StatBehavior.TOGGLE).maxLevel(3).perPointValue(0)
+                .description("投入3点解锁：自动把背包物品存入存储网络（RS / AE2 / 汤姆存储 / 背包等），存入优先级可在属性面板调整")
+                .build(),
+
+            create("vein_miner").category(StatCategory.UTILITY)
+                .behavior(StatBehavior.TOGGLE).maxLevel(3).perPointValue(0)
+                .build(),
+
+            create("auto_smelt").category(StatCategory.UTILITY)
+                .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
+                .build(),
+
+            create("breed_no_cooldown").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：自己喂食繁殖出的动物不再进入冷却，可以立刻再次繁殖")
+                .build(),
+
+            create("instant_grow").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(2)
+                .description("投入2点解锁：手持该动物的饲料右键幼年动物，一次喂食即可长大（原版约需 10 次）")
+                .build(),
+
+            create("crafting_bonus").category(StatCategory.UTILITY)
+                .percentage()
+                .perPointValue(0.005f)
+                .build(),
+
+            create("auto_repair").category(StatCategory.UTILITY)
+                .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
+                .build(),
+
+            create("repair_amount").category(StatCategory.UTILITY)
+                .perPointValue(1.0f)
+                .build(),
+
+            create("use_speed").category(StatCategory.UTILITY)
+                .percentage()
+                .perPointValue(0.02f)
+                .build(),
+
+            create("bow_draw_speed").category(StatCategory.UTILITY)
+                .percentage()
+                .perPointValue(0.03f)
+                .build(),
+
+            create("cooldown_reduction").category(StatCategory.UTILITY)
+                .percentage()
+                .perPointValue(0.005f)
+                .description("减少物品冷却时间（每点 -0.5%，最高 -100%）")
+                .build(),
+
+            create("projectile_tracking").category(StatCategory.UTILITY)
+                .behavior(StatBehavior.TOGGLE).maxLevel(5).perPointValue(0)
+                .description("解锁后你发射的弹射物（箭矢、雪球、三叉戟等）会自动转向追踪敌人，优先追踪视野内的目标，被方块挡住的不会追。仅在配置半径内（默认64格，可在配置中调整）生效。")
+                .build(),
+
+            create("no_invincibility_frames").category(StatCategory.UTILITY)
+                .behavior(StatBehavior.TOGGLE).maxLevel(5).perPointValue(0)
                 .build(),
 
             create("night_vision").category(StatCategory.UTILITY)
@@ -641,62 +758,19 @@ public final class StatType {
                 .behavior(StatBehavior.TOGGLE).maxLevel(3).perPointValue(0)
                 .build(),
 
-            create("item_magnet").category(StatCategory.UTILITY)
-                .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
-                .description("立即收集范围内的掉落物，范围由配置 magnetRange 决定（默认 10 格）")
-                .build(),
-
             create("invisibility").category(StatCategory.UTILITY)
                 .behavior(StatBehavior.TOGGLE).maxLevel(3).perPointValue(0)
                 .build(),
 
-            create("vein_miner").category(StatCategory.UTILITY)
-                .behavior(StatBehavior.TOGGLE).maxLevel(3).perPointValue(0)
-                .build(),
-
-            create("auto_smelt").category(StatCategory.UTILITY)
-                .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
-                .build(),
-
-            create("xp_magnet").category(StatCategory.UTILITY)
-                .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
-                .build(),
-
-            create("projectile_tracking").category(StatCategory.UTILITY)
+            create("keep_inventory").category(StatCategory.UTILITY)
                 .behavior(StatBehavior.TOGGLE).maxLevel(5).perPointValue(0)
-                .description("解锁后你发射的弹射物（箭矢、雪球、三叉戟等）会自动转向追踪敌人，优先追踪视野内的目标，被方块挡住的不会追。仅在配置半径内（默认64格，可在配置中调整）生效。")
+                .description("投入5点解锁：死亡时保留背包与装备栏物品（即使未开启游戏规则 keepInventory 也不掉落）")
                 .build(),
 
-            create("no_invincibility_frames").category(StatCategory.UTILITY)
-                .behavior(StatBehavior.TOGGLE).maxLevel(5).perPointValue(0)
-                .build(),
-
-            create("double_loot").category(StatCategory.UTILITY)
-                .percentage()
-                .perPointValue(0.005f)
-                .build(),
-
-            create("crafting_bonus").category(StatCategory.UTILITY)
-                .percentage()
-                .perPointValue(0.005f)
-                .build(),
-
-            create("bow_draw_speed").category(StatCategory.UTILITY)
-                .percentage()
-                .perPointValue(0.03f)
-                .build(),
-
-            create("use_speed").category(StatCategory.UTILITY)
-                .percentage()
-                .perPointValue(0.02f)
-                .build(),
-
-            create("auto_repair").category(StatCategory.UTILITY)
-                .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
-                .build(),
-
-            create("repair_amount").category(StatCategory.UTILITY)
-                .perPointValue(1.0f)
+            create("keep_xp").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：死亡不掉经验等级与经验条（配合「死亡不掉落」可完整保命）")
                 .build(),
 
             create("time_accel").category(StatCategory.UTILITY)
@@ -707,12 +781,6 @@ public final class StatType {
             create("time_accel_radius").category(StatCategory.UTILITY)
                 .perPointValue(1.0f)
                 .description("扩大「加速」的影响半径（每点 +1 格），玩家可自行加点扩展范围")
-                .build(),
-
-            create("cooldown_reduction").category(StatCategory.UTILITY)
-                .percentage()
-                .perPointValue(0.005f)
-                .description("减少物品冷却时间（每点 -0.5%，最高 -100%）")
                 .build(),
 
             create("cross_dimension_teleport").category(StatCategory.UTILITY)
@@ -743,6 +811,36 @@ public final class StatType {
                 .toggle()
                 .maxLevel(1)
                 .description("开启后可使用 /infstats anvil 打开随身铁砧（修复与重命名，正常消耗经验）")
+                .build(),
+
+            create("portable_ender_chest").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可随时打开自己的末影箱（属性面板页脚「末影箱」按钮或 /infstats enderchest）")
+                .build(),
+
+            create("portable_smithing").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可随时打开锻造台（属性面板页脚「锻造台」按钮或 /infstats smithing）")
+                .build(),
+
+            create("trade_discount").category(StatCategory.UTILITY)
+                .percentage()
+                .perPointValue(0.01f)
+                .description("村民交易折扣：每点使交易价格降低 1%（最高 90%），对流浪商人生效；与声望折扣取更优惠的一者")
+                .build(),
+
+            create("trade_restock").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：与村民交易后立刻补货，可以连续交易同一条目")
+                .build(),
+
+            create("anvil_cost").category(StatCategory.UTILITY)
+                .percentage()
+                .perPointValue(0.05f)
+                .description("铁砧操作的等级消耗 -5% / 点（最多 -90%），同时降低「过于昂贵」的门槛")
                 .build(),
 
             create("pe_auto_learn").category(StatCategory.UTILITY)
@@ -805,6 +903,31 @@ public final class StatType {
     @Nullable
     public String getAttributeName() {
         return attributeName;
+    }
+
+    /** 获取镜像写入的属性注册名（不含主属性） */
+    public List<String> getMirrorAttributeNames() {
+        return mirrorAttributeNames;
+    }
+
+    /**
+     * 解析该属性生效的所有真实属性实例（主属性 + 镜像属性），
+     * 未注册的属性（模组不存在）会被自动跳过。
+     * @return 注册名 → Attribute，保持插入顺序，主属性在最前
+     */
+    public Map<String, Attribute> resolveAttributes() {
+        Map<String, Attribute> result = new LinkedHashMap<>();
+        Attribute primary = getAttribute();
+        if (primary != null && attributeName != null) {
+            result.put(attributeName, primary);
+        }
+        for (int i = 0; i < mirrorAttributeNames.size(); i++) {
+            Attribute mirror = mirrorAttributeSuppliers.get(i).get();
+            if (mirror != null) {
+                result.putIfAbsent(mirrorAttributeNames.get(i), mirror);
+            }
+        }
+        return result;
     }
 
     public String getDescription() {

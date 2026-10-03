@@ -289,7 +289,7 @@ public class PortableFurnaceMenu extends BulkStorageMenu {
     /** 从 RS 网络提取可熔炼矿物补入输入槽。 */
     public void refillOreFromNetwork() {
         if (!(player instanceof ServerPlayer sp)) return;
-        List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+        List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_FURNACE);
         if (nets.isEmpty()) {
             sp.sendSystemMessage(Component.literal(NetworkIO.diagnose(player)));
             return;
@@ -327,7 +327,7 @@ public class PortableFurnaceMenu extends BulkStorageMenu {
     /** 从 RS 网络提取燃料补入燃料槽。 */
     public void refillFuelFromNetwork() {
         if (!(player instanceof ServerPlayer sp)) return;
-        List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+        List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_FURNACE);
         if (nets.isEmpty()) {
             sp.sendSystemMessage(Component.literal(NetworkIO.diagnose(player)));
             return;
@@ -365,7 +365,7 @@ public class PortableFurnaceMenu extends BulkStorageMenu {
     /** 将成品储备箱（成品仓）中的成品存入 RS 网络。 */
     public void depositProductsToNetwork() {
         if (!(player instanceof ServerPlayer sp)) return;
-        List<NetworkHandle> nets = NetworkIO.getNetworks(player);
+        List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_FURNACE);
         if (nets.isEmpty()) {
             sp.sendSystemMessage(Component.literal(NetworkIO.diagnose(player)));
             return;

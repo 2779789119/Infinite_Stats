@@ -87,4 +87,21 @@ public final class ClientSetup {
         event.register(OPEN_ACHIEVEMENTS_KEY);
         event.register(OPEN_WAYPOINT_KEY);
     }
+
+    /**
+     * 注册「模组列表 → 本模组 → Config」按钮的配置界面工厂。
+     * Forge 只有在模组自己注册了这个工厂时，Config 按钮才会亮起。
+     */
+    public static void registerConfigScreen() {
+        net.minecraftforge.fml.ModLoadingContext.get().registerExtensionPoint(
+                net.minecraftforge.client.ConfigScreenHandler.ConfigScreenFactory.class,
+                () -> new net.minecraftforge.client.ConfigScreenHandler.ConfigScreenFactory(
+                        (net.minecraft.client.gui.screens.Screen parent) -> {
+                            try {
+                                return ClothConfigScreen.create(parent);
+                            } catch (Throwable t) {
+                                return null; // Cloth Config 未安装等异常情况
+                            }
+                        }));
+    }
 }

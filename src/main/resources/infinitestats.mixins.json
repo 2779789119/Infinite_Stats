@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.infinitestats.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "infinitestats.refmap.json",
+  "mixins": [
+    "ItemCombinerMenuAccessor",
+    "MerchantMenuAccessor",
+    "AnvilMenuMixin",
+    "AnimalMixin"
+  ],
+  "client": [
+    "AnvilScreenMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

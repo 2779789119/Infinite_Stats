@@ -3,6 +3,7 @@ package com.infinitestats.network;
 import com.infinitestats.InfiniteStats;
 import com.infinitestats.crafting.PortableAnvil;
 import com.infinitestats.crafting.PortableCraftingMenu;
+import com.infinitestats.crafting.PortableGuis;
 import com.infinitestats.emc.EmcDatabase;
 import com.infinitestats.emc.EmcMenu;
 import com.infinitestats.emc.EmcPlayerData;
@@ -59,7 +60,7 @@ import java.util.function.Supplier;
  */
 public final class NetworkHandler {
 
-    private static final String PROTOCOL_VERSION = "6";
+    private static final String PROTOCOL_VERSION = "14";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -69,6 +70,9 @@ public final class NetworkHandler {
 
     private static int packetId = 0;
     private static final Map<ResourceLocation, Long> CLIENT_EMC_PRICES = new HashMap<>();
+
+    /** 「自动入库」支持的存储键（与 NetworkIO 的桥接名一致）。 */
+    private static final List<String> STORAGE_KEYS = List.of("RS", "AE2", "TOMS", "BACKPACK", "BD");
 
     public static long getClientEmc(ResourceLocation id) {
         return CLIENT_EMC_PRICES.getOrDefault(id, 0L);
@@ -322,6 +326,70 @@ public final class NetworkHandler {
                 WaypointActionPacket::encode,
                 WaypointActionPacket::decode,
                 WaypointActionPacket::handle);
+
+        // 存储优先级更新（客户端 → 服务器，带作用域）
+        CHANNEL.registerMessage(packetId++, SetNetworkPriorityPacket.class,
+                SetNetworkPriorityPacket::encode,
+                SetNetworkPriorityPacket::decode,
+                SetNetworkPriorityPacket::handle);
+
+        // 自动入库过滤（白 / 黑名单）更新（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, UpdateDepositFilterPacket.class,
+                UpdateDepositFilterPacket::encode,
+                UpdateDepositFilterPacket::decode,
+                UpdateDepositFilterPacket::handle);
+
+        // 随身末影箱 / 随身锻造台打开（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EnderChestOpenPacket.class,
+                EnderChestOpenPacket::encode,
+                EnderChestOpenPacket::decode,
+                EnderChestOpenPacket::handle);
+        CHANNEL.registerMessage(packetId++, SmithingOpenPacket.class,
+                SmithingOpenPacket::encode,
+                SmithingOpenPacket::decode,
+                SmithingOpenPacket::handle);
+
+    }
+
+    /** 归一化自动入库过滤列表：只保留合法的物品 ID，并限制条目数上限。 */
+    private static Set<String> normalizeFilterIds(Set<String> ids) {
+        Set<String> out = new HashSet<>();
+        if (ids == null) return out;
+        for (String raw : ids) {
+            if (raw == null) continue;
+            String value = raw.trim();
+            if (value.isEmpty()) continue;
+            if (ResourceLocation.tryParse(value) == null) continue;
+            out.add(value);
+            if (out.size() >= 512) break;
+        }
+        return out;
+    }
+
+    /**
+     * 归一化存储优先级（任意作用域通用）：只保留已知存储键、按出现顺序去重，再把缺失的按配置默认顺序
+     * 补到末尾，最后兜底补全。保证结果始终是完整排列，客户端与服务端对顺序的理解不会分叉。
+     */
+    private static List<String> normalizeNetworkOrder(List<String> input) {
+        List<String> out = new ArrayList<>();
+        if (input != null) {
+            for (String raw : input) {
+                if (raw == null) continue;
+                String key = raw.trim().toUpperCase(Locale.ROOT);
+                if (STORAGE_KEYS.contains(key) && !out.contains(key)) out.add(key);
+            }
+        }
+        List<? extends String> cfg = Config.NETWORK_PRIORITY.get();
+        List<String> fallback = cfg != null ? new ArrayList<>(cfg) : new ArrayList<>(STORAGE_KEYS);
+        for (String raw : fallback) {
+            if (raw == null) continue;
+            String key = raw.trim().toUpperCase(Locale.ROOT);
+            if (STORAGE_KEYS.contains(key) && !out.contains(key)) out.add(key);
+        }
+        for (String key : STORAGE_KEYS) {
+            if (!out.contains(key)) out.add(key);
+        }
+        return out;
     }
 
     // ========== 数据包类 ==========
@@ -357,6 +425,8 @@ public final class NetworkHandler {
                     if (stat == null) return;
 
                     boolean success;
+                    // 已被「功能开关」关闭的属性不允许再加点（仍允许返还，避免卡住已投入的点数）
+                    if (msg.amount > 0 && stats.isStatDisabled(stat.getId())) return;
                     if (msg.amount > 0) {
                         success = stats.addPoints(stat, msg.amount);
                     } else {
@@ -1219,6 +1289,151 @@ public final class NetworkHandler {
                         menu.refreshResult();
                         menu.broadcastChanges();
                     }
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 客户端更新**某个功能**的存储优先级（作用域 + 存储键顺序，靠前者优先）。
+     * 服务端会校验作用域与键名，并把缺失的键按配置顺序补齐，避免顺序残缺。
+     * 自动入库作用域额外要求已解锁 {@code auto_deposit}；其余作用域由各自界面把关。
+     */
+    public static final class SetNetworkPriorityPacket {
+        private final String scope;
+        private final List<String> order;
+
+        public SetNetworkPriorityPacket(String scope, List<String> order) {
+            this.scope = scope == null ? "" : scope;
+            this.order = order == null ? List.of() : new ArrayList<>(order);
+        }
+
+        public static void encode(SetNetworkPriorityPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.scope);
+            buf.writeVarInt(msg.order.size());
+            for (String key : msg.order) buf.writeUtf(key);
+        }
+
+        public static SetNetworkPriorityPacket decode(FriendlyByteBuf buf) {
+            String scope = buf.readUtf();
+            int n = buf.readVarInt();
+            List<String> list = new ArrayList<>(Math.max(0, Math.min(n, 32)));
+            for (int i = 0; i < n; i++) list.add(buf.readUtf(16));
+            return new SetNetworkPriorityPacket(scope, list);
+        }
+
+        public static void handle(SetNetworkPriorityPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (!PlayerStats.NETWORK_SCOPES.contains(msg.scope)) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (PlayerStats.SCOPE_AUTO_DEPOSIT.equals(msg.scope)
+                            && !stats.isToggleActive("auto_deposit")) {
+                        return;
+                    }
+                    stats.setNetworkPriority(msg.scope, normalizeNetworkOrder(msg.order));
+                    syncToClient(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 客户端更新「自动入库」的白 / 黑名单过滤（物品 ID 集合 + 模式）。
+     * 服务端会剔除非法 ID 并限制条目数，避免客户端塞入垃圾数据。
+     */
+    public static final class UpdateDepositFilterPacket {
+        private final boolean useWhitelist;
+        private final Set<String> itemIds;
+
+        public UpdateDepositFilterPacket(boolean useWhitelist, Set<String> itemIds) {
+            this.useWhitelist = useWhitelist;
+            this.itemIds = itemIds == null ? Set.of() : new HashSet<>(itemIds);
+        }
+
+        public static void encode(UpdateDepositFilterPacket msg, FriendlyByteBuf buf) {
+            buf.writeBoolean(msg.useWhitelist);
+            buf.writeVarInt(msg.itemIds.size());
+            for (String id : msg.itemIds) buf.writeUtf(id);
+        }
+
+        public static UpdateDepositFilterPacket decode(FriendlyByteBuf buf) {
+            boolean useWhitelist = buf.readBoolean();
+            int count = buf.readVarInt();
+            Set<String> ids = new HashSet<>();
+            for (int i = 0; i < count; i++) ids.add(buf.readUtf());
+            return new UpdateDepositFilterPacket(useWhitelist, ids);
+        }
+
+        public static void handle(UpdateDepositFilterPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("auto_deposit")) return;
+                    stats.setAutoDepositFilterList(normalizeFilterIds(msg.itemIds), msg.useWhitelist);
+                    syncToClient(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求打开随身末影箱（需已开启 portable_ender_chest 开关）。 */
+    public static final class EnderChestOpenPacket {
+        public EnderChestOpenPacket() {}
+
+        public static void encode(EnderChestOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static EnderChestOpenPacket decode(FriendlyByteBuf buf) {
+            return new EnderChestOpenPacket();
+        }
+
+        public static void handle(EnderChestOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_ender_chest")) {
+                        player.sendSystemMessage(
+                                Component.translatable("message.infinitestats.ender_chest_locked"));
+                        return;
+                    }
+                    PortableGuis.openEnderChest(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求打开随身锻造台（需已开启 portable_smithing 开关）。 */
+    public static final class SmithingOpenPacket {
+        public SmithingOpenPacket() {}
+
+        public static void encode(SmithingOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static SmithingOpenPacket decode(FriendlyByteBuf buf) {
+            return new SmithingOpenPacket();
+        }
+
+        public static void handle(SmithingOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_smithing")) {
+                        player.sendSystemMessage(
+                                Component.translatable("message.infinitestats.smithing_locked"));
+                        return;
+                    }
+                    PortableGuis.openSmithing(player);
                 });
             });
             ctx.get().setPacketHandled(true);
