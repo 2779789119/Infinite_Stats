@@ -156,10 +156,20 @@ public final class AE2NetworkBridge {
     private static ItemStack findInCurios(Player player) {
         try {
             Class<?> api = Class.forName("top.theillusivec4.curios.api.CuriosApi");
-            Method getInv = api.getMethod("getCuriosInventory", Player.class);
-            Object lazy = getInv.invoke(null, player);
-            if (lazy == null) return ItemStack.EMPTY;
-            Object opt = lazy.getClass().getMethod("resolve").invoke(lazy);
+            // Curios 5.x 的签名是 getCuriosInventory(LivingEntity)，旧版是 Player，两种都要兼容：
+            // 只按 Player 找会抛 NoSuchMethodException → 饰品栏里的终端永远检测不到
+            Method getInv;
+            try {
+                getInv = api.getMethod("getCuriosInventory", Player.class);
+            } catch (NoSuchMethodException e) {
+                getInv = api.getMethod("getCuriosInventory",
+                        Class.forName("net.minecraft.world.entity.LivingEntity"));
+            }
+            Object raw = getInv.invoke(null, player);
+            if (raw == null) return ItemStack.EMPTY;
+            // 兼容 LazyOptional（Forge）与 Optional 两种返回类型
+            Object opt = raw.getClass().getName().contains("LazyOptional")
+                    ? raw.getClass().getMethod("resolve").invoke(raw) : raw;
             if (opt == null || !(Boolean) opt.getClass().getMethod("isPresent").invoke(opt)) {
                 return ItemStack.EMPTY;
             }
@@ -169,15 +179,31 @@ public final class AE2NetworkBridge {
             if (!(map instanceof Map)) return ItemStack.EMPTY;
             for (Object sh : ((Map<?, ?>) map).values()) {
                 Object stacks = sh.getClass().getMethod("getStacks").invoke(sh);
-                for (ItemStack s : asItemStackList(stacks)) {
-                    if (isWireless(s)) return s;
+                // Curios 5.x 的 getStacks() 返回 IDynamicStackHandler（实现 IItemHandler），
+                // 既不是 List 也没有 resolve()，必须按槽位遍历
+                if (stacks instanceof net.minecraftforge.items.IItemHandler ih) {
+                    for (int i = 0; i < ih.getSlots(); i++) {
+                        ItemStack s = ih.getStackInSlot(i);
+                        if (isWireless(s)) return s;
+                    }
+                } else {
+                    // 兼容极旧版本返回 List<ItemStack> 的情况
+                    for (ItemStack s : asItemStackList(stacks)) {
+                        if (isWireless(s)) return s;
+                    }
                 }
             }
-        } catch (Throwable ignored) {
-            // 未安装 Curios 或 API 不兼容，忽略
+        } catch (Throwable t) {
+            if (!curiosScanWarned) {
+                curiosScanWarned = true;
+                LOGGER.warn("[AE2NetworkBridge] 扫描 Curios 饰品栏失败，无线终端放饰品栏时将检测不到", t);
+            }
         }
         return ItemStack.EMPTY;
     }
+
+    /** 饰品栏扫描失败只提示一次，避免每秒扫描时刷屏。 */
+    private static boolean curiosScanWarned;
 
     @SuppressWarnings("unchecked")
     private static List<ItemStack> asItemStackList(Object o) {

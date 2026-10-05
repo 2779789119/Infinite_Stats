@@ -254,6 +254,8 @@ public class StatsScreen extends Screen {
         icon("portable_smithing", Items.SMITHING_TABLE);
         icon("breed_no_cooldown", Items.WHEAT);
         icon("instant_grow", Items.GOLDEN_CARROT);
+        icon("auto_fish", Items.FISHING_ROD);
+        icon("instant_bite", Items.TROPICAL_FISH);
     }
 
     private static void icon(String statId, net.minecraft.world.item.Item item) {

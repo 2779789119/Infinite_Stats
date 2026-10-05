@@ -10,6 +10,7 @@ import com.infinitestats.furnace.FurnaceOrePriorityMenu;
 import com.infinitestats.client.PortableFurnaceScreen;
 import com.infinitestats.client.FurnaceOrePriorityScreen;
 import com.infinitestats.handler.CooldownHandler;
+import com.infinitestats.handler.MobilityHandler;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
@@ -183,6 +184,10 @@ public final class ClientEventHandler {
 
             // 自动跨越：客户端本地同步 maxUpStep
             syncStepHeight(player, stats);
+            // 飞行速度：飞行时读的是本地 abilities.flyingSpeed，服务端能力包不可靠
+            syncFlySpeed(player, stats);
+            // 跳跃高度：起跳速度必须本地放大，服务端改的会被客户端运动包覆盖
+            applyJumpBoost(player, stats);
             // N 段跳 / 爬梯加速：移动是客户端权威的，必须本地改速度
             applyMovementExtras(player, stats);
         });
@@ -254,6 +259,81 @@ public final class ClientEventHandler {
         }
     }
 
+    // ========== 飞行速度加成（客户端） ==========
+
+    /** 原版飞行速度基准（{@code Abilities#flyingSpeed} 默认 0.05）。 */
+    private static final float VANILLA_FLY_SPEED = 0.05f;
+    /** 上一次由本模组写入的目标值，小于 0 表示当前没有接管。 */
+    private static float lastAppliedFlySpeed = -1f;
+
+    /**
+     * 飞行速度加成（客户端本地）。
+     * <p>
+     * 飞行时移动速度取的是<b>本地</b> {@code abilities.flyingSpeed}
+     * （{@code Player#getFlyingSpeed()} → {@code LivingEntity#getFrictionInfluencedSpeed()}），
+     * 服务端发送的能力包在整合包环境下可能被其它模组覆盖或丢失，导致加点后完全看不到效果。
+     * 与 N 段跳 / 爬梯加速 / 自动跨越同理，这里每 tick 本地校正一次，保证一定生效。
+     * <p>
+     * 退款（bonus ≤ 0）时只回收「本模组自己写进去的那个值」，不碰其它模组设置的速度。
+     */
+    private static void syncFlySpeed(LocalPlayer player, PlayerStats stats) {
+        var abilities = player.getAbilities();
+        float bonus = stats.getStatValue(StatType.fromId("fly_speed"));
+
+        if (bonus <= 0) {
+            if (lastAppliedFlySpeed > 0
+                    && Math.abs(abilities.getFlyingSpeed() - lastAppliedFlySpeed) < 1e-4f) {
+                abilities.setFlyingSpeed(VANILLA_FLY_SPEED);
+            }
+            lastAppliedFlySpeed = -1f;
+            return;
+        }
+
+        float target = VANILLA_FLY_SPEED * (1.0f + bonus);
+        if (Math.abs(abilities.getFlyingSpeed() - target) > 1e-4f) {
+            abilities.setFlyingSpeed(target);
+        }
+        lastAppliedFlySpeed = target;
+    }
+
+    // ========== 跳跃高度加成（客户端） ==========
+
+    /** 上一客户端 tick 是否在地面（用于客户端起跳检测）。 */
+    private static boolean clientWasOnGround;
+
+    /**
+     * 跳跃高度加成（客户端本地）。
+     * <p>
+     * 玩家移动是客户端权威的：服务端 {@code StatEventHandler#handleJumpBoost} 改的
+     * deltaMovement 会被客户端发来的运动包覆盖，面板上加的点完全看不到效果。
+     * 与 N 段跳 / 爬梯加速同理，必须在 LocalPlayer 上本地放大起跳速度。
+     * <p>
+     * 检测口径与服务端一致：上一tick在地面、本tick离地且 Y 速度为正 → 起跳瞬间；
+     * 并按服务端同样的方式用 setPos 补偿本 tick 已按原始速度跑完的位移。
+     */
+    private static void applyJumpBoost(LocalPlayer player, PlayerStats stats) {
+        float multiplier = 1.0f + stats.getStatValue(StatType.fromId("jump_height"));
+        if (multiplier <= 1.0f) return;
+
+        boolean onGround = player.onGround();
+        boolean was = clientWasOnGround;
+        clientWasOnGround = onGround;
+
+        if (was && !onGround && player.getDeltaMovement().y > 0) {
+            Vec3 motion = player.getDeltaMovement();
+            double boostedY = motion.y * multiplier;
+            double extraY = boostedY - motion.y;
+
+            // 补偿本tick已用原始速度跑完的运动（travel() 在 aiStep 中已经执行）
+            if (extraY > 0.001) {
+                player.setPos(player.getX(), player.getY() + extraY, player.getZ());
+            }
+
+            player.setDeltaMovement(motion.x, boostedY, motion.z);
+            player.hasImpulse = true;
+        }
+    }
+
     // ========== 自动跨越高度（客户端同步） ==========
 
     /**
@@ -264,8 +344,8 @@ public final class ClientEventHandler {
      * MobilityHandler#updateStepHeight 完全一致的公式在本地同步。
      */
     private static void syncStepHeight(LocalPlayer player, PlayerStats stats) {
-        float targetStep = 0.6f;
-        if (stats.isToggleActive("auto_step")) targetStep = 1.0f;
+        float targetStep = MobilityHandler.DEFAULT_STEP_HEIGHT;
+        if (stats.isToggleActive("auto_step")) targetStep = MobilityHandler.AUTO_STEP_HEIGHT;
         float stepBonus = stats.getStatValue(StatType.fromId("step_height"));
         if (stepBonus > 0) targetStep *= (1.0f + stepBonus);
 

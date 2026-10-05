@@ -8,7 +8,9 @@
     "ItemCombinerMenuAccessor",
     "MerchantMenuAccessor",
     "AnvilMenuMixin",
-    "AnimalMixin"
+    "AnimalMixin",
+    "EntityMoveRelativeMixin",
+    "FishingHookAccessor"
   ],
   "client": [
     "AnvilScreenMixin"

@@ -1133,6 +1133,8 @@ public final class StatEventHandler {
         VIRTUAL_CROSSBOW_SHOTS.remove(event.getEntity().getUUID());
         // 多重射击的「本 tick 已补箭」记录同理
         MULTI_SHOT_TICKS.remove(event.getEntity().getUUID());
+        // 自动钓鱼的重抛延迟记录
+        AutoFish.forget(event.getEntity().getUUID());
     }
 
     // ========== 玩家重生 ==========

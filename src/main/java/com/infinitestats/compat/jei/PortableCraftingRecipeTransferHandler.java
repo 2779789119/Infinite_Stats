@@ -179,8 +179,14 @@ public class PortableCraftingRecipeTransferHandler implements IRecipeTransferHan
             if (!(map instanceof java.util.Map)) return false;
             for (Object sh : ((java.util.Map<?, ?>) map).values()) {
                 Object stacks = sh.getClass().getMethod("getStacks").invoke(sh);
-                if (stacks instanceof Iterable) {
-                    for (Object sObj : (Iterable<?>) stacks) {
+                // Curios 5.x 的 getStacks() 返回 IDynamicStackHandler（实现 IItemHandler），不是 Iterable
+                if (stacks instanceof net.minecraftforge.items.IItemHandler curioStacks) {
+                    for (int i = 0; i < curioStacks.getSlots(); i++) {
+                        ItemStack s = curioStacks.getStackInSlot(i);
+                        if (!s.isEmpty() && isStorageTerminal(s)) return true;
+                    }
+                } else if (stacks instanceof Iterable<?> it) {
+                    for (Object sObj : it) {
                         if (sObj instanceof ItemStack s
                                 && !s.isEmpty() && isStorageTerminal(s)) return true;
                     }

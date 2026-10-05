@@ -696,6 +696,18 @@ public final class StatType {
                 .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
                 .build(),
 
+            create("auto_fish").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：主手持钓鱼竿并看向水面时自动抛竿，鱼一咬钩就自动收杆并重新抛出（重抛间隔可在配置里调）")
+                .build(),
+
+            create("instant_bite").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：鱼几乎立刻咬钩（跳过原版 5~30 秒的等待），手动钓鱼也生效；配合自动钓鱼即高速全自动")
+                .build(),
+
             create("breed_no_cooldown").category(StatCategory.UTILITY)
                 .toggle()
                 .maxLevel(3)

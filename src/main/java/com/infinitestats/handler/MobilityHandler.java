@@ -12,6 +12,21 @@ import net.minecraft.world.phys.Vec3;
  */
 public class MobilityHandler implements StatEffectHandler {
 
+    /** 原版飞行速度基准（{@code Abilities#flyingSpeed} 默认值）。 */
+    private static final float VANILLA_FLY_SPEED = 0.05f;
+
+    /** 原版默认跨越高度（台阶 = 0.5 格能上，整格 1.0 上不去）。 */
+    public static final float DEFAULT_STEP_HEIGHT = 0.6f;
+
+    /**
+     * {@code auto_step} 激活时的跨越高度。
+     * <p>
+     * 取 1.25 而不是"刚好一格"的 1.0：1.0 只在几何上刚好够，客户端/服务端各自模拟的浮点
+     * 误差、以及台阶相邻方块的棱角都会让它差那么一点点，表现就是贴着台阶走不上去
+     * （本项目另一个模组同样用 1.25 才稳妥）。
+     */
+    public static final float AUTO_STEP_HEIGHT = 1.25f;
+
     @Override
     public String getId() {
         return "mobility";
@@ -29,9 +44,6 @@ public class MobilityHandler implements StatEffectHandler {
             updateFlight(player, stats, false);
             updateStepHeight(player, stats);
         }
-
-        // 每tick更新游泳速度
-        updateSwimSpeed(player, stats);
     }
 
     @Override
@@ -97,13 +109,18 @@ public class MobilityHandler implements StatEffectHandler {
         }
     }
 
+    /**
+     * 服务端侧同步飞行速度（真正的幅度由客户端 {@code ClientEventHandler#syncFlySpeed} 保证，
+     * 因为飞行时读取的是客户端本地 {@code abilities.flyingSpeed}）。
+     * <p>
+     * 基准固定为原版默认值 0.05，<b>不再</b>从当前 abilities 读取后缓存：
+     * {@code Abilities} 的 flySpeed 会被写进玩家 NBT，缓存"当前值"作为基准会导致
+     * 每次重新登录都按倍率复利放大（0.05 → 0.25 → 1.25 …）。
+     */
     private void updateFlightSpeed(ServerPlayer player, PlayerStats stats, boolean forceSync) {
         float bonus = stats.getStatValue("fly_speed");
-        String key = "infinitestats.base_fly_speed";
-        var data = player.getPersistentData();
         if (bonus != 0) {
-            if (!data.contains(key)) data.putFloat(key, player.getAbilities().getFlyingSpeed());
-            float speed = Math.max(0, data.getFloat(key) * (1.0f + bonus));
+            float speed = Math.max(0, VANILLA_FLY_SPEED * (1.0f + bonus));
             // forceSync：客户端飞行速度同样会在 LocalPlayer 重建时被重置回 0.05
             if (forceSync || player.getAbilities().getFlyingSpeed() != speed) {
                 player.getAbilities().setFlyingSpeed(speed);
@@ -111,8 +128,9 @@ public class MobilityHandler implements StatEffectHandler {
             }
             stats.setProviding("fly_speed", true);
         } else if (stats.isProviding("fly_speed")) {
-            player.getAbilities().setFlyingSpeed(data.contains(key) ? data.getFloat(key) : 0.05f);
-            data.remove(key);
+            player.getAbilities().setFlyingSpeed(VANILLA_FLY_SPEED);
+            // 清理旧版本缓存的基准值，避免老存档残留
+            player.getPersistentData().remove("infinitestats.base_fly_speed");
             stats.setProviding("fly_speed", false);
             player.onUpdateAbilities();
         }
@@ -122,11 +140,11 @@ public class MobilityHandler implements StatEffectHandler {
      * 更新自动跨越高度（含 step_height 加成）
      */
     private void updateStepHeight(ServerPlayer player, PlayerStats stats) {
-        float targetStep = 0.6f;
+        float targetStep = DEFAULT_STEP_HEIGHT;
 
-        // auto_step: 开关型，激活后基础跨越=1.0
+        // auto_step: 开关型，激活后基础跨越 = 1.25（见 AUTO_STEP_HEIGHT 说明）
         if (stats.isToggleActive("auto_step")) {
-            targetStep = 1.0f;
+            targetStep = AUTO_STEP_HEIGHT;
         }
 
         // step_height: 百分比加成
@@ -141,23 +159,11 @@ public class MobilityHandler implements StatEffectHandler {
     }
 
     /**
-     * 更新游泳速度
-     */
-    private void updateSwimSpeed(ServerPlayer player, PlayerStats stats) {
-        float swimSpeed = stats.getStatValue(StatType.fromId("swim_speed"));
-        if (swimSpeed <= 0) return;
-        if (!player.isInWater()) return;
-
-        Vec3 motion = player.getDeltaMovement();
-        double hLen = Math.sqrt(motion.x * motion.x + motion.z * motion.z);
-        if (hLen < 0.01) return;
-
-        float boost = 1.0f + swimSpeed;
-        player.setDeltaMovement(motion.x * boost, motion.y, motion.z * boost);
-    }
-
-    /**
-     * 计算游泳速度加成
+     * 计算游泳速度倍率（1 + 加成）。
+     * <p>
+     * 实际生效点在 {@code mixin/EntityMoveRelativeMixin}：那里的实现放大的是
+     * 「输入加速度」这一项，终端速度与原版成正比、线性不发散；
+     * 服务端不再直接改速度（玩家移动是客户端权威的，改了客户端也收不到）。
      */
     public static float getSwimSpeedMultiplier(PlayerStats stats) {
         return 1.0f + stats.getStatValue(StatType.fromId("swim_speed"));

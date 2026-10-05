@@ -128,8 +128,17 @@ public final class Config {
     /** 自动入库黑名单（物品 ID），列表中的物品永不自动存入存储。 */
     public static ForgeConfigSpec.ConfigValue<List<? extends String>> AUTO_DEPOSIT_BLACKLIST;
 
+    // ========== 自动钓鱼设置 ==========
+
+    /** 自动钓鱼：收杆后重新抛竿的最短延迟（tick）。 */
+    public static ForgeConfigSpec.IntValue AUTO_FISH_RECAST_DELAY_MIN;
+
+    /** 自动钓鱼：收杆后重新抛竿的最长延迟（tick）。 */
+    public static ForgeConfigSpec.IntValue AUTO_FISH_RECAST_DELAY_MAX;
+
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
+
 
         // 经验设置
         builder.push("Experience");
@@ -306,6 +315,18 @@ public final class Config {
                          "列表中的物品永远不会被自动存入存储网络。",
                          "注：存储终端（RS / AE2 / 汤姆存储的无线终端等）与背包会被自动保护，无需在此重复配置。")
                 .defineList("autoDepositBlacklist", List.<String>of(), o -> o instanceof String);
+        builder.pop();
+
+        // 自动钓鱼设置
+        builder.push("AutoFish");
+        AUTO_FISH_RECAST_DELAY_MIN = builder
+                .comment("「自动钓鱼」收杆后重新抛竿的最短延迟（tick，20tick = 1 秒）。",
+                         "留一点延迟可以避免机器式瞬间连抛，也更接近手动钓鱼的节奏。")
+                .defineInRange("autoFishRecastDelayMin", 5, 0, 200);
+        AUTO_FISH_RECAST_DELAY_MAX = builder
+                .comment("「自动钓鱼」收杆后重新抛竿的最长延迟（tick）。",
+                         "每次实际延迟在「最短 ~ 最长」之间随机；两者相同则为固定延迟。")
+                .defineInRange("autoFishRecastDelayMax", 15, 0, 200);
         builder.pop();
 
         SPEC = builder.build();

@@ -1,5 +1,148 @@
 # 更新日志 (Changelog)
 
+## [1.29.1] - 2026-10-05
+
+### 🎯 自动抛竿加视线限制：只在瞄着水面时抛
+
+- **改动**：`auto_fish` 的自动抛竿增加视线检查 —— 主手持竿但**看着别处（陆地、天空、墙、岩浆）时不再甩竿**，
+  避免在家里 / 洞里 / 挖矿时凭空抛竿。收杆行为不变（已有浮标时照常收）。
+- **判定口径**：从眼睛沿视线取 12 格做一次 `level.clip`：
+  - 用 `ClipContext.Block.COLLIDER`（只算**有碰撞**的方块）—— 草、花、火把、藤蔓这类无碰撞方块
+    不会被误判成遮挡，浮标本就能穿过它们落进水里，判定与实际飞行一致；
+  - `ClipContext.Fluid.ANY` 命中流体时 `BlockHitResult#getBlockPos()` 就是流体方块本身，
+    据此只认**水**（瞄着岩浆不算）。
+  - 距离 12 格：原版浮标从眼前 0.6 格处沿视线以约 1 格/tick 抛出，落点最远 10 格上下，12 格留了富余。
+- 检查放在重抛延迟之后（延迟未到就不做射线，省开销）。
+- 同步更新属性描述与 `zh_cn` / `en_us` 文案（说明需要看向水面）。
+- 纯服务端行为调整，无协议、无存档结构变化。
+
+## [1.29.0] - 2026-10-04
+
+### ⚡ 新功能：立即咬钩（`instant_bite`）
+
+- **属性**：功能类新增开关型属性「立即咬钩」`instant_bite`（投入 3 点解锁，与自动钓鱼同档）。
+- **行为**：把原版「鱼游过来（`timeUntilLured` 100~600 tick ≈ 5~30 秒）→ 鱼准备咬
+  （`timeUntilHooked` 20~80 tick）」两段等待压到 **1 tick**，约两三个 tick 内就会咬钩。
+  - **手动钓鱼也生效**（不像自动钓鱼只认主手持竿的自动抛竿）；与自动钓鱼同时开启即高速全自动钓鱼。
+  - 值没有直接设 0：原版是在"递减到 ≤0"的那条分支里补放咬钩音效 / 粒子并把 `nibble` 设成 20~40 的，
+    留 1 tick 让这条正常路径走完，收杆窗口、战利品、经验与附魔加成都与原版一致。
+  - 每 tick 压一次：原版在 `timeUntilLured` 归零时会重新给 `timeUntilHooked` 赋 20~80，只压一次会被覆盖。
+- **实现**：`mixin/FishingHookAccessor` 增加 `timeUntilLured` / `timeUntilHooked` 的 getter + setter
+  （`nibble` 的访问器沿用上一版），`handler/AutoFish` 新增 `compressBiteTimers()`；
+  `UtilityHandler` 的钓鱼分支改为「`auto_fish` 或 `instant_bite` 任一开启即每 tick 检查」。
+- 附属：`StatsScreen` 补图标（热带鱼）、`zh_cn` / `en_us` 文案。
+- 全流程在服务端，客户端无改动；无协议、无存档结构变化。
+
+## [1.28.0] - 2026-10-04
+
+### 🎣 新功能：自动钓鱼（`auto_fish`）
+
+- **属性**：功能类新增开关型属性「自动钓鱼」`auto_fish`（投入 3 点解锁，与自动入库 / 连锁挖掘同档）。
+- **行为**：主手拿着钓鱼竿时自动抛竿；鱼一咬钩**立刻**自动收杆，隔一小段随机延迟再抛出。
+  - 所有收杆 / 抛竿都直接复用原版 `FishingRodItem#use`，因此战利品表、经验球、
+    耐久损耗、`player.fishing` 清理、音效、统计与附魔（海之眷顾 / 诱饵）全部与原版手动钓鱼一致，
+    也不会和其它钓鱼模组跑偏。
+  - 咬钩判定用原版 `FishingHook#nibble`（咬钩窗口 20~40 tick，错过鱼就跑了）：
+    新增 `mixin/FishingHookAccessor` 暴露该私有字段，窗口内每 tick 检查、命中即收杆。
+  - 只在主手持竿时**自动抛竿**（副手挂竿不会在手里拿着别的物品时乱抛）；收杆则主手 / 副手有竿都认。
+  - 正在使用物品（吃喝 / 拉弓）时不会打扰；旁观 / 死亡不触发。
+- **配置**：新增 `AutoFish` 段 —— `autoFishRecastDelayMin`（默认 5）与 `autoFishRecastDelayMax`（默认 15），
+  单位为 tick，实际每次重抛在区间内随机，避免机器式连抛。
+- **附属改动**：`UtilityHandler` 每 tick 接入（咬钩窗口短，必须每 tick 检查）、
+  `StatsScreen` 补图标（钓鱼竿）、`StatEventHandler#onPlayerLogout` 清理重抛记录、
+  `zh_cn` / `en_us` 文案。
+- 全流程在服务端完成（浮标 / 咬钩 / 战利品本来就只在服务端），客户端无需任何改动。
+- 无协议、无存档结构变化（新增一个按玩家一次性写入的开关属性，点数照常扣）。
+
+## [1.27.5] - 2026-10-04
+
+### 🏊 修好「游泳速度」加点无效（改用 Mixin 放大输入加速度）
+
+- **问题**：加了「游泳速度」后在水里游动完全没变快。
+- **原因**（两层）：
+  1. 旧实现是在服务端每 tick 把 `deltaMovement` 乘 `(1+bonus)`。玩家移动是客户端权威的，
+     服务端改的速度客户端收不到 → 等于没写；
+  2. 原版水里的横向速度来自 `LivingEntity#travel` 中写死的 `moveRelative(0.02F, 输入)`
+     （0.02 是硬编码的输入加速度，Depth Strider 只在它上面插值），**没有任何属性通道**。
+     而"把整条速度乘倍率"会和原版自己的衰减 `delta.multiply(0.8, 0.8, 0.8)` 互相累积：
+     终端速度 = a·d/(1−d·(1+bonus))，倍率一过 1.25 分母就变负 → 指数发散（越游越快 / 抖动）。
+- **修复**：新增 `mixin/EntityMoveRelativeMixin`，`@Redirect` 掉 `Entity#moveRelative` 里的
+  `setDeltaMovement`，**只把本次加进去的那一项输入加速度**乘 `(1+bonus)`：
+  终端速度 = a·(1+bonus)·d/(1−d)，与原版成正比 —— 线性、不发散、也保留其它来源的动量。
+  仅对「玩家 + 在水中 + 非骑乘 + 非飞行」生效（客户端与服务端都生效，服务端模拟更贴近客户端）。
+- **移除** `MobilityHandler#updateSwimSpeed`（旧的服务端改速度实现，既无效又可能让服务端模拟跑飞）；
+  `getSwimSpeedMultiplier(stats)` 保留，供 Mixin 复用同一套数值口径。
+- 已确认 mixin refmap 正确解析到 `Entity#m_19920_` / `Entity#m_20256_`。
+- 无协议、无存档结构变化。
+
+## [1.27.4] - 2026-10-04
+
+### 🪜 修好「自动跨越」走不上一格台阶
+
+- **问题**：开启 `auto_step`（自动跨越）后走到一格高的方块前仍然上不去 / 被卡住。
+- **原因**：跨越高度取的是"刚好一格"的 `1.0`。这个值只在几何上刚好够 ——
+  原版 `Entity#collide` 的抬升判定（`vec32.y < maxUpStep`、以及抬升后贴着台阶顶面再水平移动）
+  在浮点误差、以及客户端/服务端各自模拟的微小差异下会差一点点，于是本地预判失败、上不去。
+- **修复**：`auto_step` 的跨越高度由 `1.0` 改为 **`1.25`**（留出余量，能稳稳走上一格），
+  并把 `0.6` / `1.25` 提成 `MobilityHandler.DEFAULT_STEP_HEIGHT` / `AUTO_STEP_HEIGHT`
+  两个公共常量，客户端 `ClientEventHandler#syncStepHeight` 与服务端
+  `MobilityHandler#updateStepHeight` 统一引用，避免两边再写漂。
+- `step_height` 的百分比加成规则不变（在跨越高度上再乘 `1 + bonus`）。
+- 纯数值调整，无协议、无存档结构变化。
+
+## [1.27.3] - 2026-10-04
+
+### 🕊️ 修好「飞行速度」加点无效 / 老存档会复利放大
+
+- **原因**：飞行时客户端读取的是**本地** `abilities.flyingSpeed`
+  （`Player#getFlyingSpeed()` → `LivingEntity#getFrictionInfluencedSpeed()`），
+  而加成只写在服务端并靠能力包下发，在整合包里可能被其它模组覆盖或直接丢失 ——
+  和之前「跳跃高度」「N 段跳」「自动跨越」是同一个坑。
+- **客户端本地校正**：`ClientEventHandler` 新增 `syncFlySpeed()`，每 tick 把
+  `abilities.flyingSpeed` 校正为 `0.05 × (1 + bonus)`；退款（bonus ≤ 0）时只回收本模组写过的值，
+  不碰其它模组设置的速度。
+- **顺带修掉一个隐藏 bug**：旧实现把「当前 abilities 值」当作基准缓存进玩家 NBT，
+  而 `Abilities` 的 flySpeed 本身会被写进玩家存档 → 每次重新登录基准都被当成旧结果再乘一次，
+  产生 0.05 → 0.25 → 1.25 … 的复利放大。现固定使用原版基准 0.05，并清理旧存档里的残留键
+  `infinitestats.base_fly_speed`。
+- 服务端 `MobilityHandler#updateFlightSpeed` 保留（保持两端能力值一致），但幅度以客户端为准。
+- 无协议、无存档结构变化（仅移除一个旧 NBT 键）。
+
+## [1.27.2] - 2026-10-04
+
+### 💍 修好「无线终端放饰品栏检测不到」
+
+RS / AE2 的无线终端放进 Curios 饰品栏后连不上网络（提示"未持有无线终端"），两处反射都写错了：
+
+- **API 签名错**：Curios 5.x 是 `CuriosApi.getCuriosInventory(LivingEntity)`，参数类型不是 `Player`，
+  代码却按 `getMethod("getCuriosInventory", Player.class)` 查找 → 抛 `NoSuchMethodException`，
+  被 `catch (Throwable ignored)` 静默吞掉，函数永远返回空。
+  现改为先按 `Player` 找、失败回落 `LivingEntity`（与 `BackpackNetworkBridge` 一致）。
+- **取槽位方式错**：`ICurioStacksHandler.getStacks()` 在 Curios 5.x 返回 `IDynamicStackHandler`
+  （实现 `IItemHandler`），既不是 `List` 也没有 `resolve()`，旧的 `asItemStackList()` 必然拿不到内容。
+  现改为按 `IItemHandler.getSlots()/getStackInSlot()` 逐槽遍历，并保留旧版 `List` 回落分支。
+- **涉及文件**：`RSNetworkBridge.findInCurios`、`AE2NetworkBridge.findInCurios`、
+  `jei/PortableCraftingRecipeTransferHandler.hasStorageTerminal`（JEI 快速转移按钮的终端检测同因失效）。
+- 新增 `LazyOptional` / `Optional` 双返回类型兼容；饰品栏扫描失败只 warn 一次，避免每秒扫描刷屏。
+- 顺带生效：自动入库的"连网凭证保护"现在也能正确识别饰品栏里的无线终端（不会被存入网络）。
+- 纯反射调用修复，无协议、无存档结构变化。
+
+## [1.27.1] - 2026-10-04
+
+### 🦗 修好「跳跃高度」加点无效的问题
+
+跳跃高度加了 400% 却完全跳不高——因为加成只写在了服务端：
+
+- **根因**：玩家移动是客户端权威的（服务端只做校验），`StatEventHandler.handleJumpBoost`
+  在服务端 `ServerPlayer` 上改 `deltaMovement`，会被客户端发来的运动包直接覆盖，等于没改。
+  服务端的 `LivingJumpEvent` 处理同理（该事件虽然在客户端也会触发，但原处理器过滤了 `ServerPlayer`）。
+- **修复**：`ClientEventHandler` 新增 `applyJumpBoost()`，在客户端 `LocalPlayer` 上本地放大起跳速度，
+  检测口径与服务端一致（上一tick在地面、本tick离地且 Y 速度为正 → 起跳瞬间），
+  并同样用 `setPos` 补偿本 tick 已按原始速度跑完的位移。
+  与 N 段跳 / 爬梯加速 / 自动跨越同属"客户端权威移动必须在本地改"的既有处理方式。
+- 服务端逻辑保留不动（对假玩家 / 非权威场景仍有兜底意义）。
+- 纯客户端运动修复，无协议、无存档结构变化。
+
 ## [1.27.0] - 2026-10-03
 
 ### 🖥️ 修好「模组列表 → Config」按钮（用 Cloth Config 重画配置界面）

@@ -104,6 +104,16 @@ public class UtilityHandler implements StatEffectHandler {
             }
         }
 
+        // 钓鱼：自动钓鱼（主手持竿自动抛竿、咬钩即收杆）+ 立即咬钩（压缩咬钩前的两段等待）。
+        // 每 tick 检查，因为咬钩窗口只有 20~40 tick
+        if (stats.isToggleActive("auto_fish") || stats.isToggleActive("instant_bite")) {
+            try {
+                AutoFish.tick(player, stats);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }
+
         // 火焰免疫时清除火焰
         if (stats.isToggleActive("fire_immunity")) {
             player.clearFire();
