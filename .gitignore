@@ -1,6 +1,7 @@
 # Build outputs
 bin/
 build/
+dist/
 .gradle/
 
 # IDE
@@ -21,6 +22,7 @@ Thumbs.db
 *.log
 *.tmp
 copy_to_mods.bat
+build.bat
 infinite-stats-mod/
 
 # Temp scripts / build logs / stray assets / compiled classes
