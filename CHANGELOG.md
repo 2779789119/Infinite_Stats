@@ -1,5 +1,268 @@
 # 更新日志 (Changelog)
 
+## [1.33.0] - 2026-10-05
+
+### 🌦️ 天气控制改为独立面板（点哪档切哪档）
+
+- **入口变化**：属性面板页脚的「天气」按钮不再「点一次切一档」，改为打开新的
+  **天气面板 `WeatherScreen`**：
+  - 顶部显示当前主世界天气（晴 / 下雨 / 雷暴，客户端本地读，切换后由服务端同步过来）；
+  - 列出现有全部天气档位（晴天 / 下雨 / 雷暴），**点哪一档就切哪一档**；当前档位带绿色描边，
+    未解锁时整列置灰并在标题下给出提示；
+  - 底栏写明作用范围（**主世界** —— 在下界 / 末地切换的也是主世界天气）与持续时长
+    （读 `WeatherControl.weatherCycleDuration`，面板里换算成秒显示）。
+- **关于「所有已注册的天气」**：原版 MC **没有天气注册表** —— 天气只是 `Level` 上的
+  `raining` / `thundering` 两个布尔加两个计时器，所以能列的档位就是**晴天 / 下雨 / 雷暴**三档
+  （下雪是「下雨 + 寒冷生物群系」的渲染表现，不是独立天气）；天气类模组各写各的字段，
+  也没有统一注册表可以枚举。面板中的档位抽成了一处列表（`WeatherScreen#ENTRY_IDS`），
+  以后要加档位（或联动某个天气模组）只改这一处即可。
+- **协议**：`WeatherControlPacket` 增加档位字段（`clear` / `rain` / `thunder`；空串仍按旧逻辑循环一档），
+  协议版本 `16 → 17`。
+
+### 🪜 修好「跨越高度」加了点却走不上台阶
+
+- **根因**：跨越高度**不是**原版 `maxUpStep` 一个字段说了算。Forge 1.20.1 把 `Entity#collide`
+  里读的值换成了 `IForgeEntity#getStepHeight()`，其定义是「原版 `maxUpStep` 字段
+  **加上** `forge:step_height_addition` 属性的值」（已对照 Forge 补丁源码逐行确认）。
+  旧实现只写原版字段，于是整合包里**只要另有模组也去设置 `maxUpStep`**（大包里很常见），
+  我们的数值就会被它盖掉 —— 客户端本地跳上去了、服务端判定不一致，`handleMovePlayer`
+  判「moved wrongly」后把玩家拉回原地，表现就是「加了 1700 点、面板写着 +1020%，却一步也上不去」。
+- **修复**：改走 **Forge 官方属性通道**（新增 `MobilityHandler#applyStepHeight`，
+  客户端与服务端共用同一份实现）：
+  - 原版字段只写**基准值**（`0.6`，开了自动跨越则 `1.25`）—— 不再把大数值塞进这个容易被别人读写的字段；
+  - 把「超出基准的差额」写进 **`forge:step_height_addition`** 属性，于是
+    `getStepHeight()` = 基准 + 差额 = 目标值，正好；
+  - 修改器使用**两端固定的 UUID**：属性从服务端同步回客户端时，原版按 UUID 替换同名修改器，
+    不会出现「本地一份 + 服务端一份」的重复叠加；
+  - 只在数值真正变化时才增删修改器 —— `AttributeInstance` 每次增删都会置脏并触发一次属性同步包，
+    每 tick 无脑重写等于刷包。
+- 百分比语义不变（基准 × (1 + 加成)，加成为负时不参与），`auto_step` 开关行为不变。
+
+### 🔧 构建
+
+- 本机网络过不了 ForgeGradle 对 `maven.minecraftforge.net` 的证书预检（插件 apply 阶段直接失败，
+  报 `Failed to validate certificate for host`），按 ForgeGradle 自己的提示在 `gradle.properties` 里加上
+  `systemProp.net.minecraftforge.gradle.check.certs=false`。这只是 FG 的一次仓库连通性预检，
+  真正的依赖下载依旧走 JDK 正常的 TLS 校验。
+
+## [1.32.1] - 2026-10-05
+
+### 📝 重写模组描述（模组列表里显示的那段）
+
+- **修正过期内容**：原描述写的是「56 个属性 / 5 大类（含 Magic / 魔法）」，而魔法分类早在 1.15.0 就已
+  移除、属性也已增至 96 条。现改为「96 个内置属性，攻击 / 防御 / 机动 / 功能四大类」，
+  并写明「等级无上限、点数可随时退回重加」。
+- **补充后来才有的功能**：外部属性自动发现 + 内置 30+ 模组中文译文、六个面板（属性 / HUD /
+  物品编辑器 / EMC 转化桌 / 成就 / 传送点）、随身站点全套（工作台 / 熔炉 / 铁砧 / 附魔台 / 切石机 /
+  织布机 / 制图台 / 磨石 / 末影箱，支持从 RS / AE2 等存储网络取料）、按玩家的功能开关
+  （整合包作者可用 `/infstats feature` 逐步开放）、完整多人同步、无必需前置（拼音搜索库已内嵌）。
+- **同步 `gradle.properties` 的 `mod_description`**：该属性目前并没有被 `mods.toml` 引用
+  （`mods.toml` 用的是自带的多行块），但模板里留着，两边口径不一致容易把人带偏，故一并改成同一份说法。
+- **顺带修掉作者名乱码**：`gradle.properties` 是 Java Properties 格式，Gradle 按 ISO-8859-1 读入，
+  于是含中文的 `mod_authors` 展开进 `mods.toml` 与 jar 清单后变成「ä½åæ¢æ å」——
+  模组列表里的作者一直是乱码。现在 `build.gradle` 额外按 UTF-8 重读一份专用于产物写入，
+  作者正确显示为「佚名既无名」（数值属性仍走 Gradle 原本的读法，不受影响）。
+- 纯文案 / 元数据改动，无代码 / 协议 / 存档变化。
+
+## [1.32.0] - 2026-10-05
+
+### 🧰 随身附魔台改为 1 点开关，「附魔强度」加点搬进附魔界面
+
+- **属性拆分**：`portable_enchanting`（随身附魔台）由**点数型**（等级＝附魔强度，1~15）改为
+  **1 点解锁的开关** —— 与切石机 / 织布机 / 制图台 / 磨石一致，属性面板里显示为一个开关。
+  附魔强度单独拆成**隐藏属性** `enchant_power`（**不在属性面板显示、也无法在那里加点**）。
+  - 拆开的原因：原先「0 点 = 打不开附魔台」，必须先投点数才能用；开关化后「能不能用」与
+    「强度多高」变成两件事，各自独立。
+- **加点入口搬进附魔界面**：打开随身附魔台后，界面**右侧多出一块面板**（原版界面保持 176 宽不变，
+  扩展面板画在 `leftPos + 176` 之后，贴图不会被裁切错位）：
+  - `附魔强度` 标题 + `Lv.N / 15` + `可用点数 N`；
+  - `−` / `+` 两个按钮，每次 1 点；`+` 在点数不足或已满 15 时置灰（浮窗说明原因）；
+  - 一句自动折行的说明（每点 +1，等价于原版 1 个书架，15 点 = 原版满级）。
+  - 点一下 `±` 会**当场重算三档附魔**（服务端按新强度重跑 `slotsChanged`，把新的消耗与线索同步回客户端），
+    因此可以一边加点一边看三档附魔等级变化，不必关掉重开。
+- **实现**：
+  - 新增 `crafting/PortableEnchantingMenu`（**客户端**菜单，`ContainerLevelAccess.NULL`）与
+    `ModMenuTypes.PORTABLE_ENCHANTING_MENU`（泛型刻意写成 `EnchantmentMenu`，这样客户端界面才能
+    继承原版 `EnchantmentScreen`）—— 服务端仍用 `PortableStationMenus.Enchanting`（真实 access，
+    附魔算法必须跑在回调里），两端只在菜单类型上统一，附魔算法一行未改；
+  - 新增 `client/PortableEnchantingScreen`：继承原版 `EnchantmentScreen`，只重写
+    `renderBg`（补画右侧面板）、`renderLabels`（强度 / 点数 / 说明）与 `containerTick`（按钮状态），
+    原版贴图、书页动画、三档附魔文字与点击逻辑全部沿用；
+  - 新增 `EnchantPowerPacket`（`+` / `−`），加点复用 `PlayerStats#addPoints` / `removePoints`
+    —— 与属性面板同一套校验（可选点数、上限、返还语义），改造过的客户端无法借此白拿点数；
+    协议版本 `15 → 16`。
+- **旧存档迁移（不丢点数）**：旧存档里 `portable_enchanting` 投了 N 点（N > 1）时，加载时把多出来的
+  N-1 点**原样搬进** `enchant_power`、只在开关上留 1 点；强度已满、搬不下的部分退还到可用点数。
+  总投入不变，玩家不需要重新加点（`PlayerStats#migratePortableEnchanting`，逻辑幂等）。
+- **随身工具面板**：附魔台按钮的浮窗仍显示当前强度，但读数改为 `enchant_power`。
+- 顺带修复：**补齐属性面板里新增的 7 个属性图标**（随身附魔台 / 随身切石机 / 随身织布机 /
+  随身制图台 / 随身磨石 / 天气控制 / 区块强加载 —— 此前这几行是空图标）。
+- 内置属性 95 → **96**（功能类 51 → 52，其中 `enchant_power` 为隐藏属性）。
+
+### 🛠 新增构建脚本 `build.bat`
+
+- 一键构建：`build.bat`（增量）/ `build.bat clean`（全量）/ `build.bat check`（只编译，最快）/
+  `build.bat deploy`（构建后自动把 jar 部署进整合包 `mods/`，自动探测已装有本模组的整合包目录，
+  也可用第二个参数指定目录）。
+- 脚本会自动跳过 `-all.jar` 中间产物、校验 jar 里含 refmap、并把产物复制到工作区内 `dist/`；
+  构建时一并编译 `gameTest` 源集，回归测试写坏会当场暴露。
+- 脚本内容保持**纯 ASCII**：cmd 按 OEM 代码页解析 .bat，文件里出现中文会让批处理语法报错
+  （`文件名、目录名或卷标语法不正确`）。
+
+## [1.31.1] - 2026-10-05
+
+### 🐞 修复构建缓存导致 jar 缺 refmap、启动即崩（Critical injection failure）
+
+- **现象**：整合包里启动直接崩在 Mixin 注入阶段，日志关键两行：
+  - `Reference map 'infinitestats.refmap.json' for infinitestats.mixins.json could not be read.`
+  - `MixinApplyError: Mixin [infinitestats.mixins.json:EntityMoveRelativeMixin] FAILED during APPLY`
+    → `InvalidInjectionException: Critical injection failure: @Redirect annotation on
+    infinitestats$scaleSwimAcceleration could not find any targets matching
+    'moveRelative(FLnet/minecraft/world/phys/Vec3;)V' in net.minecraft.world.entity.Entity.
+    No refMap loaded.`
+- **根因（不是 Mixin 写错了，是打包漏了文件）**：refmap 由 Mixin 注解处理器在 `compileJava` 里生成到
+  `build/tmp/compileJava/infinitestats.refmap.json`，**但这个路径没有声明成 `compileJava` 的输出**。
+  本项目开着 `org.gradle.caching=true`，`clean` 之后第二次构建 `compileJava` 必然 `FROM-CACHE`，
+  缓存只还原「**已声明**的输出」，refmap 不在其中 → 它凭空消失 → `addMixinsToJar` 找不到文件 →
+  产出的 jar 里只有 `infinitestats.mixins.json`、没有 `infinitestats.refmap.json`。
+  没有 refmap，生产环境 Mixin 就没法把 `moveRelative` / `createResult` / `setDeltaMovement`
+  这类**字符串形式的成员名**转成 SRG 名（`m_19920_` / `m_6640_` / `m_20256_`），注入锚点全部匹配失败。
+- **为什么以前没事**：冷构建（compileJava 真执行）时 refmap 会正常生成并被打进 jar，所以此前一直正常；
+  只要某次构建恰好命中编译缓存，就会静默产出这种「能编译、能装、启动即崩」的包 —— 属于偶发、且症状与原因完全对不上。
+- **修复**：
+  - `build.gradle` 里把 `build/tmp/compileJava/${mod_id}.refmap.json` 显式声明为 `compileJava` 的输出，
+    使其随缓存条目一起存取，`FROM-CACHE` 也能正确还原；
+  - 给 `jar` 加 doLast 兜底校验：jar 里缺 `${mod_id}.refmap.json` 时**直接构建失败**，
+    避免再产出这种注定崩的包。
+- **无功能改动**：不涉及任何游戏内行为，纯粹是构建/打包修复。
+
+## [1.31.0] - 2026-10-05
+
+### 🔍 拼音搜索改为接入通用库 `pinyin_search`（移除 JECh 通道）
+
+- **背景**：各搜索框此前只认 JustEnoughCharacters（JECh，反射其内部 `Match.contains`）。JECh 是给
+  「它自己收录的模组」打补丁的路线，未被收录就搜不了拼音，且匹配行为还受玩家自己那份 JECh 配置影响。
+  现在改为支持**按需主动适配**的通用拼音搜索库
+  **`pinyin_search`**（modId `pinyin_search`，API `com.pinyinsearch.api.PinyinSearch`）。
+- **移除 JECh**：本次**不再保留** JECh 通道 —— 原 `compat/JechCompat` 及其反射逻辑、`mods.toml` 里
+  `jecharacters` 的可选依赖声明一并删除。装了 JECh 的整合包不受影响（只是搜索回到普通包含匹配），
+  想用拼音请装 `pinyin_search`。
+- **新的后端优先级**：`pinyin_search` › 普通「包含」匹配（没了中间那一级）。
+- **实现**：原 `compat/JechCompat` 由 **`compat/PinyinSearchBridge`** 取代 —— 按该库接入文档
+  `docs/INTEGRATION.md` §2 的 Bridge 模板**全文照抄**（只改包名），走它的公开 API 而不是反射：
+  - 该库的类型在本模组代码里只出现在方法体内（见下），编译期依赖 + jarJar 内嵌；
+  - 照抄模板原本就带的两点约定：
+    - 库的类型（`PinyinSearch` / `Matcher` / `Profile`）**只出现在方法体里**，不写进字段类型 / 方法签名 /
+      继承关系 —— 否则没装库时类加载阶段就 `NoClassDefFoundError`，「没装就回退」直接失效；
+      需要长期持有的库对象用 `Object` 装、在方法体内转型（`Index` 内部就是这么做的）；
+    - 回退分支自己写（`rawContains`）：没装库时退化为纯原文包含，**不能用 `Matcher.literal` 代替**，
+      那时连 `Matcher` 类都加载不了。
+  - 模板里除 `matches` 外的能力也一并保留：`index(pool)` / `index(pool, pinyinEnabled)`（形态二：
+    大列表建一次索引反复搜，`Matcher.literal` 对应「装了库但要关掉拼音」）目前没有调用点，
+    留给后续需要时直接取用。
+  - 调用点全部位于客户端 GUI 的搜索框（客户端主线程），符合该库
+    「`Matcher` 必须在客户端主线程使用」的约定。
+- **依赖（内嵌，玩家无需另装）**：走官方 JitPack 坐标，两行：
+  `compileOnly`（编译期 API）+ `jarJar`（**JAR-in-JAR 内嵌**，运行期当嵌套模组加载）。
+  `mods.toml` 只留一条 `mandatory = false` 的版本关系声明（`[1.1.0,2.0.0)`）。
+  `jarJar` 这一行踩了三个坑，都已处理：
+  - **版本必须写 maven 区间**：写精确版本会直接失败
+    （`The given version specification is invalid: 1.1.3. ... convert this to a maven compatible format: [2.0,3.0)`），
+    所以写 `[1.1.0,2.0.0)`（要钉具体产物再加 `jarJar.pin(it, "<版本>")`）。
+    该库 `docs/INTEGRATION.md` §1 方式 B 给的 `jarJar '...:1.1.0'` 在 ForgeGradle 6 上是行不通的写法。
+  - **必须 `transitive = false`**：JitPack 发出来的 POM 把 Forge / MC 的一堆库都算作它的依赖，
+    不切断传递依赖会把它们全部嵌进来 —— 实测主 jar 从 875 KB 涨到 **91.7 MB / 116 个嵌套 jar**
+    （netty、asm、antlr4、oshi、brigadier、patchy、srgutils…）。加上后只剩 `pinyinsearch-1.1.3.jar` 一个。
+  - **FG 的 `jarJar` 默认只把内嵌内容放进独立的 `<jar 名>-all.jar`**，主产物不带；
+    本模组在 `jar` 任务里把 `META-INF/jarjar/**` 合并进主产物，因此**照旧只需分发主 jar**。
+- **依赖来源**：官方坐标 `com.github.2779789119:pinyinsearch` 一开始取不到（tag 1.1.1 / 1.1.2 在 JitPack 上
+  构建失败：ForgeGradle 在它容器里报 `ProjectScopeServices has been closed`、取不到 `net.minecraft:joined:...:srg`），
+  接入期间一度用工程内 `libs/maven`（坐标与官方一致）顶替；**`1.1.3` 在 JitPack 上构建成功后已切回官方坐标，
+  `libs/` 已删除**，仓库里只多一行 `maven { url "https://jitpack.io" }`。
+- **验证**：`gradlew clean build` 通过，主 jar 875 KB，内含
+  `META-INF/jarjar/pinyinsearch-1.1.3.jar` + `META-INF/jarjar/metadata.json`
+  （`"range": "[1.1.0,2.0.0)", "artifactVersion": "1.1.3", "isObfuscated": false`），
+  内嵌模组自报 `modId = pinyin_search` / `version = 1.1.3`，满足区间。
+- **与单独安装的关系**：整合包若**另外**装了 `pinyin_search`，可能与内嵌的那份撞 modId ——
+  这一点需要游戏内确认（该库 `docs/INTEGRATION.md` §6 验收清单里的第 3 条）。
+- **改动范围**：7 个界面的搜索调用由 `JechCompat.matches(...)` 换成 `PinyinSearchBridge.matches(...)`
+  （`StatsScreen` 属性面板、`DebuffFilterScreen` 效果过滤器、`ItemEditorScreen` / `ItemEditSelectScreen`
+  物品编辑器、`AutoDepositFilterScreen` 入库过滤、`EmcScreen` 转化桌、`AchievementManagerScreen` 成就面板），
+  **调用方式完全不变**，只是类名替换。
+- **未装时零影响**：没装 `pinyin_search` 时退化为纯原文包含（大小写不敏感），
+  行为与本模组引入拼音前完全一致。
+- `mods.toml`：删除 `jecharacters` 声明，新增 `pinyin_search` 依赖声明
+  （`[1.1.0,2.0.0)`，`mandatory = false`，`side = CLIENT`）。
+- **期望管理**（库里实测的结论，接入方不额外补丁）：英文**词首字母**搜不到
+  （`Diamond Sword` 搜不到 `DS`）；**简繁不互搜**；上下文多音字不做词级控制。
+- 无协议、无存档结构变化。
+
+## [1.30.0] - 2026-10-05
+
+### 🧰 随身工具合并为一个入口 + 补齐 5 个新站点
+
+- **合并**：原先散在页脚的两颗按钮（末影箱 / 锻造台）与页脚导航行里的三个入口（工作台 / 熔炉 / 铁砧）
+  全部撤掉，改为**一个**「随身工具」入口，点开是独立的随身工具面板（`PortableToolsScreen`）。
+  未解锁的工具按钮呈灰色不可点，悬停会提示需要解锁哪条属性；已解锁的点一下即打开。
+- **补齐新站点（功能分类）**：
+  - `portable_enchanting` 随身附魔台 —— **点数型属性（上限 15 点）**：每点 +1 附魔强度（等价于原版 1 个书架），
+    强度越高三档附魔等级越高，15 点即原版满级（30 级附魔），**不再依赖周围书架**；
+  - 其余各 **1 点**解锁：`portable_stonecutter` 随身切石机；
+  - `portable_loom` 随身织布机；
+  - `portable_cartography` 随身制图台（可正常读取 / 绑定地图）；
+  - `portable_grindstone` 随身磨石。
+- **修复旧 bug：随身铁砧 / 随身锻造台关界面会吞掉输入槽物品。** 原实现给菜单传
+  `ContainerLevelAccess.NULL`，而 `ItemCombinerMenu#removed` 的 `clearContainer` 写在
+  `access.execute(...)` 回调里 —— NULL 的 `evaluate` 返回 `Optional.empty()`，回调根本不执行，
+  于是关界面时留在铁砧 / 锻造台里的材料会随菜单一起被丢弃：
+  - 随身铁砧：**仍保留 NULL**（原版 `AnvilMenu#onTake` 的回调里写着"有概率把铁砧砸坏"，
+    用真实 access 会让随身铁砧真的在世界里留下破坏），改为在 `PortableAnvilMenu#removed`
+    里手动 `clearContainer` 补回物品；
+  - 随身锻造台：改用新的随身站点菜单（见下）。
+- **新增 `crafting/PortableStationMenus`**：附魔台 / 切石机 / 织布机 / 制图台 / 磨石 / 锻造台
+  统一走「真实 `ContainerLevelAccess`（玩家脚下维度 + 坐标）+ 覆写 `stillValid` 恒为 true」：
+  - 真实 access 保证世界侧回调正常执行（附魔等级计算、点击附魔、制图台的成品计算、关闭时归还物品）；
+  - 覆写 `stillValid` 去掉「必须站在对应方块旁」的校验，从而不依赖世界里的方块；
+  - 子类只存在于服务端：客户端仍由原版 `MenuType` 工厂创建原版菜单，因此原版界面照旧套用。
+  - **随身附魔台另有一点不同**：原版强度计算写在 `EnchantmentMenu#slotsChanged` 里、直接读世界里的书架，
+    所以该菜单子类把整段重写，只把「书架强度」换成点数（见上）。随机种子取自 `getEnchantmentSeed()`、
+    三档消耗与附魔线索写回原版那三个 public 数组（本来就会随数据槽同步给客户端）、并照常触发
+    `EnchantmentLevelSetEvent` 兼容钩子 —— 因此「客户端显示的消耗与线索」「点击附魔的判定」以及
+    「实际产出的附魔」都与站在真附魔台前一致（点击附魔仍走父类 `clickMenuButton`，种子与洗牌算法完全相同）。
+- **网络**：新增 `PortableToolOpenPacket`（按属性 id 打开白名单内的站点，服务端会再校验一次开关），
+  协议版本 14 → 15。
+
+### 🌦️ 天气控制（`weather_control`，1 点）
+
+- 新增属性 `weather_control`（功能分类，开关型）。激活后页脚导航行出现「天气」按钮，
+  **点一次切换一档：晴 → 雨 → 雷 → 晴**，切换后聊天栏提示当前天气。
+- 作用于**主世界**：玩家在下界 / 末地时切换的仍是主世界天气，这样按钮在任何维度都有意义。
+- 持续时长由配置 `WeatherControl.weatherCycleDuration` 决定（默认 6000 tick = 5 分钟），到时后按原版规则自行演变。
+- 新增 `WeatherControlPacket`。
+
+### 🧭 区块强加载（`chunk_loader`，1 点）
+
+- 新增属性 `chunk_loader`（功能分类，开关型）。激活后页脚导航行出现「强加载」按钮，
+  点开是独立的区块强加载面板（`ChunkLoaderScreen`）：
+  - 输入**方块坐标**（可点「填入当前位置」一键填入），实时显示换算出的区块坐标，点「加载」把对应区块设为强加载；
+  - 面板下方列出**当前维度**已强加载的区块（每行显示区块坐标与对应方块范围，逐行可单独卸载，超过 5 行自动分页）；
+  - 服务端在每次加载 / 卸载后都会把最新列表回推给客户端，因此界面不会与真实状态脱节。
+- 采用原版 `/forceload` 的同一套机制（`ServerLevel#setChunkForced` + `ForcedChunksSavedData`），
+  强加载数据随存档保存、重启后依然有效；并做世界边界校验。
+- 数量上限由配置 `ChunkLoader.maxForcedChunks` 限制（默认 16，上限 256），超限时拒绝并提示，
+  避免"一次点满"把服务器拖垮。
+- 新增 `ChunkLoaderActionPacket`（加载 / 卸载 / 请求列表）与 `ChunkLoaderSyncPacket`（列表同步）。
+
+### 其他
+
+- 新增配置段 `WeatherControl` 与 `ChunkLoader`；新增 `gui.infinitestats.tools.*`、
+  `gui.infinitestats.chunk.*` 与相关提示文案（中 / 英）。
+- 属性面板页脚导航行：`工作台 / 熔炉 / 铁砧` 三个入口替换为 `随身工具 / 天气 / 强加载`；
+  移除页脚的「末影箱」「锻造台」按钮（已并入随身工具面板）。按钮总数不变，排版不受影响。
+- 内置属性 88 → **95** 条（功能类 44 → 51）。
+- `/infstats craft | furnace | anvil | enderchest | smithing` 指令保持不变；新增的 5 个站点只从
+  「随身工具」面板进入。
+
 ## [1.29.1] - 2026-10-05
 
 ### 🎯 自动抛竿加视线限制：只在瞄着水面时抛

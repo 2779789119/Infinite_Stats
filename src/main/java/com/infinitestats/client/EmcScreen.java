@@ -1,6 +1,6 @@
 package com.infinitestats.client;
 
-import com.infinitestats.compat.JechCompat;
+import com.infinitestats.compat.PinyinSearchBridge;
 import com.infinitestats.emc.EmcMenu;
 import com.infinitestats.emc.EmcPlayerDataProvider;
 import com.infinitestats.emc.EmcDatabase;
@@ -514,7 +514,7 @@ public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
             String tagQuery = f.substring(1);
             return !tagQuery.isEmpty() && itemHasTag(id, tagQuery);
         }
-        return JechCompat.matches(id.toString(), f) || JechCompat.matches(name, f);
+        return PinyinSearchBridge.matches(id.toString(), f) || PinyinSearchBridge.matches(name, f);
     }
 
     /**

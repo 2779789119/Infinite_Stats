@@ -4,6 +4,7 @@ import com.infinitestats.InfiniteStats;
 import com.infinitestats.crafting.PortableAnvil;
 import com.infinitestats.crafting.PortableCraftingMenu;
 import com.infinitestats.crafting.PortableGuis;
+import com.infinitestats.crafting.PortableStationMenus;
 import com.infinitestats.emc.EmcDatabase;
 import com.infinitestats.emc.EmcMenu;
 import com.infinitestats.emc.EmcPlayerData;
@@ -41,6 +42,7 @@ import net.minecraft.world.item.crafting.RecipeManager;
 import net.minecraft.world.item.crafting.RecipeType;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.item.ItemStack;
@@ -60,7 +62,7 @@ import java.util.function.Supplier;
  */
 public final class NetworkHandler {
 
-    private static final String PROTOCOL_VERSION = "14";
+    private static final String PROTOCOL_VERSION = "17";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -80,6 +82,16 @@ public final class NetworkHandler {
 
     /** 待处理的成就同步数据（由 SyncAdvancementsPacket 写入，AchievementManagerScreen 读取） */
     public static List<AchievementInfo> pendingAdvancements = null;
+
+    /**
+     * 待处理的「区块强加载」列表（由 {@link ChunkLoaderSyncPacket} 写入，ChunkLoaderScreen 读取）。
+     * 元素是 {@link ChunkPos#toLong()} 打包后的区块坐标。
+     */
+    public static volatile List<Long> pendingForcedChunks = null;
+    /** 上面那份列表所属的维度 id（仅用于界面显示）。 */
+    public static volatile String pendingForcedChunkDimension = null;
+    /** 列表版本号：每次同步自增，界面据此判断是否需要重建列表。 */
+    public static volatile long forcedChunksVersion = 0;
 
     /**
      * 注册所有数据包
@@ -349,6 +361,47 @@ public final class NetworkHandler {
                 SmithingOpenPacket::decode,
                 SmithingOpenPacket::handle);
 
+        // 随身工具枢纽：按属性 id 打开附魔台 / 切石机 / 织布机 / 制图台 / 磨石 / 锻造台（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, PortableToolOpenPacket.class,
+                PortableToolOpenPacket::encode,
+                PortableToolOpenPacket::decode,
+                PortableToolOpenPacket::handle);
+
+        // 随身附魔台界面里的「附魔强度」±（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EnchantPowerPacket.class,
+                EnchantPowerPacket::encode,
+                EnchantPowerPacket::decode,
+                EnchantPowerPacket::handle);
+
+        // 天气切换：晴 → 雨 → 雷 → 晴（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, WeatherControlPacket.class,
+                WeatherControlPacket::encode,
+                WeatherControlPacket::decode,
+                WeatherControlPacket::handle);
+
+        // 区块强加载：加载 / 卸载 / 请求列表（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, ChunkLoaderActionPacket.class,
+                ChunkLoaderActionPacket::encode,
+                ChunkLoaderActionPacket::decode,
+                ChunkLoaderActionPacket::handle);
+        // 区块强加载列表同步（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, ChunkLoaderSyncPacket.class,
+                ChunkLoaderSyncPacket::encode,
+                ChunkLoaderSyncPacket::decode,
+                ChunkLoaderSyncPacket::handle);
+
+    }
+
+    /**
+     * 把某个维度的「已强加载区块」列表同步给玩家。
+     */
+    private static void syncForcedChunks(ServerPlayer player, ServerLevel level) {
+        List<Long> list = new ArrayList<>();
+        for (long packed : level.getForcedChunks()) {
+            list.add(packed);
+        }
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new ChunkLoaderSyncPacket(list, level.dimension().location().toString()));
     }
 
     /** 归一化自动入库过滤列表：只保留合法的物品 ID，并限制条目数上限。 */
@@ -2122,6 +2175,299 @@ public final class NetworkHandler {
                             Component.translatable("message.infinitestats.emc.price_removed",
                                     new ItemStack(item).getHoverName()), false);
                 }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    // ========== 随身工具枢纽 / 天气控制 / 区块强加载 ==========
+
+    /**
+     * 随身工具枢纽（客户端 → 服务器）：按属性 id 打开对应随身站点。
+     * <p>
+     * 只接受 {@link PortableGuis#openStation} 认得的白名单 id，并且必须先激活对应开关属性，
+     * 因此被改造的客户端无法借此打开任意菜单。
+     */
+    public static final class PortableToolOpenPacket {
+        private final String toolId;
+
+        public PortableToolOpenPacket(String toolId) {
+            this.toolId = toolId == null ? "" : toolId;
+        }
+
+        public static void encode(PortableToolOpenPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.toolId);
+        }
+
+        public static PortableToolOpenPacket decode(FriendlyByteBuf buf) {
+            return new PortableToolOpenPacket(buf.readUtf());
+        }
+
+        public static void handle(PortableToolOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    // 开关型看是否激活，点数型（随身附魔台）看是否投入过点数 —— 用「有效等级 > 0」
+                    // 统一判断，并同样尊重「功能开关」把整条关掉的情况。
+                    if (stats.getEffectiveStatLevel(msg.toolId) <= 0) {
+                        player.sendSystemMessage(Component.translatable(
+                                "message.infinitestats.tool_locked",
+                                Component.translatable("stat.infinitestats." + msg.toolId)));
+                        return;
+                    }
+                    // 未知 id 静默忽略：白名单在 PortableGuis 里，外部无法借此打开任意菜单
+                    PortableGuis.openStation(player, stats, msg.toolId);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 随身附魔台的「附魔强度」±（客户端 → 服务器）。
+     * <p>
+     * 「附魔强度」是隐藏属性 {@code enchant_power}（面板里不显示、只在这个界面里加点）：
+     * 每点等价于原版 1 个书架，15 点即原版满级。加点复用与属性面板完全相同的
+     * {@link PlayerStats#addPoints} / {@link PlayerStats#removePoints} —— 可选点数校验、
+     * 上限、负值返还等语义全部一致，客户端无法借此白拿点数。
+     * <p>
+     * 生效顺序：先改点数 → 同步给客户端 → 若当前打开的正是随身附魔台，再让它按新强度
+     * 重算三档附魔（{@link PortableStationMenus.Enchanting#applyEnchantPower}），
+     * 于是玩家点一下 ± 就能当场看到三档附魔等级变化。
+     */
+    public static final class EnchantPowerPacket {
+        /** true = +1 点，false = -1 点（返还）。 */
+        private final boolean up;
+
+        public EnchantPowerPacket(boolean up) {
+            this.up = up;
+        }
+
+        public static void encode(EnchantPowerPacket msg, FriendlyByteBuf buf) {
+            buf.writeBoolean(msg.up);
+        }
+
+        public static EnchantPowerPacket decode(FriendlyByteBuf buf) {
+            return new EnchantPowerPacket(buf.readBoolean());
+        }
+
+        public static void handle(EnchantPowerPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    // 必须先解锁「随身附魔台」开关（被「功能开关」关掉时同样拦住）
+                    if (!stats.isToggleActive(PortableGuis.STAT_ENCHANTING)) return;
+                    StatType power = StatType.fromId(PortableGuis.STAT_ENCHANT_POWER);
+                    if (power == null) return;
+                    // 与属性面板一致：已被「功能开关」关闭的属性不允许再加点（仍允许返还）
+                    if (msg.up && stats.isStatDisabled(power.getId())) return;
+
+                    boolean success = msg.up
+                            ? stats.addPoints(power, 1L)
+                            : stats.removePoints(power, 1L);
+                    if (!success) return;
+
+                    syncToClient(player);
+                    AttributeHandler.applyAllAttributes(player, stats);
+                    if (player.containerMenu instanceof PortableStationMenus.Enchanting enchanting) {
+                        enchanting.applyEnchantPower(PortableGuis.enchantPowerOf(stats));
+                    }
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 天气切换（客户端 → 服务器）：把**主世界**天气直接设成指定档位。
+     * <p>
+     * 档位 id：{@code clear} 晴 / {@code rain} 下雨 / {@code thunder} 雷暴；
+     * 传空串或认不出的值时退回旧行为（按 晴 → 雨 → 雷 → 晴 循环），
+     * 这样天气面板与旧的「一键循环」入口可以共用同一个包。
+     * <p>
+     * 天气本身是维度级的：玩家在下界 / 末地时切换的仍是主世界天气，这样入口在任何维度都有意义。
+     */
+    public static final class WeatherControlPacket {
+
+        /** 「晴天」档位 id。 */
+        public static final String CLEAR = "clear";
+        /** 「下雨」档位 id。 */
+        public static final String RAIN = "rain";
+        /** 「雷暴」档位 id。 */
+        public static final String THUNDER = "thunder";
+
+        /** 目标档位 id；空串 = 切下一档。 */
+        private final String weather;
+
+        public WeatherControlPacket() {
+            this("");
+        }
+
+        public WeatherControlPacket(String weather) {
+            this.weather = weather == null ? "" : weather;
+        }
+
+        public static void encode(WeatherControlPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.weather);
+        }
+
+        public static WeatherControlPacket decode(FriendlyByteBuf buf) {
+            return new WeatherControlPacket(buf.readUtf());
+        }
+
+        public static void handle(WeatherControlPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("weather_control")) {
+                        player.sendSystemMessage(
+                                Component.translatable("message.infinitestats.weather_locked"));
+                        return;
+                    }
+                    ServerLevel level = player.server.getLevel(Level.OVERWORLD);
+                    if (level == null) level = player.serverLevel();
+                    int duration = Config.WEATHER_CYCLE_DURATION.get();
+
+                    String id = msg.weather.trim().toLowerCase(Locale.ROOT);
+                    if (id.isEmpty()) {
+                        // 认不出目标档位：按旧行为循环一档
+                        id = level.isThundering() ? CLEAR : level.isRaining() ? THUNDER : RAIN;
+                    }
+
+                    Component result = switch (id) {
+                        case CLEAR -> {
+                            level.setWeatherParameters(duration, 0, false, false);
+                            yield Component.translatable("message.infinitestats.weather.clear");
+                        }
+                        case RAIN -> {
+                            level.setWeatherParameters(0, duration, true, false);
+                            yield Component.translatable("message.infinitestats.weather.rain");
+                        }
+                        default -> {
+                            level.setWeatherParameters(0, duration, true, true);
+                            yield Component.translatable("message.infinitestats.weather.thunder");
+                        }
+                    };
+                    player.sendSystemMessage(
+                            Component.translatable("message.infinitestats.weather_set", result));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 区块强加载动作（客户端 → 服务器）：加载 / 卸载 / 请求列表。
+     * <p>
+     * 坐标一律以**区块坐标**（chunkX / chunkZ）传递，客户端界面负责把方块坐标换算过来。
+     * 每次处理完都会把该维度的最新列表回推给玩家，因此界面无需自己猜测结果。
+     */
+    public static final class ChunkLoaderActionPacket {
+        public static final int ACTION_ADD = 0;
+        public static final int ACTION_REMOVE = 1;
+        public static final int ACTION_REQUEST = 2;
+
+        private final int action;
+        private final int chunkX;
+        private final int chunkZ;
+
+        public ChunkLoaderActionPacket(int action, int chunkX, int chunkZ) {
+            this.action = action;
+            this.chunkX = chunkX;
+            this.chunkZ = chunkZ;
+        }
+
+        public static void encode(ChunkLoaderActionPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.action);
+            buf.writeVarInt(msg.chunkX);
+            buf.writeVarInt(msg.chunkZ);
+        }
+
+        public static ChunkLoaderActionPacket decode(FriendlyByteBuf buf) {
+            return new ChunkLoaderActionPacket(buf.readVarInt(), buf.readVarInt(), buf.readVarInt());
+        }
+
+        public static void handle(ChunkLoaderActionPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("chunk_loader")) {
+                        player.sendSystemMessage(
+                                Component.translatable("message.infinitestats.chunk_loader_locked"));
+                        return;
+                    }
+                    ServerLevel level = player.serverLevel();
+                    int cx = msg.chunkX;
+                    int cz = msg.chunkZ;
+
+                    if (msg.action == ChunkLoaderActionPacket.ACTION_ADD
+                            || msg.action == ChunkLoaderActionPacket.ACTION_REMOVE) {
+                        ChunkPos pos = new ChunkPos(cx, cz);
+                        if (!level.getWorldBorder().isWithinBounds(pos)) {
+                            player.sendSystemMessage(
+                                    Component.translatable("message.infinitestats.chunk_loader.out_of_bounds"));
+                        } else if (msg.action == ChunkLoaderActionPacket.ACTION_ADD) {
+                            int max = Config.CHUNK_LOADER_MAX_FORCED_CHUNKS.get();
+                            var forced = level.getForcedChunks();
+                            if (!forced.contains(pos.toLong()) && forced.size() >= max) {
+                                player.sendSystemMessage(Component.translatable(
+                                        "message.infinitestats.chunk_loader.limit", max));
+                            } else {
+                                level.setChunkForced(cx, cz, true);
+                                player.sendSystemMessage(Component.translatable(
+                                        "message.infinitestats.chunk_loader.loaded", cx, cz));
+                            }
+                        } else {
+                            level.setChunkForced(cx, cz, false);
+                            player.sendSystemMessage(Component.translatable(
+                                    "message.infinitestats.chunk_loader.unloaded", cx, cz));
+                        }
+                    }
+
+                    syncForcedChunks(player, level);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 区块强加载列表同步（服务器 → 客户端）。 */
+    public static final class ChunkLoaderSyncPacket {
+        private final List<Long> chunks;
+        private final String dimension;
+
+        public ChunkLoaderSyncPacket(List<Long> chunks, String dimension) {
+            this.chunks = chunks == null ? List.of() : chunks;
+            this.dimension = dimension == null ? "" : dimension;
+        }
+
+        public static void encode(ChunkLoaderSyncPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.dimension);
+            buf.writeVarInt(msg.chunks.size());
+            for (long packed : msg.chunks) {
+                buf.writeLong(packed);
+            }
+        }
+
+        public static ChunkLoaderSyncPacket decode(FriendlyByteBuf buf) {
+            String dimension = buf.readUtf();
+            int size = buf.readVarInt();
+            List<Long> chunks = new ArrayList<>(Math.max(0, size));
+            for (int i = 0; i < size; i++) {
+                chunks.add(buf.readLong());
+            }
+            return new ChunkLoaderSyncPacket(chunks, dimension);
+        }
+
+        public static void handle(ChunkLoaderSyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                pendingForcedChunks = new ArrayList<>(msg.chunks);
+                pendingForcedChunkDimension = msg.dimension;
+                forcedChunksVersion++;
             });
             ctx.get().setPacketHandled(true);
         }

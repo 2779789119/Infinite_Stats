@@ -9,12 +9,29 @@ issueTrackerURL = "https://github.com/example/infinitestats/issues"
     displayName = "infinite_stats-无限加点"
     authors = "${mod_authors}"
     description = '''
-    A Terraria-like infinite stat leveling system for Minecraft.
-    - 56 unique stats across 5 categories: Attack, Defense, Mobility, Utility, Magic
-    - Level up by gaining XP from killing mobs and passive time
-    - Allocate points to customize your build
-    - Includes toggle abilities like Flight, Night Vision, Vein Miner, Auto Smelt
-    - Full multiplayer support with server sync
+    A Terraria-like infinite stat point system for Minecraft 1.20.1 (Forge).
+
+    Kill mobs and gain passive XP to level up, then freely allocate attribute
+    points into any stat - there is no level cap, and points can always be
+    refunded and re-spent.
+
+    - 96 built-in stats in 4 categories: Attack / Defense / Mobility / Utility
+    - Auto-discovery: attributes registered by other mods appear as an
+      "External" category and can be leveled exactly like built-in ones
+    - Ships with Chinese translations for 30+ mods external attributes,
+      so raw keys like [gunsmithlib:bullet_damage] are never shown
+    - Toggle abilities: Flight, Night Vision, Vein Miner, Auto Smelt, Auto Fish,
+      Infinite Arrows, Keep Inventory, No Fall Damage and many more
+    - Panels: Stats (P), HUD (H), Item Editor (O), EMC Transmutation (V),
+      Achievements (U) and Waypoints (Y)
+    - Portable stations: crafting table, furnace, anvil, enchanting table,
+      stonecutter, loom, cartography table, grindstone, ender chest
+      (can pull materials from Refined Storage / AE2 / other storage networks)
+    - Per-player feature switches (pack authors can gate content and unlock it
+      later with /infstats feature)
+    - Full multiplayer support: stats, EMC and waypoints are stored per player
+      and synced to the server
+    - No required dependencies (the pinyin search library is bundled)
     '''
 
 [[dependencies.infinitestats]]
@@ -31,11 +48,11 @@ issueTrackerURL = "https://github.com/example/infinitestats/issues"
     ordering = "NONE"
     side = "BOTH"
 
-# 可选：拼音搜索（JustEnoughCharacters）
+# 拼音搜索（通用拼音搜索库）—— 已由 jarJar 内嵌，玩家无需另装；这里只声明版本关系，各界面搜索框据此启用拼音
 [[dependencies.infinitestats]]
-    modId = "jecharacters"
+    modId = "pinyin_search"
     mandatory = false
-    versionRange = "[1.0,)"
+    versionRange = "[1.1.0,2.0.0)"
     ordering = "NONE"
     side = "CLIENT"
 

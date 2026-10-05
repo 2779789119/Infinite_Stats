@@ -136,6 +136,16 @@ public final class Config {
     /** 自动钓鱼：收杆后重新抛竿的最长延迟（tick）。 */
     public static ForgeConfigSpec.IntValue AUTO_FISH_RECAST_DELAY_MAX;
 
+    // ========== 天气控制设置 ==========
+
+    /** 「天气」按钮切换后，新天气持续的时间（tick）。 */
+    public static ForgeConfigSpec.IntValue WEATHER_CYCLE_DURATION;
+
+    // ========== 区块强加载设置 ==========
+
+    /** 每个维度最多可同时强加载的区块数量。 */
+    public static ForgeConfigSpec.IntValue CHUNK_LOADER_MAX_FORCED_CHUNKS;
+
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
 
@@ -327,6 +337,23 @@ public final class Config {
                 .comment("「自动钓鱼」收杆后重新抛竿的最长延迟（tick）。",
                          "每次实际延迟在「最短 ~ 最长」之间随机；两者相同则为固定延迟。")
                 .defineInRange("autoFishRecastDelayMax", 15, 0, 200);
+        builder.pop();
+
+        // 天气控制设置
+        builder.push("WeatherControl");
+        WEATHER_CYCLE_DURATION = builder
+                .comment("「天气」按钮切换一次后，新天气持续的时间（tick，20tick = 1 秒）。",
+                         "默认 6000 tick = 5 分钟；到时间后天气会按原版规则自行演变。")
+                .defineInRange("weatherCycleDuration", 6000, 200, 72000);
+        builder.pop();
+
+        // 区块强加载设置
+        builder.push("ChunkLoader");
+        CHUNK_LOADER_MAX_FORCED_CHUNKS = builder
+                .comment("「强加载」每个维度最多可同时保持加载的区块数量。",
+                         "强加载的区块即使附近没有玩家也会被服务端持续加载，数量越多服务器负担越重，",
+                         "因此这里做硬性上限，防止误操作拖垮服务器。")
+                .defineInRange("maxForcedChunks", 16, 1, 256);
         builder.pop();
 
         SPEC = builder.build();

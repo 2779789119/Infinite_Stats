@@ -1,7 +1,7 @@
 package com.infinitestats.client;
 
 import com.infinitestats.Config;
-import com.infinitestats.compat.JechCompat;
+import com.infinitestats.compat.PinyinSearchBridge;
 import com.infinitestats.compat.ProjectEBridge;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
@@ -256,6 +256,14 @@ public class StatsScreen extends Screen {
         icon("instant_grow", Items.GOLDEN_CARROT);
         icon("auto_fish", Items.FISHING_ROD);
         icon("instant_bite", Items.TROPICAL_FISH);
+        icon("portable_enchanting", Items.ENCHANTING_TABLE);
+        icon("enchant_power", Items.ENCHANTED_BOOK);
+        icon("portable_stonecutter", Items.STONECUTTER);
+        icon("portable_loom", Items.LOOM);
+        icon("portable_cartography", Items.CARTOGRAPHY_TABLE);
+        icon("portable_grindstone", Items.GRINDSTONE);
+        icon("weather_control", Items.LIGHTNING_ROD);
+        icon("chunk_loader", Items.BEACON);
     }
 
     private static void icon(String statId, net.minecraft.world.item.Item item) {
@@ -514,9 +522,9 @@ public class StatsScreen extends Screen {
         String name = getStatDisplayName(stat).toLowerCase();
         String desc = stat.getDescription() != null ? stat.getDescription().toLowerCase() : "";
         String attr = stat.getAttributeName() != null ? stat.getAttributeName().toLowerCase() : "";
-        return JechCompat.matches(name, search) || JechCompat.matches(desc, search)
-                || JechCompat.matches(stat.getId().toLowerCase(), search)
-                || (!attr.isEmpty() && JechCompat.matches(attr, search));
+        return PinyinSearchBridge.matches(name, search) || PinyinSearchBridge.matches(desc, search)
+                || PinyinSearchBridge.matches(stat.getId().toLowerCase(), search)
+                || (!attr.isEmpty() && PinyinSearchBridge.matches(attr, search));
     }
 
     /**
@@ -764,29 +772,8 @@ public class StatsScreen extends Screen {
                 b -> { playClickSound(); resetAll(); });
         addRenderableWidget(resetAllBtn);
 
-        // 随身末影箱 / 随身锻造台（与随身工作台 / 熔炉 / 铁砧同一家族）
-        if (!isFeatureDisabled("portable_ender_chest")) {
-            Button enderChestBtn = new PixelButton(140, footerY, 62, 14,
-                    Component.translatable("gui.infinitestats.nav.ender_chest"),
-                    0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
-                    b -> {
-                        playClickSound();
-                        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EnderChestOpenPacket());
-                    });
-            addRenderableWidget(enderChestBtn);
-        }
-
-        if (!isFeatureDisabled("portable_smithing")) {
-            Button smithingBtn = new PixelButton(206, footerY, 70, 14,
-                    Component.translatable("gui.infinitestats.nav.smithing"),
-                    0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
-                    b -> {
-                        playClickSound();
-                        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.SmithingOpenPacket());
-                    });
-            addRenderableWidget(smithingBtn);
-        }
-
+        // 随身工具（工作台 / 熔炉 / 铁砧 / 末影箱 / 锻造台 / 附魔台 / 切石机 …）统一收进
+        // 「随身工具」面板，页脚不再逐个摆放入口，避免按钮越加越多。
         // 传送点入口只保留页脚导航行里的那个（nav.waypoint），此处不再重复放一个「传送点管理」按钮
     }
 
@@ -818,15 +805,17 @@ public class StatsScreen extends Screen {
         addNav(labels, actions, null,
                 Component.translatable("gui.infinitestats.nav.hud"),
                 () -> { if (minecraft != null) minecraft.setScreen(new HudEditScreen()); });
-        addNav(labels, actions, "portable_crafting",
-                Component.translatable("gui.infinitestats.nav.crafting"),
-                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.CraftingOpenPacket()));
-        addNav(labels, actions, "portable_furnace",
-                Component.translatable("gui.infinitestats.nav.furnace"),
-                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.FurnaceOpenPacket()));
-        addNav(labels, actions, "portable_anvil",
-                Component.translatable("gui.infinitestats.nav.anvil"),
-                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.AnvilOpenPacket()));
+        // 随身工具：原先分开摆的 5 个入口合并成一个面板，面板内再按各属性的解锁状态逐项启用
+        addNav(labels, actions, null,
+                Component.translatable("gui.infinitestats.nav.tools"),
+                () -> { if (minecraft != null) minecraft.setScreen(new PortableToolsScreen()); });
+        // 天气：打开独立面板逐档选择（原先是在这里点一次切一档）
+        addNav(labels, actions, "weather_control",
+                Component.translatable("gui.infinitestats.nav.weather"),
+                () -> { if (minecraft != null) minecraft.setScreen(new WeatherScreen()); });
+        addNav(labels, actions, "chunk_loader",
+                Component.translatable("gui.infinitestats.nav.chunk_loader"),
+                () -> { if (minecraft != null) minecraft.setScreen(new ChunkLoaderScreen()); });
 
         int totalW = labels.size() * btnW + (labels.size() - 1) * gap;
         int startX = (GUI_WIDTH - totalW) / 2;

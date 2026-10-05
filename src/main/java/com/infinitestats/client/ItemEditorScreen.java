@@ -1,6 +1,6 @@
 package com.infinitestats.client;
 
-import com.infinitestats.compat.JechCompat;
+import com.infinitestats.compat.PinyinSearchBridge;
 import com.infinitestats.network.EditItemPacket;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.util.ItemEditUtil;
@@ -299,7 +299,7 @@ public class ItemEditorScreen extends Screen {
         String q = searchQuery[col].toLowerCase(Locale.ROOT).trim();
         int size = col == 0 ? enchants.size() : attrs.size();
         for (int i = 0; i < size; i++) {
-            if (q.isEmpty() || JechCompat.matches(text.apply(i).toLowerCase(Locale.ROOT), q)) view.add(i);
+            if (q.isEmpty() || PinyinSearchBridge.matches(text.apply(i).toLowerCase(Locale.ROOT), q)) view.add(i);
         }
     }
 

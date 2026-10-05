@@ -81,6 +81,10 @@ repositories {
         // Cloth Config API（配置界面控件库）
         url "https://maven.shedaniel.me/"
     }
+    maven {
+        // pinyin_search（通用拼音搜索库）的坐标来源
+        url "https://jitpack.io"
+    }
 }
 
 dependencies {
@@ -95,6 +99,16 @@ dependencies {
     compileOnly fg.deobf("me.shedaniel.cloth:cloth-config-forge:${cloth_config_version}")
     runtimeOnly fg.deobf("me.shedaniel.cloth:cloth-config-forge:${cloth_config_version}")
 
+    // pinyin_search（通用拼音搜索库，包名 com.pinyinsearch / modId pinyin_search）
+    // —— 编译期 API + 运行期内嵌（JAR-in-JAR），玩家无需另装
+    // transitive = false：JitPack 发布出来的 POM 把 Forge / MC 的一堆库都算作它的依赖
+    // （netty / asm / antlr4 / oshi / brigadier / patchy / srgutils…），
+    // 不切断传递依赖的话 jarJar 会把它们全部嵌进本模组（主 jar 体积暴涨且可能撞类）。
+    // 我们只需要它自己那一个 mod jar；它真正需要的 fastutil 由 MC 自带。
+    compileOnly('com.github.2779789119:pinyinsearch:1.1.3') { transitive = false }
+    // 注意：jarJar 只接受 maven 区间版本（写精确版本会报 "The given version specification is invalid"）
+    jarJar('com.github.2779789119:pinyinsearch:[1.1.0,2.0.0)') { transitive = false }
+
     // Mixin 注解处理器：生成 refmap（把 official 名映射成生产环境的 SRG 名）
     annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
 }
@@ -107,7 +121,58 @@ mixin {
     config "${mod_id}.mixins.json"
 }
 
+// refmap 虽然由 Mixin 注解处理器在 compileJava 里生成（MixinGradle 把它写到
+// build/tmp/compileJava/${mod_id}.refmap.json），但 Gradle 并不知道它是本任务的产物。
+// 一旦 compileJava 走「增量恢复 / 命中共建缓存」这条路径（本项目开了 org.gradle.caching=true，
+// clean 之后的第二次构建必然 FROM-CACHE），只还原**已声明**的输出，这个文件不会被还原：
+//   → addMixinsToJar 找不到 refmap，jar 里就没有 ${mod_id}.refmap.json
+//   → 生产环境 Mixin 无法把 `moveRelative` / `createResult` / `setDeltaMovement` 这些成员名
+//     转成 SRG 名（报 No refMap loaded），所有注入 Critical injection failure，启动即崩。
+// 显式声明成 compileJava 的输出后，它会一起进缓存条目，FROM-CACHE 也能被正确还原。
+tasks.named('compileJava', JavaCompile).configure {
+    outputs.file(layout.buildDirectory.file("tmp/compileJava/${mod_id}.refmap.json"))
+}
+
+// ============================================================
+// JAR-in-JAR：把依赖里的 pinyin_search 内嵌进本模组 jar
+// （走 Forge 的 JarJar 机制，运行时当作嵌套模组加载，玩家无需另装）
+// ============================================================
+jarJar.enable()
+
+// jarJar 默认只在独立的 `<jar 名>-all.jar` 里带上 META-INF/jarjar/*，主产物不带。
+// 这里把内嵌部分并进主产物，按既有习惯分发主 jar 也能带上 pinyin_search。
+tasks.named('jar', Jar).configure {
+    dependsOn tasks.named('jarJar')
+    from({ zipTree(tasks.named('jarJar').get().archiveFile.get().asFile) }) {
+        include 'META-INF/jarjar/**'
+    }
+
+    // 兜底校验：refmap 没进 jar 就直接让构建失败。
+    // 缺 refmap 的 jar 依然能编译、能装、能启动到一半，只在 Mixin 注入阶段炸——
+    // 这类「产得出来但必定崩」的包不应该被分发出去。
+    doLast {
+        def refmapName = "${mod_id}.refmap.json"
+        def present = new java.util.zip.ZipFile(archiveFile.get().asFile).withCloseable {
+            it.getEntry(refmapName) != null
+        }
+        if (!present) {
+            throw new GradleException(
+                    "jar 中缺少 ${refmapName}：Mixin 在生产环境无法重映射成员名，注入会全部 Critical injection failure。"
+                            + "请确认 compileJava 不是从构建缓存恢复后丢了这个文件（见 mixin 配置下方的 outputs.file 声明）。")
+        }
+    }
+}
+
 sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+// gradle.properties 是 Java Properties 格式，Gradle 按 ISO-8859-1 读入 —— 因此含中文的 mod_authors
+// 在展开进 mods.toml / jar 清单时会变成乱码（模组列表里作者显示成「ä½åæ¢æ å」）。
+// 这里按 UTF-8 重新读一份，只用于「写进产物」的几处；其余数值属性保持 Gradle 原样读取。
+def utf8Properties = new Properties()
+file('gradle.properties').withInputStream { stream ->
+    utf8Properties.load(new InputStreamReader(stream, 'UTF-8'))
+}
+def modAuthors = utf8Properties.getProperty('mod_authors', mod_authors)
 
 tasks.named('processResources', ProcessResources).configure {
     var replaceProperties = [
@@ -116,7 +181,7 @@ tasks.named('processResources', ProcessResources).configure {
             mod_id: mod_id,
             mod_name: mod_name,
             mod_version: mod_version,
-            mod_authors: mod_authors,
+            mod_authors: modAuthors,
             mod_description: mod_description,
     ]
     inputs.properties replaceProperties
@@ -130,11 +195,11 @@ jar {
     manifest {
         attributes([
                 "Specification-Title"     : mod_id,
-                "Specification-Vendor"    : mod_authors,
+                "Specification-Vendor"    : modAuthors,
                 "Specification-Version"   : "1",
                 "Implementation-Title"    : project.name,
                 "Implementation-Version"  : project.jar.archiveVersion,
-                "Implementation-Vendor"   : mod_authors,
+                "Implementation-Vendor"   : modAuthors,
                 "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
         ])
     }

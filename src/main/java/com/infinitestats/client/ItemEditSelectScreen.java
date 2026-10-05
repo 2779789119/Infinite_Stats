@@ -1,6 +1,6 @@
 package com.infinitestats.client;
 
-import com.infinitestats.compat.JechCompat;
+import com.infinitestats.compat.PinyinSearchBridge;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
@@ -144,8 +144,8 @@ public class ItemEditSelectScreen extends Screen {
         filtered = new ArrayList<>();
         for (Candidate c : all) {
             if (q.isEmpty()
-                    || JechCompat.matches(c.display.toLowerCase(Locale.ROOT), q)
-                    || JechCompat.matches(c.rl.toString().toLowerCase(Locale.ROOT), q)) {
+                    || PinyinSearchBridge.matches(c.display.toLowerCase(Locale.ROOT), q)
+                    || PinyinSearchBridge.matches(c.rl.toString().toLowerCase(Locale.ROOT), q)) {
                 filtered.add(c);
             }
         }

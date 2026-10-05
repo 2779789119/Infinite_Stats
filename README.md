@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Mod ID** | `infinitestats` |
-| **当前版本** | `1.20.0`（以 `gradle.properties` 的 `mod_version` 为准） |
+| **当前版本** | `1.33.0`（以 `gradle.properties` 的 `mod_version` 为准） |
 | **运行环境** | Minecraft `1.20.1` / Forge `47.3.0+` |
 | **许可证** | MIT |
 
@@ -14,7 +14,7 @@
 ## ✨ 核心特性
 
 - 🎯 **经验升级加点** —— 击杀怪物与挂机被动获取经验，升级发放可分配属性点
-- 📊 **86 个内置属性**，分为攻击 / 防御 / 机动 / 功能四大类
+- 📊 **96 个内置属性**，分为攻击 / 防御 / 机动 / 功能四大类
 - 🔌 **自动发现外部属性** —— 其他模组注册的属性自动收进「外部属性」分类，无需手动适配
 - 🌏 **内置 30+ 模组的外部属性中文译文** —— 装包即用，不再显示 `[gunsmithlib:bullet_damage]` 这类原始键名
 - 🖥️ **属性面板 GUI**（默认 `P`）—— 分类浏览 / 搜索 / 一键加点 / 重置
@@ -138,7 +138,7 @@
 - **白 / 黑名单过滤**：主面板「入库过滤」按钮打开过滤界面，可精确控制「哪些物品才入库」：
   - **白名单** = 只入库名单内的物品；**黑名单** = 名单内的物品不入库；
   - 点击列表中的物品行即**加入 / 移出**名单（在名单内的行有绿色指示条），也可用「手持加入」一键把主手物品加入；
-  - 支持按物品名或物品 ID 搜索（装了 JustEnoughCharacters 时支持拼音）；「只看已选」可把列表收窄到已选条目方便核对；
+  - 支持按物品名或物品 ID 搜索（装了 `pinyin_search` 时支持拼音）；「只看已选」可把列表收窄到已选条目方便核对；
   - **名单为空 = 不做限制**（避免清空列表后自动入库整体失效）；
   - 名单属于**玩家个人数据**，随存档同步、跟人走。
 - **安全保护**：存储无线终端（RS / AE2）与背包本身**永不入库**（否则一次扫描就会把连网凭证自己存走），另有服务端配置黑名单兜底。
@@ -147,7 +147,7 @@
 ### 🎛️ 功能开关（每个玩家独立，不是全局配置）
 
 - **入口**：属性面板（默认 `P`）标题栏**右上角的「功能开关」按钮**（关闭后返回属性面板）。
-- **作用**：87 条内置属性可以逐条关掉 —— 关掉后一律**从属性面板隐藏、不能继续加点**，页脚里对应的功能入口也一起消失；**「整条失效」还是「只隐藏」由下面的模式决定**（**全局设置，由整合包作者定**，配置项 `GUI.featureDisableMode`；OP 也可用指令改）：
+- **作用**：96 条内置属性可以逐条关掉 —— 关掉后一律**从属性面板隐藏、不能继续加点**，页脚里对应的功能入口也一起消失；**「整条失效」还是「只隐藏」由下面的模式决定**（**全局设置，由整合包作者定**，配置项 `GUI.featureDisableMode`；OP 也可用指令改）：
 
   | 模式 | 效果 | 已投入的点数 |
   |---|---|---|
@@ -157,7 +157,7 @@
 
   - 关闭 / 开启 / 切换模式都会**当场重算属性**，不必等下次加点或重登；OP 切换模式时会为全服在线玩家重算一遍。
 - **分层**：**开关是按玩家存的**（写在玩家数据里，随存档同步、跟人走，多人服务器里每个人可以有自己的面板）；**执行模式是全局配置**（整合包作者一份设置，所有人共用，玩家界面上只读显示）。
-- 界面支持分类筛选 + 搜索（属性名 / ID / 说明，装 JustEnoughCharacters 时支持拼音），点行即切换；底栏「全部开启 / 全部关闭」作用于**当前筛选结果**，下面一行显示当前执行模式（鼠标悬停看该模式的含义）。
+- 界面支持分类筛选 + 搜索（属性名 / ID / 说明，装 `pinyin_search` 时支持拼音），点行即切换；底栏「全部开启 / 全部关闭」作用于**当前筛选结果**，下面一行显示当前执行模式（鼠标悬停看该模式的含义）。
 - 不想开界面也行，等价指令（**需要 OP，权限等级 2**：整合包里这是给管理员用的，普通玩家用界面即可；`<属性ID>` 支持 Tab 补全）：
 
   | 指令 | 作用 |
@@ -186,12 +186,57 @@
 - `trade_restock`（3 点解锁）：交易后**立刻补货**，同一条目可以连续买。只重置 `uses`，不调用 `Villager#restock()` —— 后者的 `updateDemand()` 反复执行会把需求加价越补越贵。
 - `keep_xp`（3 点解锁）：死亡**经验等级与经验条保留**（配合 `keep_inventory` 可完整保命）。
 
-### 🎒 随身末影箱 / 随身锻造台
+### 🧰 随身工具面板（统一入口）
 
-- 与随身工作台 / 熔炉 / 铁砧完全同一套做法：直接复用原版菜单（`GENERIC_9x3` 箱子菜单 / `SmithingMenu`），客户端自动套用原版界面，无需自建菜单类型。
-- 入口：属性面板页脚的「末影箱」/「锻造台」按钮，或 `/infstats enderchest` / `/infstats smithing`。
-- 随身末影箱与原版末影箱**共用同一份库存**。
+- 所有随身站点（工作台 / 熔炉 / 铁砧 / 末影箱 / 锻造台 / 附魔台 / 切石机 / 织布机 / 制图台 / 磨石）
+  收敛到**一个**「随身工具」入口，点开后是独立面板：
+  - 未解锁的工具按钮**灰色不可点**，悬停会提示需要解锁哪条属性；
+  - 已解锁的点一下即打开，服务端还会再校验一次开关（改造过的客户端无法绕过）。
+- 页脚导航行只有 3 个相关入口：**随身工具 / 天气 / 强加载**（后两个需先激活对应属性才出现）。
+- 全部复用原版菜单类型，客户端自动套用原版界面，无需自建界面与菜单类型。
 - **随身铁砧是唯一例外**：它要放宽原版「过于昂贵」门槛并把消耗封顶到 **50 级**，而客户端必须能区分「随身铁砧」与「真铁砧」，因此它拥有自己的菜单类型 `PortableAnvilMenu`（客户端仍套用原版铁砧界面），由 Mixin 在两端识别后只对随身铁砧生效。
+- 附魔台 / 切石机 / 织布机 / 制图台 / 磨石 / 锻造台走 `crafting/PortableStationMenus`：传真实的
+  `ContainerLevelAccess`（玩家脚下的维度 + 坐标）以保证世界侧回调正常执行（附魔等级计算、点击附魔、
+  制图台成品、关闭时归还物品），再用子类覆写 `stillValid` 去掉「必须站在对应方块旁」的校验。
+  - **随身附魔台**是 **1 点解锁的开关**（与其余站点一致）：可随时打开附魔台，
+    **不再依赖周围书架**。附魔强度拆成**隐藏属性 `enchant_power`**，**加点入口就在附魔界面里**——
+    打开后界面右侧多出一块面板，显示「附魔强度 `Lv.N / 15`」与 `−` / `+` 按钮，每点 +1
+    （等价于原版 1 个书架），**强度越高三档附魔等级越高，15 点即原版满级（30 级附魔）**；
+    点一下 ± 就会当场重算三档附魔，能一边加点一边看效果。工具面板的悬停提示会显示当前强度
+    （如「当前附魔强度 7 / 15」）；
+  - **随身末影箱**与原版末影箱**共用同一份库存**。
+- 对比：`/infstats craft | furnace | anvil | enderchest | smithing` 指令保持不变；
+  新增的 5 个站点只从「随身工具」面板进入。
+
+### 🌦️ 天气控制（`weather_control`）
+
+- 投入 **1 点**解锁。激活后页脚导航行出现「天气」按钮，点开是**天气面板**：里面列出全部天气档位
+  （**晴天 / 下雨 / 雷暴**），**点哪一档就切哪一档**，并在聊天栏提示当前天气；当前档位带绿色描边，面板顶部显示当前天气。
+- ⚠️ 原版 MC **没有天气注册表**（天气只是 `Level` 上的两个布尔 + 两个计时器，
+  下雪是「下雨 + 寒冷生物群系」的渲染表现），所以能列的档位就是这三档；
+  天气类模组各写各的字段，也没有统一注册表可枚举。面板里的档位抽成了一处列表，后续要加档位只改那一处。
+- 作用于**主世界**：玩家在下界 / 末地时切换的仍是主世界天气，这样按钮在任何维度都有意义。
+- 持续时长由配置 `WeatherControl.weatherCycleDuration` 决定（默认 6000 tick = 5 分钟），到时后天气按原版规则自行演变。
+
+### 🧭 区块强加载（`chunk_loader`）
+
+- 投入 **1 点**解锁。激活后页脚导航行出现「强加载」按钮，点开是独立的区块强加载面板：
+  - 输入**方块坐标**（可点「填入当前位置」一键填入），面板会实时显示换算出的区块坐标，点「加载」把对应区块设为强加载；
+  - 下方列出**当前维度**已强加载的区块（逐行显示区块坐标与对应方块范围，可单独卸载，超过 5 行自动分页）；
+  - 服务端在每次加载 / 卸载后都会把最新列表回推给客户端，界面不会与真实状态脱节。
+- 与原版 `/forceload` 同一套机制（`ServerLevel#setChunkForced` + `ForcedChunksSavedData`）：强加载数据随存档保存，重启后依然有效；并做世界边界校验。
+- 数量上限由配置 `ChunkLoader.maxForcedChunks` 限制（默认 16，上限 256），超限时拒绝并提示，避免"一次点满"把服务器拖垮。
+
+### 🔍 拼音搜索（已内置，无需前置）
+
+- 属性面板 / 效果过滤器 / 物品编辑器 / 物品选择 / 入库过滤 / EMC 转化桌 / 成就统计面板的搜索框支持拼音，
+  例如 `zsj` → 钻石剑、`tiezh` → 铁砧。
+- 拼音能力来自 **`pinyin_search`（通用拼音搜索库）**，已通过 **JAR-in-JAR 内嵌**在本模组里，
+  **玩家 / 整合包无需另装**（`build.gradle` 用 `compileOnly` + `jarJar` 引用官方坐标
+  `com.github.2779789119:pinyinsearch`）。
+- 代码侧走它的官方 API（`com.pinyinsearch.api.PinyinSearch#matches`），桥接类见 `compat/PinyinSearchBridge`
+  （按该库 `docs/INTEGRATION.md` §2 的模板实现：库的类型只出现在方法体内，没装库时自动退化为纯原文包含）。
+- 已知限制（来自 `pinyin_search` 的实测结论）：英文**词首字母**搜不到（`Diamond Sword` 搜不到 `DS`）；**简繁不互搜**（`钻石剑` 与 `鑽石劍` 互相搜不到）。
 
 ---
 
@@ -233,12 +278,14 @@
 | `AutoDeposit.autoDepositInterval` | `20` | 「自动入库」扫描间隔（tick，20 = 1 秒） |
 | `AutoDeposit.autoDepositKeepHotbar` | `true` | 是否保留快捷栏（0-8 号槽）物品不被自动入库 |
 | `AutoDeposit.autoDepositBlacklist` | `[]` | 服务端级自动入库黑名单（物品 ID，`#` 前缀表示物品标签，**所有玩家生效**） |
+| `WeatherControl.weatherCycleDuration` | `6000` | 「天气」按钮切换后新天气持续的时间（tick，默认 5 分钟） |
+| `ChunkLoader.maxForcedChunks` | `16` | 「强加载」每个维度最多可同时保持加载的区块数量（上限 256） |
 
 > 大部分配置改后即时生效，标注「需重启」的除外。
 
 ---
 
-## 🧬 内置属性一览（共 86 个）
+## 🧬 内置属性一览（共 96 个）
 
 > 标 **[开关]** 的为功能型开关，激活后即时生效，可随时开启 / 关闭。
 
@@ -254,9 +301,9 @@
 
 `movement_speed` 移动速度 · `swim_speed` 游泳速度 · `jump_height` 跳跃高度 · `multi_jump` N 段跳 · `step_height` 抬腿高度 · `auto_step` **[开关]** 自动抬腿 · `fly_speed` 飞行速度 · `fly` **[开关]** 飞行 · `climb_speed` 爬梯加速 · `no_fall_damage` **[开关]** 免摔落伤害
 
-### 🧰 功能（42）
+### 🧰 功能（52）
 
-`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 掉落幸运 · `double_loot` 双倍战利品 · `item_magnet` **[开关]** 物品磁铁 · `xp_magnet` **[开关]** 经验磁铁 · `auto_deposit` **[开关]** 自动入库 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `breed_no_cooldown` **[开关]** 繁殖无冷却 · `instant_grow` **[开关]** 一键长大 · `crafting_bonus` 合成加成 · `auto_repair` **[开关]** 自动修理 · `repair_amount` 修理量 · `use_speed` 使用速度 · `bow_draw_speed` 拉弓加速 · `cooldown_reduction` 冷却缩减 · `projectile_tracking` **[开关]** 弹射物追踪 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `invisibility` **[开关]** 隐身 · `keep_inventory` **[开关]** 死亡不掉落 · `keep_xp` **[开关]** 死亡不掉经验 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `portable_crafting` **[开关]** 随身工作台 · `portable_furnace` **[开关]** 随身熔炉 · `portable_anvil` **[开关]** 随身铁砧 · `portable_ender_chest` **[开关]** 随身末影箱 · `portable_smithing` **[开关]** 随身锻造台 · `trade_discount` 村民交易折扣 · `trade_restock` **[开关]** 交易即刻补货 · `anvil_cost` 铁砧经验减免 · `pe_auto_learn` **[开关]** PE 自动学习
+`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 掉落幸运 · `double_loot` 双倍战利品 · `item_magnet` **[开关]** 物品磁铁 · `xp_magnet` **[开关]** 经验磁铁 · `auto_deposit` **[开关]** 自动入库 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `auto_fish` **[开关]** 自动钓鱼 · `instant_bite` **[开关]** 立即咬钩 · `breed_no_cooldown` **[开关]** 繁殖无冷却 · `instant_grow` **[开关]** 一键长大 · `crafting_bonus` 合成加成 · `auto_repair` **[开关]** 自动修理 · `repair_amount` 修理量 · `use_speed` 使用速度 · `bow_draw_speed` 拉弓加速 · `cooldown_reduction` 冷却缩减 · `projectile_tracking` **[开关]** 弹射物追踪 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `invisibility` **[开关]** 隐身 · `keep_inventory` **[开关]** 死亡不掉落 · `keep_xp` **[开关]** 死亡不掉经验 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `portable_crafting` **[开关]** 随身工作台 · `portable_furnace` **[开关]** 随身熔炉 · `portable_anvil` **[开关]** 随身铁砧 · `portable_ender_chest` **[开关]** 随身末影箱 · `portable_smithing` **[开关]** 随身锻造台 · `portable_enchanting` **[开关]** 随身附魔台 · `enchant_power`（隐藏）附魔强度 · `portable_stonecutter` **[开关]** 随身切石机 · `portable_loom` **[开关]** 随身织布机 · `portable_cartography` **[开关]** 随身制图台 · `portable_grindstone` **[开关]** 随身磨石 · `weather_control` **[开关]** 天气控制 · `chunk_loader` **[开关]** 区块强加载 · `trade_discount` 村民交易折扣 · `trade_restock` **[开关]** 交易即刻补货 · `anvil_cost` 铁砧经验减免 · `pe_auto_learn` **[开关]** PE 自动学习
 
 ### 🌐 外部属性（动态）
 
@@ -299,7 +346,40 @@ config/infinitestats/external_translations.json
 ./gradlew genIntellijRuns  # 生成 IDE 运行配置
 ```
 
+**Windows 上一键构建**：仓库根目录的 `build.bat`（双击即可，参数写在脚本名后）：
+
+| 命令 | 作用 |
+|---|---|
+| `build.bat` | 增量构建 + 把产物复制到 `dist\` |
+| `build.bat clean` | 先 `clean` 再构建（全量） |
+| `build.bat check` | 只编译（`compileJava` + `compileGameTestJava`，最快） |
+| `build.bat nocopy` | 只构建，不复制 |
+| `build.bat deploy` | 构建 + 复制到 `dist\` + 部署进整合包 `mods\`（自动探测已装有本模组的整合包，也可用第二个参数指定目录） |
+
+脚本会自动跳过 `-all.jar` 中间产物、校验 jar 里含 refmap，并在构建时一并编译 `gameTest` 源集。
+
+> `gradle.properties` 里带了一行 `systemProp.net.minecraftforge.gradle.check.certs=false`：
+> 本机网络（代理 / 杀软中间人证书）过不了 ForgeGradle 对 `maven.minecraftforge.net` 的证书预检时，
+> 插件 apply 阶段会直接失败并报 `Failed to validate certificate for host`。这只是 FG 的一次连通性预检，
+> 关掉后真正的依赖下载依旧走 JDK 正常的 TLS 校验；换到网络正常的环境可以删掉这一行。
+要分发的始终是 `build\libs\infinite_stats-无限加点-1.20.1-<版本>.jar`（内嵌的 `pinyin_search` 已并入其中）。
+注：`build.bat` 内容保持**纯 ASCII** —— cmd 按 OEM 代码页解析 .bat，文件里出现中文会导致批处理语法报错。
+
 > `build` 的耗时大头是 `reobfJar`（Forge 全量重映射，**不可跳过**，跳过产物无法在正式客户端加载）。只想验证改动时用 `compileJava`，要进游戏测用 `runClient`。
+
+拼音搜索库 `pinyin_search` 用官方 JitPack 坐标
+（`com.github.2779789119:pinyinsearch`，仓库 `https://jitpack.io`）接：`compileOnly` 取编译期 API，
+`jarJar` 把它**内嵌**进产物 jar（Forge 的 JAR-in-JAR，嵌套模组运行时加载），玩家无需另装。
+
+`jarJar` 这一行有三个坑（都已在 `build.gradle` 里处理好，改依赖时别改坏）：
+
+- 版本必须写 **maven 区间**（如 `[1.1.0,2.0.0)`），写精确版本会报
+  `The given version specification is invalid`。
+- 必须加 **`transitive = false`**：该库的 POM 把 Forge / MC 的一堆库算作依赖，不切断的话
+  会被全部嵌进来（实测主 jar 从 875 KB 涨到 91.7 MB / 116 个嵌套 jar）。
+- FG 的 `jarJar` 默认只把内嵌内容放进单独的 `-all.jar`；本工程已在 `jar` 任务里把
+  `META-INF/jarjar/**` 合并进主产物，**照旧分发主 jar 即可**（构建后可确认主 jar 里有
+  `META-INF/jarjar/pinyinsearch-<ver>.jar` 与 `META-INF/jarjar/metadata.json`）。
 
 源码结构：
 
@@ -310,7 +390,7 @@ src/main/java/com/infinitestats/
 ├── client/                # GUI 与客户端逻辑（属性面板 / HUD / 物品编辑器 / EMC / 传送点 / 成就…）
 ├── command/               # 服务端命令（/infstats）
 ├── compat/                # 兼容层（JEI、存储网络桥接等）
-├── crafting/              # 随身工作台
+├── crafting/              # 随身工作台 / 随身站点菜单（附魔台、切石机…）
 ├── emc/                   # EMC 等价交换
 ├── event/                 # 事件总线（属性效果总入口）
 ├── furnace/               # 随身熔炉 / 燃料缓冲

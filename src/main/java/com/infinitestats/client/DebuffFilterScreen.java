@@ -1,6 +1,6 @@
 package com.infinitestats.client;
 
-import com.infinitestats.compat.JechCompat;
+import com.infinitestats.compat.PinyinSearchBridge;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStatsProvider;
 import net.minecraft.client.Minecraft;
@@ -298,9 +298,9 @@ public class DebuffFilterScreen extends Screen {
             String name = effect.getDisplayName().getString();
             if (!q.isEmpty()) {
                 String desc = effectDescription(rl);
-                if (!JechCompat.matches(name.toLowerCase(Locale.ROOT), q)
-                        && !JechCompat.matches(id.toLowerCase(Locale.ROOT), q)
-                        && (desc == null || !JechCompat.matches(desc.toLowerCase(Locale.ROOT), q))) {
+                if (!PinyinSearchBridge.matches(name.toLowerCase(Locale.ROOT), q)
+                        && !PinyinSearchBridge.matches(id.toLowerCase(Locale.ROOT), q)
+                        && (desc == null || !PinyinSearchBridge.matches(desc.toLowerCase(Locale.ROOT), q))) {
                     continue;
                 }
             }
@@ -309,7 +309,7 @@ public class DebuffFilterScreen extends Screen {
 
         for (String customId : customIds) {
             if (!categoryFilter.accept(null)) continue;
-            if (!q.isEmpty() && !JechCompat.matches(customId.toLowerCase(Locale.ROOT), q)) continue;
+            if (!q.isEmpty() && !PinyinSearchBridge.matches(customId.toLowerCase(Locale.ROOT), q)) continue;
             boolean listed = false;
             for (MobEffect e : allEffects) {
                 ResourceLocation key = ForgeRegistries.MOB_EFFECTS.getKey(e);

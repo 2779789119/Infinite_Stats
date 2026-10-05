@@ -4,7 +4,13 @@ import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.StatCategory;
 import com.infinitestats.stats.StatType;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.common.ForgeMod;
+
+import java.util.UUID;
 
 /**
  * 机动类属性处理器
@@ -140,21 +146,70 @@ public class MobilityHandler implements StatEffectHandler {
      * 更新自动跨越高度（含 step_height 加成）
      */
     private void updateStepHeight(ServerPlayer player, PlayerStats stats) {
-        float targetStep = DEFAULT_STEP_HEIGHT;
+        applyStepHeight(player, stats);
+    }
 
-        // auto_step: 开关型，激活后基础跨越 = 1.25（见 AUTO_STEP_HEIGHT 说明）
-        if (stats.isToggleActive("auto_step")) {
-            targetStep = AUTO_STEP_HEIGHT;
+    /**
+     * 「跨越高度」修改器用的固定 UUID。
+     * <p>
+     * 客户端与服务端共用同一个：属性值从服务端同步回客户端时，原版是按 UUID
+     * 「替换」同名修改器的，UUID 一致就不会出现本地一份 + 服务端一份的重复叠加。
+     */
+    private static final UUID STEP_HEIGHT_MODIFIER_UUID =
+            UUID.fromString("6d1b7f2a-3c4e-4a91-8f5d-2b0c9e7a4d13");
+
+    /** 该玩家的有效跨越高度（基准 × (1 + 百分比加成)；加成为负时不参与，与原实现一致）。 */
+    public static float stepHeightOf(PlayerStats stats) {
+        float base = stats.isToggleActive("auto_step") ? AUTO_STEP_HEIGHT : DEFAULT_STEP_HEIGHT;
+        float bonus = stats.getStatValue(StatType.fromId("step_height"));
+        return bonus > 0 ? base * (1.0f + bonus) : base;
+    }
+
+    /**
+     * 把跨越高度写到玩家身上（客户端与服务端都调用，公式完全一致）。
+     * <p>
+     * <b>为什么要分两个通道写：</b>Forge 1.20.1 把 {@code Entity#collide} 里的跨越高度换成了
+     * {@code IForgeEntity#getStepHeight()}，它的定义是
+     * 「原版 {@code maxUpStep} 字段 <b>加上</b> {@code forge:step_height_addition} 属性的值」
+     * （见 Forge 补丁源码 {@code IForgeEntity#getStepHeight()}）。
+     * <ul>
+     *   <li><b>原版字段</b>只写「基准值」（{@code 0.6}，开了自动跨越则 {@code 1.25}）——
+     *       整合包里另有模组读写这个字段是常事，把大数值写在这里容易被它们覆盖；</li>
+     *   <li><b>Forge 属性</b>承载「超出基准的那部分」，合计正好等于目标跨越高度，
+     *       而且属性本身会随原版属性同步在两端保持一致。</li>
+     * </ul>
+     * 旧实现只写原版字段：只要别的模组也去设置 {@code maxUpStep}，我们的值就被抹掉，
+     * 表现就是「跨越高度加了点却走不上台阶」（客户端本地跳上去了，服务端判定不一致又拉回来）。
+     * <p>
+     * 只在数值真正变化时才动属性：{@code AttributeInstance} 每次增删修改器都会置脏并触发一次
+     * 属性同步包，每 tick 无脑重写会变成刷包。
+     */
+    public static void applyStepHeight(LivingEntity entity, PlayerStats stats) {
+        float base = stats.isToggleActive("auto_step") ? AUTO_STEP_HEIGHT : DEFAULT_STEP_HEIGHT;
+        float target = stepHeightOf(stats);
+
+        // 原版通道：字段固定写基准值（不写目标值，避免与下面的属性重复相加）
+        if (Math.abs(entity.maxUpStep() - base) > 0.01f) {
+            entity.setMaxUpStep(base);
         }
 
-        // step_height: 百分比加成
-        float stepBonus = stats.getStatValue(StatType.fromId("step_height"));
-        if (stepBonus > 0) {
-            targetStep *= (1.0f + stepBonus);
-        }
+        // Forge 通道：只补「超出基准的差额」
+        AttributeInstance instance = entity.getAttribute(ForgeMod.STEP_HEIGHT_ADDITION.get());
+        if (instance == null) return;
 
-        if (Math.abs(player.maxUpStep() - targetStep) > 0.01f) {
-            player.setMaxUpStep(targetStep);
+        double extra = Math.max(0.0D, (double) target - (double) base);
+        AttributeModifier existing = instance.getModifier(STEP_HEIGHT_MODIFIER_UUID);
+        double current = existing == null ? 0.0D : existing.getAmount();
+        if (Math.abs(current - extra) <= 1.0E-4D) return;
+
+        // 必须先摘掉旧修改器：AttributeInstance 对重复 UUID 会直接抛异常
+        if (existing != null) instance.removeModifier(STEP_HEIGHT_MODIFIER_UUID);
+        if (extra > 1.0E-4D) {
+            instance.addTransientModifier(new AttributeModifier(
+                    STEP_HEIGHT_MODIFIER_UUID,
+                    "infinitestats:step_height",
+                    extra,
+                    AttributeModifier.Operation.ADDITION));
         }
     }
 

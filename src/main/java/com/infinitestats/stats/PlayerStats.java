@@ -946,6 +946,32 @@ public class PlayerStats {
         return tag;
     }
 
+    /**
+     * 旧存档迁移：「随身附魔台」由点数型（等级＝附魔强度，1~15）改为 1 点解锁的开关，
+     * 附魔强度拆到隐藏属性 {@code enchant_power}（只在随身附魔台界面里加点）。
+     * <p>
+     * 旧存档里投入 N 点（N &gt; 1）时，把多出来的 N-1 点**原样搬到** {@code enchant_power}、
+     * 只留 1 点在开关上 —— 总投入不变，玩家不亏、也不需要重新加点；
+     * 若强度已经点满（搬不过去），剩余的部分退还到可用点数。逻辑幂等，重复加载不会重复搬迁。
+     */
+    private void migratePortableEnchanting() {
+        StatType powerStat = StatType.fromId("enchant_power");
+        if (powerStat == null) return;
+        Long legacy = allocatedPoints.get("portable_enchanting");
+        if (legacy == null || legacy <= 1L) return;
+
+        long power = Math.max(0L, allocatedPoints.getOrDefault("enchant_power", 0L));
+        long moved = Math.min(legacy - 1L, powerStat.getMaxLevel() - power);
+        allocatedPoints.put("portable_enchanting", 1L);
+        if (moved > 0L) {
+            allocatedPoints.put("enchant_power", power + moved);
+        }
+        long excess = legacy - 1L - moved;
+        if (excess > 0L) {
+            availablePoints += excess;
+        }
+    }
+
     public void deserializeNBT(CompoundTag tag) {
         level = tag.getLong("level");
         experience = tag.getLong("experience");
@@ -973,6 +999,9 @@ public class PlayerStats {
                 allocatedPoints.put(statId, points);
             }
         }
+
+        // 旧存档迁移：「随身附魔台」由点数型改为开关，附魔强度拆到隐藏属性 enchant_power
+        migratePortableEnchanting();
 
         // 反序列化能力提供记录
         providedAbilities.clear();

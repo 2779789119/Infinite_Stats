@@ -338,20 +338,14 @@ public final class ClientEventHandler {
 
     /**
      * auto_step / step_height 的客户端同步。
-     *
-     * 台阶高度由客户端本地碰撞（Entity#collide 读取 maxUpStep）参与移动预判，
-     * 只在服务端设置会导致客户端走不上台阶、被服务端拉回。这里按与服务端
-     * MobilityHandler#updateStepHeight 完全一致的公式在本地同步。
+     * <p>
+     * 跨越高度参与客户端本地的移动预判（{@code Entity#collide} 里的 {@code getStepHeight()}：
+     * 原版字段 + {@code forge:step_height_addition} 属性），只在服务端设置会导致
+     * 客户端走不上台阶、被服务端拉回。这里直接复用服务端同一套实现
+     * {@link MobilityHandler#applyStepHeight}，两端公式与写入通道完全一致。
      */
     private static void syncStepHeight(LocalPlayer player, PlayerStats stats) {
-        float targetStep = MobilityHandler.DEFAULT_STEP_HEIGHT;
-        if (stats.isToggleActive("auto_step")) targetStep = MobilityHandler.AUTO_STEP_HEIGHT;
-        float stepBonus = stats.getStatValue(StatType.fromId("step_height"));
-        if (stepBonus > 0) targetStep *= (1.0f + stepBonus);
-
-        if (Math.abs(player.maxUpStep() - targetStep) > 0.01f) {
-            player.setMaxUpStep(targetStep);
-        }
+        MobilityHandler.applyStepHeight(player, stats);
     }
 
     /**
@@ -375,6 +369,8 @@ public final class ClientEventHandler {
                 MenuScreens.register(ModMenuTypes.PORTABLE_CRAFTING_MENU.get(), PortableCraftingScreen::new);
                 // 随身铁砧沿用原版铁砧界面
                 MenuScreens.register(ModMenuTypes.PORTABLE_ANVIL_MENU.get(), AnvilScreen::new);
+                // 随身附魔台：原版附魔界面 + 右侧「附魔强度」加点
+                MenuScreens.register(ModMenuTypes.PORTABLE_ENCHANTING_MENU.get(), PortableEnchantingScreen::new);
             });
         }
 

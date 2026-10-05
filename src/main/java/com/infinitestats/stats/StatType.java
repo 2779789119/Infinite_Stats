@@ -834,7 +834,58 @@ public final class StatType {
             create("portable_smithing").category(StatCategory.UTILITY)
                 .toggle()
                 .maxLevel(1)
-                .description("开启后可随时打开锻造台（属性面板页脚「锻造台」按钮或 /infstats smithing）")
+                .description("开启后可随时打开锻造台（属性面板「随身工具」入口或 /infstats smithing）")
+                .build(),
+
+            create("portable_enchanting").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可随时打开附魔台（属性面板「随身工具」入口）；附魔强度在附魔台界面里加点")
+                .build(),
+
+            // 附魔强度：**隐藏属性**（面板里不显示、不能加点），只在随身附魔台界面里用 ± 加点。
+            // 单独拆出来是因为「随身附魔台」本身已改为 1 点解锁的开关，强度改为可调。
+            create("enchant_power").category(StatCategory.UTILITY)
+                .hidden()
+                .perPointValue(1.0f)
+                .maxLevel(15)
+                .description("每点 +1 附魔强度（等价于原版 1 个书架，不看周围书架）：在随身附魔台界面里加点，强度越高三档附魔等级越高，15 点即原版满级（30 级附魔）")
+                .build(),
+
+            create("portable_stonecutter").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可随时打开切石机（属性面板「随身工具」入口）")
+                .build(),
+
+            create("portable_loom").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可随时打开织布机（属性面板「随身工具」入口）")
+                .build(),
+
+            create("portable_cartography").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可随时打开制图台（属性面板「随身工具」入口）")
+                .build(),
+
+            create("portable_grindstone").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可随时打开磨石（属性面板「随身工具」入口）")
+                .build(),
+
+            create("weather_control").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可用属性面板「天气」按钮切换主世界天气：晴 → 雨 → 雷 → 晴")
+                .build(),
+
+            create("chunk_loader").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可用属性面板「强加载」按钮输入区块坐标强加载/卸载区块（每维度有数量上限）")
                 .build(),
 
             create("trade_discount").category(StatCategory.UTILITY)

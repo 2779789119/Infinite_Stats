@@ -1,6 +1,6 @@
 package com.infinitestats.client;
 
-import com.infinitestats.compat.JechCompat;
+import com.infinitestats.compat.PinyinSearchBridge;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStatsProvider;
 import net.minecraft.client.Minecraft;
@@ -31,7 +31,7 @@ import java.util.Set;
  * <p>
  * 视觉与交互沿用 {@link EditorUi} 规范（与物品编辑器、效果过滤一致）：
  * <ul>
- *   <li>搜索框支持物品名与物品 ID（装了 JustEnoughCharacters 时按拼音匹配）；</li>
+ *   <li>搜索框支持物品名与物品 ID（装了 pinyin_search 时按拼音匹配）；</li>
  *   <li>列表列出全部物品，<b>点击行即切换「在名单内 / 不在名单内」</b>，在名单内的行有绿色指示条；</li>
  *   <li>底栏「手持加入」可一键把当前主手物品加入名单，省去搜索；</li>
  *   <li>「只看已选」把列表收窄到已选条目，方便核对与移除。</li>
@@ -205,7 +205,7 @@ public class AutoDepositFilterScreen extends Screen {
         for (Candidate c : all) {
             if (onlySelected && !selectedIds.contains(c.id().toString())) continue;
             if (q.isEmpty()
-                    || JechCompat.matches(c.display().toLowerCase(Locale.ROOT), q)
+                    || PinyinSearchBridge.matches(c.display().toLowerCase(Locale.ROOT), q)
                     || c.id().toString().toLowerCase(Locale.ROOT).contains(q)) {
                 filtered.add(c);
             }
