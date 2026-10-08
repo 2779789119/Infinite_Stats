@@ -103,7 +103,7 @@ public final class ItemEditUtil {
             CompoundTag entry = entries.getCompound(i);
             ResourceLocation id = ResourceLocation.tryParse(entry.getString("id"));
             if (id == null || !ForgeRegistries.ENCHANTMENTS.containsKey(id)
-                    || entry.getShort("lvl") < 1) return false;
+                    || EnchantLevelStore.read(entry) < 1) return false;
         }
         return true;
     }

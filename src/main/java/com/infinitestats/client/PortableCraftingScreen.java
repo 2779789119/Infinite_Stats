@@ -2,6 +2,8 @@ package com.infinitestats.client;
 
 import com.infinitestats.compat.jei.PortableCraftingRecipeTransferHandler;
 import com.infinitestats.crafting.PortableCraftingMenu;
+import com.infinitestats.emc.EmcPlayerDataProvider;
+import com.infinitestats.emc.EmcTransactions;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import net.minecraft.client.gui.GuiGraphics;
@@ -149,6 +151,15 @@ public class PortableCraftingScreen extends AbstractContainerScreen<PortableCraf
         gfx.drawString(font, font.plainSubstrByWidth(label.getString(), width), x, y, color, false);
     }
 
+    /** 客户端读取自己的 EMC 余额（登录与余额变动时由服务端同步下来）。 */
+    private static String emcBalance() {
+        var player = net.minecraft.client.Minecraft.getInstance().player;
+        if (player == null) return "-";
+        return player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA)
+                .map(d -> EmcTransactions.format(d.getEmcBalance()))
+                .orElse("-");
+    }
+
     @Override
     protected void renderLabels(GuiGraphics gfx, int mouseX, int mouseY) {
         label(gfx, title, 8, 6, 160, 0x404040);
@@ -163,6 +174,8 @@ public class PortableCraftingScreen extends AbstractContainerScreen<PortableCraf
 
         // 右栏：存储
         label(gfx, text("storage_label"), COL_X, 62, COL_W, 0x404040);
+        // 与 EMC 联动：材料不足时会自动用 EMC 补齐，这里常驻显示余额
+        label(gfx, text("emc_balance", emcBalance()), COL_X, 115, COL_W, 0x1A6B1A);
         label(gfx, text("jei_hint"), COL_X, 126, COL_W, 0x777777);
     }
 }

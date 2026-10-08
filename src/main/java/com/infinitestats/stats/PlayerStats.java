@@ -135,6 +135,16 @@ public class PlayerStats {
      */
     private final List<ItemStack> pendingKeptInventory = new ArrayList<>();
 
+    /**
+     * 死亡不掉落（keep_inventory）暂存的 Curios 饰品。
+     * <p>
+     * 饰品栏不在原版 {@code Inventory} 里，也不受 keepInventory 游戏规则保护，所以和背包一样
+     * 在死亡瞬间抓走清空（{@link com.infinitestats.compat.CuriosBridge#takeAll}），重生后放回
+     * （{@link com.infinitestats.compat.CuriosBridge#restore}）。
+     * 每条记录形如 {@code {slot: 槽位ID, index: 槽位下标, stack: 物品}}，可直接落盘。
+     */
+    private final List<CompoundTag> pendingKeptCurios = new ArrayList<>();
+
     /** 某作用域的原始优先级（空列表 = 未自定义，沿用配置）。 */
     public List<String> getNetworkPriority(String scope) {
         List<String> list = networkPriorities.get(scope);
@@ -228,6 +238,26 @@ public class PlayerStats {
     public List<ItemStack> takePendingKeptInventory() {
         List<ItemStack> out = new ArrayList<>(pendingKeptInventory);
         pendingKeptInventory.clear();
+        return out;
+    }
+
+    /** 暂存的 Curios 饰品是否为空。 */
+    public boolean hasPendingKeptCurios() {
+        return !pendingKeptCurios.isEmpty();
+    }
+
+    public void setPendingKeptCurios(List<CompoundTag> entries) {
+        pendingKeptCurios.clear();
+        if (entries == null) return;
+        for (CompoundTag tag : entries) {
+            if (tag != null) pendingKeptCurios.add(tag.copy());
+        }
+    }
+
+    /** 取出并清空暂存的饰品（重生归还时调用，避免重复归还）。 */
+    public List<CompoundTag> takePendingKeptCurios() {
+        List<CompoundTag> out = new ArrayList<>(pendingKeptCurios);
+        pendingKeptCurios.clear();
         return out;
     }
 
@@ -933,6 +963,13 @@ public class PlayerStats {
         }
         tag.put("pendingKeptInventory", keptList);
 
+        // 序列化死亡不掉落暂存的 Curios 饰品（同样必须落盘，理由同上）
+        ListTag keptCurios = new ListTag();
+        for (CompoundTag entry : pendingKeptCurios) {
+            keptCurios.add(entry.copy());
+        }
+        tag.put("pendingKeptCurios", keptCurios);
+
         // 序列化「功能开关」中已关闭的属性与执行模式
         ListTag disabledList = new ListTag();
         for (String id : disabledStats) {
@@ -947,28 +984,21 @@ public class PlayerStats {
     }
 
     /**
-     * 旧存档迁移：「随身附魔台」由点数型（等级＝附魔强度，1~15）改为 1 点解锁的开关，
-     * 附魔强度拆到隐藏属性 {@code enchant_power}（只在随身附魔台界面里加点）。
+     * 旧存档迁移：「随身附魔台」由点数型（等级＝附魔强度，1~15）改为 1 点解锁的开关。
      * <p>
-     * 旧存档里投入 N 点（N &gt; 1）时，把多出来的 N-1 点**原样搬到** {@code enchant_power}、
-     * 只留 1 点在开关上 —— 总投入不变，玩家不亏、也不需要重新加点；
-     * 若强度已经点满（搬不过去），剩余的部分退还到可用点数。逻辑幂等，重复加载不会重复搬迁。
+     * 附魔强度本身已经取消（进阶高级附魔台不再限制附魔等级），因此旧存档里超过 1 点的部分
+     * <b>全部退回可用点数</b>：只留 1 点在开关上，多投的 N-1 点原样返还，玩家不亏。
+     * 曾经被搬到隐藏属性 {@code enchant_power} 上的点数同样退回并清掉该键（幂等，重复加载不会重复退）。
      */
     private void migratePortableEnchanting() {
-        StatType powerStat = StatType.fromId("enchant_power");
-        if (powerStat == null) return;
         Long legacy = allocatedPoints.get("portable_enchanting");
-        if (legacy == null || legacy <= 1L) return;
-
-        long power = Math.max(0L, allocatedPoints.getOrDefault("enchant_power", 0L));
-        long moved = Math.min(legacy - 1L, powerStat.getMaxLevel() - power);
-        allocatedPoints.put("portable_enchanting", 1L);
-        if (moved > 0L) {
-            allocatedPoints.put("enchant_power", power + moved);
+        if (legacy != null && legacy > 1L) {
+            allocatedPoints.put("portable_enchanting", 1L);
+            availablePoints += legacy - 1L;
         }
-        long excess = legacy - 1L - moved;
-        if (excess > 0L) {
-            availablePoints += excess;
+        Long power = allocatedPoints.remove("enchant_power");
+        if (power != null && power > 0L) {
+            availablePoints += power;
         }
     }
 
@@ -1000,7 +1030,7 @@ public class PlayerStats {
             }
         }
 
-        // 旧存档迁移：「随身附魔台」由点数型改为开关，附魔强度拆到隐藏属性 enchant_power
+        // 旧存档迁移：「随身附魔台」由点数型改为 1 点解锁的开关，多投的点数与旧附魔强度一并退回
         migratePortableEnchanting();
 
         // 反序列化能力提供记录
@@ -1098,6 +1128,15 @@ public class PlayerStats {
             }
         }
 
+        // 反序列化死亡不掉落暂存的 Curios 饰品
+        pendingKeptCurios.clear();
+        if (tag.contains("pendingKeptCurios")) {
+            ListTag keptCurios = tag.getList("pendingKeptCurios", Tag.TAG_COMPOUND);
+            for (int i = 0; i < keptCurios.size(); i++) {
+                pendingKeptCurios.add(keptCurios.getCompound(i).copy());
+            }
+        }
+
         // 反序列化「功能开关」中已关闭的属性与执行模式
         disabledStats.clear();
         if (tag.contains("disabledStats")) {
@@ -1140,6 +1179,11 @@ public class PlayerStats {
         this.pendingKeptInventory.clear();
         for (ItemStack stack : other.pendingKeptInventory) {
             this.pendingKeptInventory.add(stack.copy());
+        }
+        // 饰品暂存同理
+        this.pendingKeptCurios.clear();
+        for (CompoundTag entry : other.pendingKeptCurios) {
+            this.pendingKeptCurios.add(entry.copy());
         }
         this.networkPriorities.clear();
         for (Map.Entry<String, List<String>> entry : other.networkPriorities.entrySet()) {

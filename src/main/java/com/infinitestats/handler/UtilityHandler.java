@@ -118,6 +118,45 @@ public class UtilityHandler implements StatEffectHandler {
         if (stats.isToggleActive("fire_immunity")) {
             player.clearFire();
         }
+
+        // Goety 联动（无限灵魂能量）：每 tick 兜底 —— 灵魂能量被消耗后立刻补满。
+        // 没解锁 / 没装诡厄巫法时在 GoetyCompat 内短路，零开销。
+        if (stats.isToggleActive("goety_infinite_soul")) {
+            try {
+                com.infinitestats.compat.GoetyCompat.onTick(player, stats);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }
+
+        // 无限能源（通用 FE）：每 tick 兜底 —— 背包 / 饰品 / 骑乘实体的 FE 能量源
+        // （RF / Mekanism / 热力 / EIO / 沉浸工程等最终都走 Forge Energy）保持满电；
+        // 玩家自己放置的能量方块按配置间隔扫描补满（见 EnergyCompat）。
+        // 没解锁时在 EnergyCompat 内第一步短路，零开销。
+        if (stats.isToggleActive("infinite_energy")) {
+            try {
+                com.infinitestats.compat.EnergyCompat.onTick(player, stats, tickCount);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }
+
+        // 枪械 / 载具模组联动（需要安装对应模组，未安装时在第一步短路、零开销）：
+        //   TACZ          —— 补满弹匣 / 清空热量
+        //   SuperbWarfare —— 枪械：补满弹匣 / 清空热量；载具：补满血量
+        //                    （「不再变少」那一半在注入点里完成，这里只兜「解锁前就已经掉了」的）
+        if (tickCount % 5 == 0) {
+            try {
+                com.infinitestats.compat.TaczCompat.onTick(player, stats);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+            try {
+                com.infinitestats.compat.SuperbWarfareCompat.onTick(player, stats);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }
     }
 
     @Override

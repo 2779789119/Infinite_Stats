@@ -4,9 +4,12 @@ import com.infinitestats.InfiniteStats;
 import com.infinitestats.crafting.PortableAnvil;
 import com.infinitestats.crafting.PortableCraftingMenu;
 import com.infinitestats.crafting.PortableGuis;
+import com.infinitestats.crafting.PortableInfuser;
+import com.infinitestats.crafting.PortableInfuserMenu;
 import com.infinitestats.crafting.PortableStationMenus;
 import com.infinitestats.emc.EmcDatabase;
 import com.infinitestats.emc.EmcMenu;
+import com.infinitestats.emc.EmcPricing;
 import com.infinitestats.emc.EmcPlayerData;
 import com.infinitestats.emc.EmcPlayerDataProvider;
 import com.infinitestats.furnace.FurnaceFuelBufferMenu;
@@ -46,6 +49,7 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraftforge.network.NetworkEvent;
 import net.minecraftforge.network.NetworkHooks;
 import net.minecraftforge.network.NetworkRegistry;
@@ -62,7 +66,7 @@ import java.util.function.Supplier;
  */
 public final class NetworkHandler {
 
-    private static final String PROTOCOL_VERSION = "17";
+    private static final String PROTOCOL_VERSION = "19";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -367,11 +371,11 @@ public final class NetworkHandler {
                 PortableToolOpenPacket::decode,
                 PortableToolOpenPacket::handle);
 
-        // 随身附魔台界面里的「附魔强度」±（客户端 → 服务器）
-        CHANNEL.registerMessage(packetId++, EnchantPowerPacket.class,
-                EnchantPowerPacket::encode,
-                EnchantPowerPacket::decode,
-                EnchantPowerPacket::handle);
+        // 随身进阶高级附魔台：附魔 / 修复 / 回收（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, InfuserActionPacket.class,
+                InfuserActionPacket::encode,
+                InfuserActionPacket::decode,
+                InfuserActionPacket::handle);
 
         // 天气切换：晴 → 雨 → 雷 → 晴（客户端 → 服务器）
         CHANNEL.registerMessage(packetId++, WeatherControlPacket.class,
@@ -389,6 +393,12 @@ public final class NetworkHandler {
                 ChunkLoaderSyncPacket::encode,
                 ChunkLoaderSyncPacket::decode,
                 ChunkLoaderSyncPacket::handle);
+
+        // 拔刀剑编辑：杀敌数 / 耀魂数 / 锻造数 / SA / SE（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EditItemBladePacket.class,
+                EditItemBladePacket::encode,
+                EditItemBladePacket::decode,
+                EditItemBladePacket::handle);
 
     }
 
@@ -753,7 +763,7 @@ public final class NetworkHandler {
                         itemNbt = carried.getTag();
                         // 用实际手持（含 NBT）计算 EMC，避免附魔书等带 NBT 物品单价误判为 0
                         if (EmcDatabase.getEmc(carried) <= 0) return;
-                        long sale = EmcDatabase.getSellValue(carried, count);
+                        long sale = EmcPricing.sellValue(player, carried, count);
                         openMenu.setCarried(ItemStack.EMPTY);
                         openMenu.broadcastChanges();
                         // 学习物品并返还 数量×EMC，保留 NBT
@@ -839,11 +849,12 @@ public final class NetworkHandler {
                     for (int i = 0; i < 36; i++) {
                         ItemStack s = inv.getItem(i);
                         if (s.isEmpty()) continue;
+                        if (i == inv.selected) continue;        // 不卖当前手持的那一格
                         ResourceLocation id = BuiltInRegistries.ITEM.getKey(s.getItem());
                         if (!data.hasLearned(id)) continue;     // 只卖已学物品
                         long emc = EmcDatabase.getEmc(s);
                         if (emc <= 0) continue;
-                        long sale = EmcDatabase.getSellValue(s, s.getCount());
+                        long sale = EmcPricing.sellValue(player, s, s.getCount());
                         total += Math.min(sale, Long.MAX_VALUE - total);
                         inv.setItem(i, ItemStack.EMPTY);
                     }
@@ -2095,7 +2106,7 @@ public final class NetworkHandler {
 
                 ResourceLocation itemId = BuiltInRegistries.ITEM.getKey(stack.getItem());
                 int count = stack.getCount();
-                long totalEmc = EmcDatabase.getSellValue(stack, count);
+                long totalEmc = EmcPricing.sellValue(player, stack, count);
 
                 player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
                     if (!data.hasLearned(itemId)) {
@@ -2208,8 +2219,8 @@ public final class NetworkHandler {
                 ServerPlayer player = ctx.get().getSender();
                 if (player == null) return;
                 player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                    // 开关型看是否激活，点数型（随身附魔台）看是否投入过点数 —— 用「有效等级 > 0」
-                    // 统一判断，并同样尊重「功能开关」把整条关掉的情况。
+                    // 随身站点统一是 1 点解锁的开关：用「有效等级 > 0」判断是否激活，
+                    // 并同样尊重「功能开关」把整条关掉的情况。
                     if (stats.getEffectiveStatLevel(msg.toolId) <= 0) {
                         player.sendSystemMessage(Component.translatable(
                                 "message.infinitestats.tool_locked",
@@ -2225,58 +2236,135 @@ public final class NetworkHandler {
     }
 
     /**
-     * 随身附魔台的「附魔强度」±（客户端 → 服务器）。
+     * 随身「进阶高级附魔台」的动作包（客户端 → 服务器）：附魔 / 修复 / 回收。
      * <p>
-     * 「附魔强度」是隐藏属性 {@code enchant_power}（面板里不显示、只在这个界面里加点）：
-     * 每点等价于原版 1 个书架，15 点即原版满级。加点复用与属性面板完全相同的
-     * {@link PlayerStats#addPoints} / {@link PlayerStats#removePoints} —— 可选点数校验、
-     * 上限、负值返还等语义全部一致，客户端无法借此白拿点数。
+     * 客户端只会把「选了哪些附魔、各多少级、用哪种货币付款」发上来，<b>价格与合法性一律由服务端
+     * 现算</b>（{@link PortableInfuser} 与服务端同源）：客户端的列表是提示，不是凭据，
+     * 改过的客户端既不能白拿附魔，也不能少付钱。
      * <p>
-     * 生效顺序：先改点数 → 同步给客户端 → 若当前打开的正是随身附魔台，再让它按新强度
-     * 重算三档附魔（{@link PortableStationMenus.Enchanting#applyEnchantPower}），
-     * 于是玩家点一下 ± 就能当场看到三档附魔等级变化。
+     * 三道闸门：
+     * <ol>
+     *   <li>必须正开着附魔台菜单（{@link PortableInfuserMenu}）—— 否则连物品槽都不存在；</li>
+     *   <li>「随身附魔台」开关必须激活（被「功能开关」关掉时同样拦住）；</li>
+     *   <li>附魔条目数与等级都封顶，避免构造超长包刷内存。</li>
+     * </ol>
+     * 动作结果（成功或失败原因）统一用动作栏消息回给玩家，点数变化则整包同步一次属性数据。
      */
-    public static final class EnchantPowerPacket {
-        /** true = +1 点，false = -1 点（返还）。 */
-        private final boolean up;
+    public static final class InfuserActionPacket {
 
-        public EnchantPowerPacket(boolean up) {
-            this.up = up;
+        public static final int ACTION_ENCHANT = 0;
+        public static final int ACTION_REPAIR = 1;
+        public static final int ACTION_RECYCLE = 2;
+
+        /** 一次最多提交多少条附魔（远超任何物品的可选上限，纯粹防构造包）。 */
+        private static final int MAX_SELECTION = 512;
+
+        private final int action;
+        /** true = 用可用属性点数付款，false = 用经验等级付款。 */
+        private final boolean usePoints;
+        private final List<ResourceLocation> enchantmentIds;
+        private final List<Integer> levels;
+
+        public InfuserActionPacket(int action, boolean usePoints,
+                                   List<ResourceLocation> enchantmentIds, List<Integer> levels) {
+            this.action = action;
+            this.usePoints = usePoints;
+            this.enchantmentIds = enchantmentIds == null ? List.of() : enchantmentIds;
+            this.levels = levels == null ? List.of() : levels;
         }
 
-        public static void encode(EnchantPowerPacket msg, FriendlyByteBuf buf) {
-            buf.writeBoolean(msg.up);
+        /** 附魔提交：选择表用 {@code Map<附魔, 目标等级>}（等级 0 表示拆掉）。 */
+        public static InfuserActionPacket enchant(boolean usePoints, Map<Enchantment, Integer> selection) {
+            List<ResourceLocation> ids = new ArrayList<>(selection.size());
+            List<Integer> values = new ArrayList<>(selection.size());
+            for (Map.Entry<Enchantment, Integer> entry : selection.entrySet()) {
+                ResourceLocation id = BuiltInRegistries.ENCHANTMENT.getKey(entry.getKey());
+                if (id == null) continue;
+                ids.add(id);
+                values.add(Math.max(0, entry.getValue()));
+            }
+            return new InfuserActionPacket(ACTION_ENCHANT, usePoints, ids, values);
         }
 
-        public static EnchantPowerPacket decode(FriendlyByteBuf buf) {
-            return new EnchantPowerPacket(buf.readBoolean());
+        public static InfuserActionPacket simple(int action, boolean usePoints) {
+            return new InfuserActionPacket(action, usePoints, List.of(), List.of());
         }
 
-        public static void handle(EnchantPowerPacket msg, Supplier<NetworkEvent.Context> ctx) {
+        public static void encode(InfuserActionPacket msg, FriendlyByteBuf buf) {
+            buf.writeByte(msg.action);
+            buf.writeBoolean(msg.usePoints);
+            int size = Math.min(msg.enchantmentIds.size(), MAX_SELECTION);
+            buf.writeVarInt(size);
+            for (int i = 0; i < size; i++) {
+                buf.writeResourceLocation(msg.enchantmentIds.get(i));
+                buf.writeVarInt(msg.levels.size() > i ? msg.levels.get(i) : 0);
+            }
+        }
+
+        public static InfuserActionPacket decode(FriendlyByteBuf buf) {
+            int action = buf.readByte();
+            boolean usePoints = buf.readBoolean();
+            // 先夹住条数再分配：恶意包可以写一个很大的 VarInt，不夹会直接按它建列表
+            int size = Math.min(Math.max(buf.readVarInt(), 0), MAX_SELECTION);
+            List<ResourceLocation> ids = new ArrayList<>(size);
+            List<Integer> levels = new ArrayList<>(size);
+            for (int i = 0; i < size; i++) {
+                ids.add(buf.readResourceLocation());
+                levels.add(Math.max(0, buf.readVarInt()));
+            }
+            return new InfuserActionPacket(action, usePoints, ids, levels);
+        }
+
+        public static void handle(InfuserActionPacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
                 ServerPlayer player = ctx.get().getSender();
                 if (player == null) return;
-                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                    // 必须先解锁「随身附魔台」开关（被「功能开关」关掉时同样拦住）
-                    if (!stats.isToggleActive(PortableGuis.STAT_ENCHANTING)) return;
-                    StatType power = StatType.fromId(PortableGuis.STAT_ENCHANT_POWER);
-                    if (power == null) return;
-                    // 与属性面板一致：已被「功能开关」关闭的属性不允许再加点（仍允许返还）
-                    if (msg.up && stats.isStatDisabled(power.getId())) return;
+                // 闸门一：必须是随身附魔台菜单
+                if (!(player.containerMenu instanceof PortableInfuserMenu menu)) return;
 
-                    boolean success = msg.up
-                            ? stats.addPoints(power, 1L)
-                            : stats.removePoints(power, 1L);
-                    if (!success) return;
+                PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+                // 闸门二：开关属性必须激活
+                if (stats == null || !stats.isToggleActive(PortableGuis.STAT_ENCHANTING)) {
+                    player.displayClientMessage(Component.translatable(
+                            "message.infinitestats.tool_locked",
+                            Component.translatable("stat.infinitestats." + PortableGuis.STAT_ENCHANTING)), true);
+                    return;
+                }
 
+                PortableInfuser.Payment payment = msg.usePoints
+                        ? PortableInfuser.Payment.POINTS
+                        : PortableInfuser.Payment.LEVELS;
+
+                Component feedback = switch (msg.action) {
+                    case ACTION_ENCHANT -> PortableInfuser.performEnchant(player, menu.getInput(),
+                            selectionOf(msg), payment);
+                    case ACTION_REPAIR -> PortableInfuser.performRepair(player, menu.getInput(), payment);
+                    case ACTION_RECYCLE -> PortableInfuser.performRecycle(player, menu.getInput(), payment);
+                    default -> null;
+                };
+
+                if (feedback != null) {
+                    player.displayClientMessage(feedback, true);
+                }
+                // 用点数付款时数值变了，整包同步一次（经验等级原版自己会同步）
+                if (msg.usePoints) {
                     syncToClient(player);
-                    AttributeHandler.applyAllAttributes(player, stats);
-                    if (player.containerMenu instanceof PortableStationMenus.Enchanting enchanting) {
-                        enchanting.applyEnchantPower(PortableGuis.enchantPowerOf(stats));
-                    }
-                });
+                }
+                ((PortableInfuserMenu) player.containerMenu).broadcastChanges();
             });
             ctx.get().setPacketHandled(true);
+        }
+
+        /** 把「附魔 id + 等级」还原成选择表；认不出的 id（模组被移除等）静默丢弃。 */
+        private static Map<Enchantment, Integer> selectionOf(InfuserActionPacket msg) {
+            Map<Enchantment, Integer> selection = new java.util.LinkedHashMap<>();
+            for (int i = 0; i < msg.enchantmentIds.size() && i < msg.levels.size(); i++) {
+                Enchantment enchantment = BuiltInRegistries.ENCHANTMENT.get(msg.enchantmentIds.get(i));
+                if (enchantment != null) {
+                    selection.put(enchantment, msg.levels.get(i));
+                }
+            }
+            return selection;
         }
     }
 

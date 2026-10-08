@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import com.infinitestats.Config;
 import com.infinitestats.InfiniteStats;
+import com.infinitestats.compat.CuriosBridge;
 import com.infinitestats.handler.*;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
@@ -24,6 +25,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.animal.Animal;
@@ -36,6 +38,7 @@ import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.item.trading.MerchantOffers;
 import net.minecraft.world.item.ArrowItem;
 import net.minecraft.world.item.BowItem;
+import net.minecraft.world.item.BrushItem;
 import net.minecraft.world.item.CrossbowItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -140,7 +143,8 @@ public final class StatEventHandler {
      * {@code Player.dropAllDeathLoot → Inventory.dropAll()} 里，全程没有可拦截的 Forge 事件。
      * 因此改为在死亡事件的最后一刻把主背包 / 盔甲 / 副手整体挪进 {@link PlayerStats} 暂存：
      * 原版随后执行的 {@code dropAll()} 面对空背包自然什么都不会掉；玩家重生时
-     * （{@code PlayerEvent.Clone}）再把物品原样归还。
+     * （{@code PlayerEvent.Clone}）再把物品原样归还。Curios 饰品栏走同一套暂存，
+     * 只是归还时机放在重生事件（见 {@link #onPlayerRespawn}）。
      * <p>
      * 必须挂在 LOWEST：自动复活（HIGHEST）会在自己那一轮取消死亡，取消后不应清空背包。
      * <p>
@@ -167,6 +171,12 @@ public final class StatEventHandler {
             inv.armor.clear();
             inv.offhand.clear();
             inv.setChanged();
+
+            // Curios 饰品栏是挂在实体上的独立 capability，既不在原版 Inventory 里，也不受
+            // keepInventory 游戏规则保护 —— 不一起抓走的话，重生时饰品已经按 Curios 自己的
+            // 规则掉在地上了。抓取失败会返回 null，此时保持饰品栏原样（宁可掉落也不能凭空消失）。
+            List<CompoundTag> curios = CuriosBridge.takeAll(player);
+            if (curios != null) stats.setPendingKeptCurios(curios);
         });
     }
 
@@ -929,10 +939,25 @@ public final class StatEventHandler {
         // 被取消的伤害（格挡 / 闪避 / 无敌）会在此处提前返回，因此不会出现「打空也吸血」。
         // 次级直接伤害（范围攻击 / 真伤 / 降上限）不是玩家主动攻击，不计入吸血。
         if (event.getAmount() > 0 && !AttackHandler.isDirectDamageSource(event.getSource())) {
-            ServerPlayer attacker = getPlayerAttacker(event.getSource());
+            ServerPlayer source = getPlayerAttacker(event.getSource());
+            // 自伤不吸血（理由见 getPlayerAttacker(LivingHurtEvent)）：这里读的是 DamageSource，
+            // 用不到带受害者的那个重载，所以单独判一次
+            ServerPlayer attacker = source == event.getEntity() ? null : source;
             if (attacker != null) {
                 attacker.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(
                         stats -> AttackHandler.applyLifeSteal(attacker, stats, event.getAmount()));
+            }
+        }
+        // 额外打击：玩家造成的伤害额外追加几次独立结算的属性伤害。
+        // 覆盖范围比上面的吸血更宽 —— 除玩家本体与玩家发射的弹射物外，还包括玩家的
+        // 召唤物 / 宠物（见 getPlayerDamageOwner），因为这条属性的定义就是「玩家造成的所有伤害」。
+        // 本模组自己的次级直接伤害（范围攻击 / 真实伤害 / 额外打击本身）不在此列，否则会层层叠加。
+        if (event.getAmount() > 0 && !AttackHandler.isDirectDamageSource(event.getSource())) {
+            ServerPlayer owner = getPlayerDamageOwner(event.getSource());
+            // 自伤不触发（与攻击分支的口径一致：自己炸自己不该再吃一份额外打击）
+            if (owner != null && owner != event.getEntity()) {
+                owner.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(
+                        stats -> AttackHandler.applyExtraStrikes(stats, event.getAmount(), event.getEntity()));
             }
         }
         if (event.getEntity() instanceof ServerPlayer player) {
@@ -1144,6 +1169,12 @@ public final class StatEventHandler {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
 
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            // 死亡不掉落：把死亡时抓走的 Curios 饰品放回饰品栏。
+            // 放在重生事件而不是 PlayerEvent.Clone：Curios 自己也监听 Clone 并把旧实体的饰品整份
+            // 拷到新实体上，若我们在 Clone 里先放回，随后可能被那份「已被清空」的数据覆盖掉。
+            if (stats.hasPendingKeptCurios()) {
+                CuriosBridge.restore(player, stats.takePendingKeptCurios());
+            }
             NetworkHandler.syncToClient(player);
             HandlerRegistry.respawnAll(player, stats);
         });
@@ -1203,6 +1234,12 @@ public final class StatEventHandler {
                     || event.getItem().getItem() instanceof CrossbowItem
                     || event.getItem().getItem() instanceof TridentItem;
 
+            // 刷子不参与加速：原版 BrushItem 的「刷一下」只发生在 onUseTick 的特定节拍上
+            // （本次使用已过 tick 数 i 满足 i % 10 == 5 的那些 tick 才真正刷一次）。而加速是
+            // 「每 tick 多扣若干 tick」，会让这些关键节拍被整段跳过；一旦剩余时长被压到 0，
+            // 原版连 onUseTick 都不会调用（它只在剩余 > 0 时调用），于是拿着刷子右键毫无反应。
+            if (event.getItem().getItem() instanceof BrushItem) return;
+
             float totalSpeed = 0;
             if (!isBow) {
                 totalSpeed = stats.getStatValue(StatType.fromId("use_speed"));
@@ -1212,7 +1249,9 @@ public final class StatEventHandler {
 
             if (totalSpeed > 0) {
                 int extraReduction = Math.max(1, (int) (totalSpeed * 100));
-                event.setDuration(Math.max(0, event.getDuration() - extraReduction));
+                // 至少留 1 tick：原版是靠「剩余 ≤ 0」才 completeUsingItem() 的，而 onUseTick 只在
+                // 剩余 > 0 时调用 —— 压到 0 会让这次使用跳过自己的全部逐 tick 逻辑。
+                event.setDuration(Math.max(1, event.getDuration() - extraReduction));
             }
         });
     }
@@ -1242,9 +1281,15 @@ public final class StatEventHandler {
      * 1) 伤害来源实体直接就是玩家（近战挥砍、多数模组技能/召唤物以玩家为来源）
      * 2) 直接实体是玩家拥有的抛射物（弓箭、三叉戟等）
      * 用于让范围伤害、吸血等攻击附加效果在更多攻击方式下稳定触发
+     * <p>
+     * <b>自伤不算攻击</b>：玩家被「自己造成的伤害」命中时（自己引爆的 TNT / 爆炸箭贴脸炸、
+     * 射上天又落回来的箭、自己的召唤物误伤等），伤害来源实体同样是玩家自己。若不排除，
+     * 整套进攻属性都会作用到自己身上 —— 最直观的就是「攻击削减生命上限」把自己的血上限
+     * 一路扣到 1 点，自伤还会反过来给自己吸血。
      */
     private static ServerPlayer getPlayerAttacker(LivingHurtEvent event) {
-        return getPlayerAttacker(event.getSource());
+        ServerPlayer attacker = getPlayerAttacker(event.getSource());
+        return attacker == event.getEntity() ? null : attacker;
     }
 
     private static ServerPlayer getPlayerAttacker(DamageSource source) {
@@ -1253,6 +1298,27 @@ public final class StatEventHandler {
         if (direct instanceof net.minecraft.world.entity.projectile.Projectile p
                 && p.getOwner() instanceof ServerPlayer sp) {
             return sp;
+        }
+        return null;
+    }
+
+    /**
+     * 解析「这次伤害算谁的」—— 比 {@link #getPlayerAttacker(DamageSource)} 更宽一层：
+     * 除玩家本人（近战 / 以玩家为来源的技能）与玩家发射的弹射物（箭、三叉戟、法术弹）之外，
+     * 还接受玩家拥有的实体（{@link net.minecraft.world.entity.OwnableEntity} 且主人是玩家）——
+     * 玩家的召唤物 / 宠物 / 坐骑攻击时，伤害来源实体是它自己，只有靠主人关系才能归到玩家头上。
+     * <p>
+     * 目前仅「额外打击」使用这个宽口径（它的定义是玩家造成的所有伤害）；
+     * 暴击 / 吸血等属性仍走 {@code getPlayerAttacker}，以免改变既有平衡。
+     */
+    private static ServerPlayer getPlayerDamageOwner(DamageSource source) {
+        ServerPlayer direct = getPlayerAttacker(source);
+        if (direct != null) return direct;
+        for (Entity candidate : new Entity[]{source.getEntity(), source.getDirectEntity()}) {
+            if (candidate instanceof net.minecraft.world.entity.OwnableEntity ownable
+                    && ownable.getOwner() instanceof ServerPlayer owner) {
+                return owner;
+            }
         }
         return null;
     }

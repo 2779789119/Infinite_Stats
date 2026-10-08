@@ -1,5 +1,7 @@
 package com.infinitestats.client;
 
+import com.infinitestats.emc.EmcPlayerDataProvider;
+import com.infinitestats.emc.EmcTransactions;
 import com.infinitestats.furnace.PortableFurnaceMenu;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
@@ -122,6 +124,15 @@ public class PortableFurnaceScreen extends AbstractContainerScreen<PortableFurna
         gfx.drawString(font, font.plainSubstrByWidth(label.getString(), width), x, y, color, false);
     }
 
+    /** 客户端读取自己的 EMC 余额（登录与余额变动时由服务端同步下来）。 */
+    private static String emcBalance() {
+        var player = net.minecraft.client.Minecraft.getInstance().player;
+        if (player == null) return "-";
+        return player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA)
+                .map(d -> EmcTransactions.format(d.getEmcBalance()))
+                .orElse("-");
+    }
+
     @Override
     protected void renderLabels(GuiGraphics gfx, int mouseX, int mouseY) {
         label(gfx, title, 8, 8, 160, 0x404040);
@@ -140,6 +151,8 @@ public class PortableFurnaceScreen extends AbstractContainerScreen<PortableFurna
         label(gfx, text("state." + state), 8, 90, 160, status == 1 ? 0x25652C : status > 1 ? 0x963A1D : 0x555555);
         label(gfx, playerInventoryTitle, 8, inventoryLabelY, 160, 0x404040);
         label(gfx, text("storage"), 184, 8, 106, 0x404040);
+        // 与 EMC 联动：网络里没有料时会自动用 EMC 补齐（采购模板取槽内现有物品）
+        label(gfx, text("emc_balance", emcBalance()), 184, 84, 106, 0x1A6B1A);
         label(gfx, text("speed", menu.getSpeedMultiplier()), 184, 94, 106, 0x404040);
         label(gfx, text("level", menu.getSpeedLevel()), 212, 113, 50, 0x404040);
         label(gfx, text("cost", menu.getSpeedCost()), 184, 130, 106, 0x666666);

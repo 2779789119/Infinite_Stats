@@ -490,7 +490,7 @@ public final class StatType {
 
             create("repulsion").category(StatCategory.ATTACK)
                 .perPointValue(0.5f)
-                .description("持续排斥周围的敌对生物，将它们推开（半径每点 +0.5 格）")
+                .description("持续推开周围的生物与飞行中的箭矢等弹射物（半径每点 +0.5 格）")
                 .build(),
 
             create("infinite_arrows").category(StatCategory.ATTACK)
@@ -499,10 +499,42 @@ public final class StatType {
                 .description("投入5点解锁：背包中没有箭也能拉弓 / 弩蓄力并射出箭矢，箭不消耗背包")
                 .build(),
 
+            create("infinite_ammo").category(StatCategory.ATTACK)
+                .toggle()
+                .maxLevel(5)
+                .description("投入5点解锁：手持 TACZ（永恒枪械工坊：零）/ 卓越前线（Superb Warfare）的枪械、"
+                        + "或操作卓越前线的载具武器时弹匣恒满 —— 射击不扣子弹、也永远不用换弹"
+                        + "（需要安装对应模组，两个都没装时该属性无效果）")
+                .build(),
+
+            create("no_heat").category(StatCategory.ATTACK)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：手持 TACZ（永恒枪械工坊：零）/ 卓越前线（Superb Warfare）的枪械、"
+                        + "或操作卓越前线的载具武器时热量恒为 0，带热量数据的枪既不会升温也不会过热锁死"
+                        + "（需要安装对应模组，两个都没装时该属性无效果）")
+                .build(),
+
+            create("no_recoil").category(StatCategory.ATTACK)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：TACZ（永恒枪械工坊：零）/ 卓越前线（Superb Warfare）的枪械开火时视角不再被后坐力往上顶，"
+                        + "卓越前线的瞄准呼吸晃动与载具开火震屏也一并消除，弹着点自己控制"
+                        + "（需要安装对应模组，两个都没装时该属性无效果）")
+                .build(),
+
             create("multi_shot").category(StatCategory.ATTACK)
                 .perPointValue(1.0f)
                 .maxLevel(8)
                 .description("每点让每次射击额外射出一支箭（等级＝额外箭数，最多 8 支）；额外箭矢小幅散开且不可拾取")
+                .build(),
+
+            create("extra_strike").category(StatCategory.ATTACK)
+                .perPointValue(1.0f)
+                .maxLevel(8)
+                .description("每次造成伤害后追加额外打击（等级＝额外打击次数，最多 8 次）："
+                        + "每次造成本次伤害 20% 的额外属性伤害，独立结算、无视护甲与减伤；"
+                        + "近战 / 远程 / 法术以及你的召唤物造成的伤害都算")
                 .build(),
 
             create("max_health").category(StatCategory.DEFENSE)
@@ -776,7 +808,7 @@ public final class StatType {
 
             create("keep_inventory").category(StatCategory.UTILITY)
                 .behavior(StatBehavior.TOGGLE).maxLevel(5).perPointValue(0)
-                .description("投入5点解锁：死亡时保留背包与装备栏物品（即使未开启游戏规则 keepInventory 也不掉落）")
+                .description("投入5点解锁：死亡时保留背包、装备栏与饰品栏物品（即使未开启游戏规则 keepInventory 也不掉落）")
                 .build(),
 
             create("keep_xp").category(StatCategory.UTILITY)
@@ -840,16 +872,13 @@ public final class StatType {
             create("portable_enchanting").category(StatCategory.UTILITY)
                 .toggle()
                 .maxLevel(1)
-                .description("开启后可随时打开附魔台（属性面板「随身工具」入口）；附魔强度在附魔台界面里加点")
+                .description("开启后可随时打开进阶高级附魔台（属性面板「随身工具」入口）：自己挑附魔、不用随机，可升级/移除已有附魔、用经验等级修复或回收物品，也能直接做附魔书；付款可用经验等级或属性点数（界面里切换），不消耗青金石")
                 .build(),
 
-            // 附魔强度：**隐藏属性**（面板里不显示、不能加点），只在随身附魔台界面里用 ± 加点。
-            // 单独拆出来是因为「随身附魔台」本身已改为 1 点解锁的开关，强度改为可调。
-            create("enchant_power").category(StatCategory.UTILITY)
-                .hidden()
-                .perPointValue(1.0f)
-                .maxLevel(15)
-                .description("每点 +1 附魔强度（等价于原版 1 个书架，不看周围书架）：在随身附魔台界面里加点，强度越高三档附魔等级越高，15 点即原版满级（30 级附魔）")
+            create("enchant_limit").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后附魔等级不再受原版上限约束：进阶高级附魔台可以选到任意等级，铁砧（含随身铁砧）里同等级的附魔也能继续往上叠，另可用 /infstats enchant <附魔> <等级> 直接指定。等级越高越贵（进阶附魔台按等级线性收费、铁砧每次合成只 +1），因此不再另设封顶")
                 .build(),
 
             create("portable_stonecutter").category(StatCategory.UTILITY)
@@ -888,6 +917,38 @@ public final class StatType {
                 .description("开启后可用属性面板「强加载」按钮输入区块坐标强加载/卸载区块（每维度有数量上限）")
                 .build(),
 
+            create("infinite_energy").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：所有能量恒满 —— 背包 / 饰品栏 / 骑乘载具上的 FE 能量源"
+                        + "（RF、Mekanism、热力、EnderIO、沉浸工程等最终都走 Forge Energy）每 tick 自动补满，"
+                        + "卓越前线载具的行驶耗电 / 能量弹药武器也不再扣电；不消耗燃料、永远满电")
+                .build(),
+
+            create("sbw_infinite_health").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：乘坐 / 驾驶卓越前线（Superb Warfare）的载具时血量恒满 —— "
+                        + "载具打不坏、打不死，也不会因为亏血而瘫掉部位（履带 / 引擎 / 炮塔）"
+                        + "（需要安装卓越前线，未安装时该属性无效果）")
+                .build(),
+
+            create("goety_infinite_soul").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：诡厄巫法（Goety）的灵魂能量恒满 —— 施法、仪式、灵魂修补器……"
+                        + "都不会消耗灵魂能量，灵魂能量条一直满格；随身携带的「灵魂图腾」（Totem of Souls）"
+                        + "也会一直填满（需要安装诡厄巫法，未安装时该属性无效果）")
+                .build(),
+
+            create("create_infinite_stress").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：机械动力（Create）—— 你自己放置的动力网络不再因为应力（SU）不足"
+                        + "而超载停机，机器照常运转、应力表指针回到低位；整张网络只要有你放置的方块即生效，"
+                        + "别人基地与公共机器不受影响（需要安装机械动力，未安装时该属性无效果）")
+                .build(),
+
             create("trade_discount").category(StatCategory.UTILITY)
                 .percentage()
                 .perPointValue(0.01f)
@@ -909,7 +970,21 @@ public final class StatType {
             create("pe_auto_learn").category(StatCategory.UTILITY)
                 .toggle()
                 .maxLevel(5)
-                .description("投入5点解锁：获得物品时自动学习到ProjectE知识库，无需卖入转化桌即可用EMC转化")
+                .description("投入5点解锁：获得物品时自动记入EMC知识库（本模组与ProjectE同时生效），无需卖入转化桌即可用EMC转化")
+                .build(),
+
+            create("emc_learn_bonus").category(StatCategory.UTILITY)
+                .percentage()
+                .maxLevel(5)
+                .perPointValue(0.05f)
+                .description("学习 / 卖出物品获得的 EMC +5% / 点（最多 +25%）")
+                .build(),
+
+            create("emc_extract_discount").category(StatCategory.UTILITY)
+                .percentage()
+                .maxLevel(5)
+                .perPointValue(0.06f)
+                .description("从 EMC 中取出 / 以 EMC 合成物品的支付价格 -6% / 点（最多 -30%）")
                 .build(),
 
         };

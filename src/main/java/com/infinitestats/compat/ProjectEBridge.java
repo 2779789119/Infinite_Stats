@@ -33,6 +33,7 @@ public final class ProjectEBridge {
     private static Object transProxyInstance;
     private static Method getKnowledgeProviderFor;
     private static Method addKnowledge;
+    private static Method hasKnowledge;
     private static Method sync;
 
     private ProjectEBridge() {
@@ -60,12 +61,41 @@ public final class ProjectEBridge {
             getKnowledgeProviderFor = transProxyClz.getMethod("getKnowledgeProviderFor", UUID.class);
             Class<?> kpClz = getKnowledgeProviderFor.getReturnType();
             addKnowledge = kpClz.getMethod("addKnowledge", ItemStack.class);
+            hasKnowledge = findHasKnowledge(kpClz);
             sync = findSync(kpClz);
             LOGGER.info("[ProjectEBridge] 检测到等价交换（ProjectE），自动学习功能已可用。");
             return true;
         } catch (Throwable t) {
             LOGGER.error("[ProjectEBridge] 初始化 ProjectE API 反射失败，自动学习功能不可用。", t);
             peLoaded = false;
+            return false;
+        }
+    }
+
+    private static Method findHasKnowledge(Class<?> kpClz) {
+        // 1.20.1：hasKnowledge(ItemStack)；为兼容不同版本做兜底遍历查找
+        for (Method m : kpClz.getMethods()) {
+            if (!"hasKnowledge".equals(m.getName())) continue;
+            Class<?>[] params = m.getParameterTypes();
+            if (params.length == 1 && ItemStack.class.isAssignableFrom(params[0])) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 查询该物品是否已在玩家的 ProjectE 知识库里。
+     * 未安装 ProjectE、反射失败或无该 API 时返回 false（调用方应按"尚未学会"处理）。
+     */
+    public static boolean hasKnowledge(Player player, ItemStack stack) {
+        if (player == null || stack == null || stack.isEmpty()) return false;
+        if (!ensureInit() || hasKnowledge == null) return false;
+        try {
+            Object provider = getKnowledgeProviderFor.invoke(transProxyInstance, player.getUUID());
+            if (provider == null) return false;
+            return (Boolean) hasKnowledge.invoke(provider, stack.copy());
+        } catch (Throwable t) {
             return false;
         }
     }

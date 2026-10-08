@@ -1,5 +1,882 @@
 # 更新日志 (Changelog)
 
+## [1.49.0] - 2026-10-08
+
+### 🔗 随身工作台 / 随身熔炉接入 EMC（材料与燃料的第二来源）
+
+- **随身工作台**：取料链新增最后一级 **EMC 采购** —— 「背包 → 存储网络 → EMC」，
+  只要该物品**已学过**且有 EMC 值，就能直接花 EMC 拿料摆进网格：
+  - **JEI 一键转移**（`PortableCraftingMenu#fillGridFromIngredients`）：网格 / 余料 / 背包 / 网络都取不到时
+    按 EMC 采购 1 个；整批配方有任何一项凑不齐时**全额退款**（回滚已花的 EMC），不会「买了一半又失败」。
+  - **成品取出后的自动补料**（`AutoRefillResultSlot#refill`）：网络与背包补不齐的差额改由 EMC 兜底 ——
+    于是「用 EMC 续料连续合成」成立，对齐奥术石板「合成网格直接从转化库存取料」的语义。
+- **随身熔炉**：「抽矿物 / 抽燃料」在**没有连接任何存储网络**、或**网络里没有该物品**时，
+  改用**槽内现有物品作模板**从 EMC 知识库采购补齐（矿物单次 ≤64、燃料单次 ≤1024）；
+  槽内为空时不做采购，仍走原来的提示 / 诊断。
+- **防悄悄扣钱**：新增 `EmcTransactions.purchase(...)`（按物品扣 EMC 直接换货，不碰背包）
+  与 `EmcTransactions.format(...)`；任何一次 EMC 补齐都会同步余额并给一条动作栏提示
+  「已用 X EMC 自动补齐材料」。工作台 / 熔炉右栏各加一行 **EMC 余额**
+  （客户端直接读 capability，**没有新增同步包**）。
+- 熔炉采购时若目标槽位已满，会把刚买到的那份**退回 EMC**，避免白扣。
+- 中英文案 5 条；**不新增网络包，协议版本不变**。
+
+## [1.48.0] - 2026-10-08
+
+### 🔗 等价交换（EMC）与其他功能联动
+
+- **属性系统联动**：新增两个功能类属性 —— **`emc_learn_bonus`「EMC 学习收益」**（+5% / 点，最多 +25%）
+  与 **`emc_extract_discount`「EMC 转化折扣」**（-6% / 点，最多 -30%），属性总数 **104 → 106**。
+  学习 / 卖出物品的入账与提取 / 以 EMC 合成的支付价统一走新增的 `emc/EmcPricing`，
+  基础值仍取自 `EmcDatabase`（装了 ProjectE 时即 ProjectE 的 EMC 值），属性只在其上做增减。
+- **存储网络联动**：从 EMC 取出物品时，若背包放不下，剩余部分会**自动写入已连接的存储网络**
+  （RS / AE2 / 汤姆存储 / Sophisticated Backpacks / BD），仍然放不下才掉在地上 ——
+  复用「自动入库」的 `NetworkIO.insert`，不再出现「取出一堆结果掉一地」。
+- **背包联动**：EMC 界面左下新增「**回收背包**」按钮 —— **Shift + 点击**把背包（0–35 格）中所有
+  **已学**物品一次性卖出为 EMC（复用既有 `EmcSellAllPacket`，服务端二次校验）；不带 Shift 点击只在动作栏
+  提示用法，避免误卖随身物品。
+- 客户端合成价格预览同步应用转化折扣（与服务端 `EmcPricing` 使用同一系数）；
+  中英文案补齐（2 组属性键 + 回收按钮 2 条），README 属性总数与清单同步。
+- **不新增网络包，协议版本不变**。
+
+## [1.47.0] - 2026-10-08
+
+### ✨ 等价交换（EMC）：自动学习常驻 + 界面重做为「奥术转化石板」
+
+- **自动学习常驻**：`pe_auto_learn` 属性不再因「未安装 ProjectE」而被隐藏，也不再依赖 ProjectE 才能生效 ——
+  未装 ProjectE 时仍会把物品记入本模组的 EMC 知识库；装了 ProjectE 则**两套知识库同时写入**
+  （本模组 EMC 系统 + ProjectE 转化知识库）。新增 `ProjectEBridge#hasKnowledge` 反射查询，
+  已有知识时不再重复调用 API；本地缓存避免每 2 秒重复写库 / 发包。
+- **界面重做为「奥术转化石板」（Arcane Transmutation Tablet）**（默认 `V` 键打开）：342×256 新布局 ——
+  顶部 EMC 余额与搜索框、左侧 12×7 已学物品网格（按 EMC 升序，支持 `@模组` / `#标签` / 拼音搜索，
+  滚轮与按钮翻页）、右侧 3×3 合成网格 + 结果槽 + 学习槽、底部玩家背包与快捷栏；悬停显示物品名与 EMC 值。
+- **取物交互对齐原版转化石板**：左键取**一整组**、右键取 **1 个**、Shift + 左键**用尽 EMC 取满背包**
+  （原实现为「左键 1 个 / Shift 一组 / 右键买满」）。
+- **新增 3×3 EMC 合成网格**（奥术石板的标志性功能）：网格中的材料**不被消耗**，
+  点击结果槽时按配方材料的 **EMC 总额扣款**后给货；材料中存在没有 EMC 值的物品时拒绝合成并提示。
+  服务端用 `TransientCraftingContainer` + `RecipeManager#getRecipeFor` 匹配工作台配方，
+  客户端只做价格预览（服务端二次校验余额）。
+- 退出界面时网格内物品归还玩家（`EmcMenu#removed`）；`EmcMenu` 新增槽位索引常量
+  （37–45 = 合成网格，46 = 结果槽），**既有槽位顺序与索引保持不变**（学习槽 0、快捷栏 1–9、主背包 10–36）。
+- 中英文案同步（新增 10 条）；配置项 `autoLearnProjectE` 注释更新为「常驻功能」。
+- 未新增网络包，**协议版本不变**；界面内的自制定价器入口随重做移除
+  （自定义定价仍可用 `config/infinitestats/custom_emc_values.json` 设置）。
+
+## [1.46.7] - 2026-10-08
+
+### 🗡️ 新联动：拔刀剑（SlashBlade: Resharped）—— 物品编辑器可直接改刀的成长数值
+
+- 物品编辑器（默认 `O`）底部新增 **「拔刀剑」** 按钮：**主手是拔刀剑时可点**（未装拔刀剑或手持别物时置灰），
+  点开进入独立的拔刀剑编辑界面，可修改 **杀敌数 / 耀魂数 / 锻造数 / SA（特殊攻击）/ SE（特殊效果）**。
+- **杀敌数、耀魂数、锻造数**：顶部一行三个整数输入框，分别对应刀状态里的
+  `killCount` / `proudSoul` / `RepairCounter`。
+- **SA（特殊攻击）**：左栏**单选**列表，列出 `SlashArtsRegistry` 里**全部已注册剑技**
+  （含整合包 / KubeJS 追加的），点击即选中；显示名走刀自己的译文（`slash_art.<ns>.<path>`）。
+- **SE（特殊效果）**：右栏**多选**列表，列出 `SpecialEffectsRegistry` 全部效果，点击切换勾选，
+  显示名走 `se.<ns>.<path>`。两栏各有独立搜索框（支持拼音）。
+- **写入口径**（对着 1.20.1 重铸版源码逐项核对）：刀状态由 Forge 能力
+  `ItemSlashBlade.BLADESTATE`（`ISlashBladeState`）承载，序列化后写在物品 NBT 的
+  `bladeState` 子标签下。**战斗逻辑（放 SA、结算 SE）读的是内存里的能力对象，不是现读 NBT** ——
+  所以写入流程是「`getCapability(BLADESTATE)` → 调 setter → `serializeNBT()` 回写 NBT」，
+  保证**当场生效**且存档 / 同步不缺数据；能力取不到时退化为「直接改 NBT」的兜底。
+- **服务端二次校验**：SA 必须是注册表内的合法剑技（非法则整包拒绝，避免战斗时取到空剑技）；
+  SE 逐项过滤，非法项丢弃；只校验「槽位一致 + 物品 id 一致 + 确实是拔刀剑」，
+  刻意不做原始值快照校验（杀敌数随战斗实时增长，快照会频繁误判）。
+- 新增 `compat/SlashBladeCompat`（**全程反射**，未装拔刀剑时零开销短路，本模组不声明编译期依赖，
+  也不需要 `compatApiStub` 存根）、`network/EditItemBladePacket`、`client/SlashBladeEditScreen`；
+  物品编辑器底部按钮区改为**四键等宽居中**布局。**协议版本 18 → 19**。
+- 中英文案同步（`zh_cn` / `en_us`）。
+
+## [1.46.6] - 2026-10-08
+
+### ⚙️ 新联动：机械动力（Create）「无限应力」（`create_infinite_stress`）
+
+- 新增开关型属性 **`create_infinite_stress`「无限应力」**（投入 **3 点**解锁）：**你自己放置的**
+  动力网络不再因为应力（Stress, SU）不足而超载停机 —— 机器照常运转、应力表指针回到低位、
+  护目镜读数正常。判定范围是**整张网络**（网络里只要有**任意一块**是你放的，且你在线并已解锁），
+  别人基地与公共机器不受影响。属性总数 **103 → 104**。
+- 归属口径复用「无限能源」那套方块归属表：`util/EnergyOwnershipStore` 因此更名为
+  **`util/BlockOwnershipStore`**（新增 `getOwner(BlockPos)`），由两条属性共用；
+  **存档名 `infinitestats_energy_owners` 保持不变**，已有世界不会丢归属数据。
+- 落点选在 **`KineticNetwork.calculateCapacity()` 的返回值**上 —— 它是整个动力网络产能的唯一汇总点。
+  改这一处，成员方块（`overStressed`）、应力表（指针位置＝耗能 ÷ 产能）与发给客户端的同步包
+  会**同时**拿到「无限产能」，服务端与客户端结论天然一致。
+  只拦服务端那个超载布尔量是不行的：客户端收到包后会拿 `Capacity` / `Stress` **自己重算**
+  同一个判据，结果是机器在世界里转、屏幕上不动。
+- **存档不落改写值**：新增 `CreateKineticBlockEntityMixin`，在
+  `write(compound, clientPacket)` 的 HEAD / RETURN 上「发包给客户端时保留改写值、写存档时换回真值」
+  （真值由 `CreateStressCompat` 在改写前记下）。不这么做的话，10 亿会被写进存档，
+  重登后被 `initFromTE` 当成「未加载区块的产能」收进网络，这张网络从此永久不过载 ——
+  属性关掉、甚至卸载本模组都退不回来，等于污染存档。
+- 产能改写值取 **10 亿 SU**（够大但有限），刻意不用 `Float.MAX_VALUE`：真实网络的耗能不过几十万 SU，
+  10 亿永远够用；而 `Float.MAX_VALUE` 参与乘法 / 界面显示时容易变成 `Infinity` 或 `3.4E38` 这类读数。
+- **转速（RPM）与传动逻辑一概不动** —— 没有动力源还是不会转；方块必须是玩家本人放置的
+  （`/setblock`、蓝图粘贴、其它模组生成的不进归属表），且解锁者在线时才生效。
+- 新增编译期存根 `src/compatApiStub/java/com/simibubi/create/content/kinetics/KineticNetwork.java` 与
+  `.../base/KineticBlockEntity.java`；`InfiniteStatsMixinPlugin` 增加 `com.simibubi.create.` 前缀门控
+  （未装机械动力时两个 Mixin 根本不会应用，属性放在面板里也不会报错）；两个注入点均 `require = 0`。
+- 属性描述、中英文案、属性面板图标、README、`mod_description` 同步；**协议版本不变**。
+- 已用 `javap` 对着整合包里的 `create-1.20.1-6.0.8.jar` 逐项核对注入点与成员签名
+  （`calculateCapacity` 的汇总逻辑、`write` 的两个出口、`initFromTE` 的持久化路径）。
+
+## [1.46.5] - 2026-10-08
+
+### 🔋 「无限能源」扩展到玩家自己放置的能量方块
+
+- 「无限能源」（`infinite_energy`）此前只覆盖玩家**自身携带 / 骑乘**的能量源，世界里的方块
+  （储能方块、耗电机器、发电机等）一个都不补。现在新增覆盖：**玩家自己放置的能量方块**也会被补满。
+- 新增 `util/EnergyOwnershipStore`：按维度持久化的「方块放置归属」表（`BlockPos → 放置者 UUID`），
+  随存档保存。只记录带方块实体的方块（纯方块永远不会有能量能力），因此表里只有机器 / 储能这一小撮。
+- 新增 `event/BlockOwnershipEvents`：监听 `BlockEvent.EntityPlaceEvent` 记录玩家放置的方块实体、
+  `BlockEvent.BreakEvent` 清除归属。只认**玩家本人**放置的坐标 —— 不会顺手把别人基地 / 公共机器补满，
+  非玩家来源（发射器 / 其它模组生成 / `/setblock`）一概不计。
+- `compat/EnergyCompat` 新增方块扫描：只查玩家周围**已加载区块**里的方块实体（绝不为了补电强制生成新区块），
+  归属为本人且暴露 `ForgeCapabilities.ENERGY` 的才补；逐面尝试能量能力，兼容「只在特定面暴露能量」的机器。
+  方块扫描单独走配置间隔，玩家自身携带 / 骑乘的仍是**每 tick** 补满。
+- 新增配置（`InfiniteEnergy` 分组）：`infiniteEnergyBlocks`（默认 true）、`energyBlockRadius`（默认 16）、
+  `energyBlockInterval`（默认 20 tick = 1 秒）。
+- 属性描述、中英文案、README 同步；**不新增属性条目，属性总数不变**；协议版本不变。
+
+## [1.46.4] - 2026-10-08
+
+### 🔋 「无限电量」改名「无限能源」，并泛化到所有 FE 系能源
+
+- 属性 id 从 `sbw_infinite_energy` 改为 `infinite_energy`；显示名「无限电量」→「无限能源」。
+- **从「只对卓越前线载具生效」泛化为「你拥有的所有能量源恒满」**：统一走 `ForgeCapabilities.ENERGY`（FE）。
+  在 1.20.1 里 RF 就是 FE 的别名，Mekanism / 热力（Thermal）/ EnderIO / 沉浸工程 / 机械动力附属等
+  最终都通过 `IEnergyStorage` 暴露能量 —— 所以「把 FE 补满」这一件事就覆盖了这些全部能源类型。
+- 新增 `compat/EnergyCompat`：每 tick 给「背包 36 + 盔甲 4 + 副手 1、Curios 饰品槽（未装则跳过）、
+  正骑乘的实体」上的每个 `ForgeCapabilities.ENERGY` 补到上限；已经是满的就不写、不标脏物品。
+  - 背包 / 饰品里其它模组的能量源（电池、能量背包、能量工具等）没有统一的扣电注入点可拦，
+    只能靠每 tick 补满 —— 对读数与 HUD 而言就是恒满。
+  - `CuriosBridge` 新增只读的 `forEachStack` 供这里复用（与「死亡不掉落」用的 `takeAll` 不同，不写、不清空）。
+- 卓越前线载具仍走**注入点**那一半（`SbwVehicleEnergyStorageMixin` 拦 `extractEnergy`，
+  不让载具在 tick 内被引擎 / 能量弹药武器扣到闪）；载具电量的每 tick 补满改由 `EnergyCompat` 统一管，
+  `SuperbWarfareCompat.onTick` 不再自己补电量（只留补血量）。
+- 判定口径：载具那一半仍按「乘员里有解锁者」；背包 / 饰品那一半按「玩家本人解锁」。
+- 不覆盖 IC2 EU / 格雷科技 EU（GTCEu）：两者走各自能量 API、不经 Forge Energy，且本整合包未安装
+  （README 已注明；日后加入只需在 `EnergyCompat` 补一个对应能量类型的充能适配器）。
+- 属性描述、中英文案、README、mods.toml、mod_description 同步；属性总数统一记作 **103**
+  （本项只是改名、不新增条目，那个 +1 是 1.46.3 的 Goety 灵魂能量此前漏改的计数）。
+- 协议版本不变。
+
+## [1.46.3] - 2026-10-08
+
+### 🕯️ 新增 Goety 联动：无限灵魂能量
+
+- 新增一条开关型属性 `goety_infinite_soul`（投 **3 点**解锁），只对诡厄巫法（Goety）生效。
+  解锁后玩家的灵魂能量**恒满** —— 施法 / 仪式 / 灵魂修补器 / 巫妖回血等所有消耗灵魂的路径
+  都不会再把灵魂用光，灵魂能量条一直满格。
+- Goety 的灵魂有两套独立的池子，各补一份（覆盖它自己的 `getSoulsAmount` 门槛判定与 HUD 读数）：
+  - **Arca / 灵魂能量池**（`SEActive = true` 的玩家）：走 `SEHelper#increaseSESouls(Player, int)`，
+    它内部 `Math.min(当前 + 增量, maxArcaSouls)` 自己夹到上限；返回 `true` 才补发 `sendSEUpdatePacket`
+    （已满时返回 `false`，不产生每 tick 发包）；
+  - **灵魂图腾池**（Curios 里的 Totem of Souls）：走 `ITotem` 静态读写，把物品 NBT 的 `"Souls"`
+    补到 `"Max Souls"` 上限；上限读不到（刚捡的图腾还没写上限）就跳过，等图腾自己 tick 补上。
+- 纯**每 tick 兜底**（无 Mixin）：`SEImp` 不持有玩家引用，无法在能力层判断「这个玩家解锁了」，
+  所以不注入能力类，而是在玩家 tick 里按玩家判定补满 —— 与 `sbw_infinite_energy` 的兜底同一套思路。
+- 全程反射（与 `SuperbWarfareCompat` 同思路），没装 Goety 或版本对不上时整体短路，只让这一条属性退化为原版行为。
+- 协议版本不变。
+
+## [1.46.2] - 2026-10-08
+
+### 🚙 补充：卓越前线载具的干扰弹（decoy）也随「无限子弹」一起无限
+
+- **现象**：载具的干扰弹打完不补，得自己往车上塞 `FLYING_FLARE_AMMO`。
+- **链路**（反汇编核对）：装填走 `VehicleWeaponUtils#reloadDecoy` —— 拿车上的
+  `ModItems.FLYING_FLARE_AMMO` 装填，装填量 = `min(携带量, computed().decoyMagazineSize)`；
+  发射扣的是同步量 `DECOY_COUNT`，容量口径即 `DefaultVehicleData#getDecoyMagazineSize()`。
+- **改法**：每 5 tick 的兜底里把玩家所在载具的 `DECOY_COUNT` 顶到 `computed().decoyMagazineSize` ——
+  既不用补弹，也不会真吃玩家的干扰弹物品。沿用「无限子弹」这一条属性，不新增属性。
+- **不动**：携带量 `DECOY_ITEM_COUNT`（由载具自己的 `tick()` 每 tick 从乘员背包重算，写了也会被覆盖，
+  HUD 上的携带量读数照旧）、补充冷却 `DECOY_RELOAD_COOLDOWN`（射速限制，不是弹药）。
+- 干扰弹句柄**单独一层懒解析**：取不到只让「干扰弹无限」这一半失效。
+- README「载具武器」小节补齐；协议版本不变。
+
+## [1.46.1] - 2026-10-08
+
+### 🚙 修正：卓越前线的载具武器不用再手动塞一发弹药了
+
+- **现象**：载具武器仍然「必须先手动放一发弹药才能开火」。
+- **原因**：1.45.0 补好的是**判定口径**（让每次开火后的补弹 / 清热量对载具生效），但补不到「没打过一发」的时候 ——
+  载具武器不在物品栏里，每个武器一份 `GunData` 挂在载具的同步数据 `GUN_DATA_MAP` 上，
+  而开火收尾那几个注入点只有「已经打过一发」之后才会被触发；**空弹匣连 `canShoot(Entity)` 都过不了**，
+  压根进不了开火链路 → 没有任何一处会把空弹匣顶起来，只能手动塞一发当引子。
+- **改法**：每 5 tick 的兜底多走一趟「玩家正乘坐的载具」—— 反射 `VehicleEntity#getGunDataMap()`
+  取出该车每个武器的 `GunData`，逐个 `fillMagazine`（容量仍走模组自己的 `GunProp.MAGAZINE`）并清热量。
+  进车约 0.25 秒后全部武器满匣，直接可以打。
+- 载具武器表句柄**单独一层懒解析**：取不到只让「载具补弹」这一半失效，
+  不影响载具血量 / 电量与三条枪械属性。
+- README「载具武器」小节补齐这一说明。
+- 协议版本不变。
+
+## [1.46.0] - 2026-10-08
+
+### 🚙 新增两条卓越前线载具属性：无限电量 / 无限载具血量
+
+- 两条新的开关型属性（各投 **3 点**解锁），只对卓越前线（Superb Warfare）生效，口径与前三条枪械属性一致
+  —— **该载具的乘员里有解锁者**即生效：
+  - `sbw_infinite_energy` **无限电量**：载具电量恒满 —— 行驶耗电 / 能量弹药武器 / 外部机器抽电都不再扣，
+    载具面板上的电量条也一直是满的；
+  - `sbw_infinite_health` **无限载具血量**：载具血量恒满 —— 打不坏、打不死。
+- **无限电量的落点**：`VehicleEnergyStorage#extractEnergy(int, boolean)`。
+  用 `javap` 扫过整合包里的 `superbwarfare-0.8.9.2`：扣电有两条路 ——
+  载具自己的 `VehicleEntity.consumeEnergy(int)`（引擎行驶 `VehicleEngineUtils`、部分载具武器、炮塔 AI）
+  与按 Forge Energy 能力扣电（能量弹药策略 `EnergyAmmoStrategy`、外部机器抽电），
+  而它们最终都会走到这个电量存储的 `extractEnergy`（它同时是载具内部读数 / 扣电的对象，
+  也是 `ForgeCapabilities.ENERGY` 暴露出去的那个对象）—— 拦一处即全覆盖，且不挑来源；
+  只拦 `consumeEnergy` 会漏掉能量弹药那条。
+  返回的是「本该抽到的量」（`min(想抽的量, 当前电量)`）而不是 0：调用方据此认为这次抽电成功，
+  载具自己的「够不够电」判断（`canConsume` / 弹药策略）继续放行，电量却一点没少。
+- **无限载具血量的落点**：`VehicleEntity#setHealth(float)`，用 `@ModifyVariable` 把**入参**改成满血。
+  已核对它是载具血量的**唯一写入口**（全类只有它把血量写进同步数据 `HEALTH`，写入时钳到
+  `[-最大血量-10, 最大血量]`），子弹 / 炮弹 / 撞击 / 爆炸无论走哪条链路最后都是这一句。
+  - 为什么改入参而不是取消那次写入：取消只能让血量停在旧值上；改入参是「无论谁要写多少、
+    写进去的都是满血」—— 读数、HUD、它自己的低血提示 / 冒烟特效自然全都跟着满血走，
+    而且不会递归（兼容层只反射读 `getMaxHealth()`，不回写）。
+  - 为什么不放在每 tick 兜底里回血：一炮打掉满血坦克是常有的事，**同一 tick 内**血量归零
+    就会走 `destroy()`，事后补根本来不及。
+  - **部件血量（履带 / 引擎 / 炮塔）不需要单独处理**：`VehicleEffectUtils.handlePartHealth(...)`
+    只在「主血量低于上限 5%」时把部件清零，主血量恒满就永远走不到那一步。
+- **每 5 tick 兜底**：`SuperbWarfareCompat.onTick` 把「属性解锁之前就已经掉了电 / 掉了血」的那台补满
+  （注入点只保证「以后不再变少」）；已经是满的就不写，不会反复标脏同步数据、反复推给客户端。
+- **各自独立降级**：载具句柄（`getHealth` / `setHealth` / `getMaxHealth`）与枪械句柄**分开解析**，
+  「电量存储 → 载具」的反查（`VehicleEnergyStorage#getVehicle()`，Kotlin `protected var` 的编译产物）
+  也单独懒解析 —— 卓越前线换版本导致某一边取不到时，只让那一边退化成原版行为
+  （注入点 `require = 0`、反射失败静默跳过），不影响另一边，更不会让游戏起不来。
+- 编译期存根新增两份：`src/compatApiStub/java/com/atsuishio/superbwarfare/` 下的
+  `entity/vehicle/base/VehicleEntity.java` 与 `capability/energy/VehicleEnergyStorage.java`
+  （只抄被注入 / 被反射用到的成员，不进 jar、运行时不加载）。
+- 新增两个 Mixin：`SbwVehicleMixin`（载具血量）、`SbwVehicleEnergyStorageMixin`（载具电量）——
+  都在 mixin 配置的公共列表里，并由 `InfiniteStatsMixinPlugin` 按 `com.atsuishio.superbwarfare.`
+  前缀在没装卓越前线时**根本不应用**。
+- 属性面板图标、中英文案、README 同步；内置属性 100 → **102**（功能类 52 → 54）。
+- 协议版本不变。
+
+## [1.45.0] - 2026-10-08
+
+### 🚙 三条枪械属性对卓越前线载具武器同样生效（无限子弹 / 零热量 / 无后坐力）
+
+- **为什么之前不生效**：载具武器和手持枪是两套数据、两条链路，逐个反汇编核对后定位到三处：
+  1. 载具武器不放在物品栏 —— 每个武器一份 `GunData` 挂在载具的同步数据 `GUN_DATA_MAP` 上，
+     开火同样走 `GunData.shoot(ShootParameters)`（`VehicleEntity.vehicleShoot(...)` 里就是 `data.shoot(params)`），
+     所以补弹匣 / 清热量这两个注入点**本来就覆盖载具**；卡住的是「谁解锁了」——
+     载具开火时 `ShootParameters.shooter` 是**载具本体**（`VehicleEntity.getAmmoSupplier()` 就是 `return this`），
+     真炮手在 `ammoSupplier` 字段里，只读 `shooter` 会判定失败、整条被跳过。
+  2. `hasInfiniteBackupAmmo(Entity)` 收到的也是载具（不是玩家），同样判定不出来。
+  3. 载具的镜头抖不走 `handleGunRecoil`（那条要求手持枪），而是 `VehicleEntity.afterShoot(...)` 里的
+     `GunData.shakePlayers(载具)`：读 `GunProp.SHOOT_SHAKE` 后发 `ShakeClientMessage` 给附近玩家。
+- **改法**：
+  - `CompatToggles` 新增 `isActiveForShooter(Entity, String)`：先按本体判定，本体不是玩家时再看**乘员**；
+    手持枪走这里等于零额外开销（第一句就命中、乘员表为空）。
+  - `SuperbWarfareCompat#onShootParams`：优先取 `shooter` / `ammoSupplier` 里**活体那一个**（载具时即炮手），
+    拿不到才退回载具；`hasInfiniteBackupAmmo` 的注入改用同一个判定。
+  - 新增 `GunData.shakePlayers(Entity)` 的 HEAD 取消：解锁无后坐力时载具开火不再震屏 ——
+    与手持枪口径一致，**炮口后坐状态 `CANNON_RECOIL_FORCE` / `CANNON_RECOIL_TIME`（枪模与 HUD 动画用）
+    照常保留**，只是玩家镜头不再震。
+- **口径说明（多人同车）**：载具开火的震屏由整台载具统一派发（`ShakeClientMessage` 里没有逐个玩家的身份），
+  且同一个包也被爆炸（`CustomExplosion` / `ParticleTool`）复用、客户端区分不出来源 ——
+  所以只在载具开火这一侧拦，口径为「该载具的乘员里有解锁者」即生效；爆炸等其它来源的震屏不受影响。
+- 载具上**保留不动**的：炮口后坐状态、准星 / HUD 抖动（`VehicleCrosshairOverlay` / `LandVehicleHud` 读
+  `recoilShake`）、载具模型的后坐动画 —— 都不是玩家镜头，属于该模组的手感。
+- 属性描述与中英文案同步为「手持 … 或操作卓越前线的载具武器时」；README 新增「载具武器」小节。
+- 协议版本不变。
+
+## [1.44.3] - 2026-10-08
+
+### 🎯 修正：卓越前线「无后坐力」不再残留抖动（之前开了镜头还会抖）
+
+- **现象**：开了无后坐力，卓越前线的枪开火 / 瞄准时镜头仍然抖。
+- **根因（两处，都用 `javap` 反汇编核过）**：
+  1. 早先的实现**整段取消** `ClientEventHandler.handleGunRecoil()`，而它同时承担两件事：
+     把偏移施加到玩家视角（`LocalPlayer.setYRot` / `setXRot` 各一处）**以及**衰减后坐力状态量
+     （`recoilHorizon` / `recoilY`，全类只有它写这两个量）。整段取消 → 视角确实不动了，
+     但状态量不再衰减，而枪模渲染器（`Aa12ItemModel` / `SentinelItemRenderer`）与开火动画都在**读**它们。
+  2. 「镜头一直抖」的另一半来自 `handleWeaponBreathSway()`：它每帧用 `RandomSource` 往 pitch / yaw 上加
+     **随机**偏移（屏息、架脚架才减弱）—— 这条属性原先完全没有碰它。
+- **改法**：统一成「**只吞掉对 `LocalPlayer` 朝向的写入，其余逻辑照常跑**」：
+  1. `handleGunRecoil`：`@Redirect` 掉 `LocalPlayer.m_146922_`（左右偏）/ `m_146926_`（往上顶）两处写入，
+     方法本身照常执行（后坐力状态该衰减照常衰减）；
+  2. `handleWeaponBreathSway`：同样 `@Redirect` 掉那两处写入；
+  3. 开火时的相机偏移：新增 `SuperbWarfareCompat#zeroFireCameraOffset()`，由 `handlePlayerCamera` 的 HEAD
+     注入每帧把 `cameraRot[2]` 清零 —— `handleWeaponFire` 每帧 lerp 它、`handlePlayerCamera` 再把它加到
+     相机角度上；放在「读」这一侧是为了不依赖同一帧内两者的先后顺序。该字段属于**纯客户端类**，
+     因此单独懒解析、失败只让这一半失效（反射写对方的 `public static double[]`）。
+- **保留不动的**（它们不是后坐力，属于该模组的手感 / 其它机制）：枪模自身的开火动画
+  （`firePosZ` / `fireRotTimer`）、枪身随视角转动的跟随（`turnRot`，枪模动画也在读它）、
+  准星散布（`fireSpread`）、换弹抖动（`handleReloadShake`）。
+- 属性描述与中英文案、README 同步为「卓越前线的瞄准呼吸晃动也一并消除」。
+- 协议版本不变。
+
+## [1.44.2] - 2026-10-08
+
+### 🔫 卓越前线：补弹收口挪到全枪型都必经的地方（特殊枪一起覆盖）
+
+- **问题**：1.44.1 把补弹注入点挂在 `GunItem.shoot(ShootParameters)` / `afterShoot(ShootParameters)` 上，
+  但用 `javap` 逐个核对后发现有几把枪**自己覆写了这两个方法、且覆写里不回 `super`** ——
+  `Igla` / `Javelin` / `Bocek` 覆写 `shoot`，`Ql1031` / `Sentinel` / `Taser` 覆写 `afterShoot`
+  （基类注入对它们不生效，得靠每 5 tick 的兜底，弹匣会按射速抖一下）。
+- **改法**：主收口挪到 **`GunData.shoot(...)` 各入口的 RETURN**（`hasInfiniteBackupAmmo` 也在这个类上，
+  同一个 Mixin）。选它的依据是反汇编结果：
+  - 这几个重载都是 `public final` 的**薄包装**，内部直接 `item.shoot(this, ...)` ——
+    方向是 `GunData.shoot → GunItem.shoot`，`GunItem` 那边调 `data.shoot(...)` 的路径**一条都没有**；
+  - 它们的**外部**调用者只有开火网络包 `ShootMessage`（玩家）与 `GunShootGoal`（AI 用枪），
+    载具那条走 `shoot(ShootParameters)` 重载（`VehicleEntity` / `Tom6Entity`）；
+  - 因此返回时整条开火链路已经跑完，**不挑枪型**，上面 6 把特殊枪一并覆盖。
+- **三层收口**（全部幂等、可叠加）：`GunData.shoot(...)`（全枪型）→ `GunItem.shoot/afterShoot(params)`
+  （兜直接调 item 的路径）→ 每 5 tick 扫手持两格（兜「捡来的 / 解锁前就已半匣」的枪）。
+- 顺带：主收口那条拿得到射手实参，直接 `SuperbWarfareCompat.onGunFired(shooter, this)`，
+  不再为取 `shooter` / `data` 走一次反射；只有 `ShootParameters` 重载与 AI 路径仍按字段反射取值。
+  射手不是玩家（AI 怪物用枪）时两条属性都不生效 —— 它们是玩家属性。
+- 存根 `compatApiStub` 的 `GunData` 补上被注入的那几个 `shoot` 重载声明；README 同步。
+- 协议版本不变。
+
+## [1.44.1] - 2026-10-08
+
+### 🔫 修正：卓越前线的枪械现在也是「弹匣恒满、不用换弹」（之前还得换弹）
+
+- **现象**：1.44.0 对 Superb Warfare 只接管了 `GunData.hasInfiniteBackupAmmo(Entity)`
+  （备弹无限），于是出现「能一直打，但弹匣照常掉空、游戏仍要求你换弹」。
+- **补齐弹匣侧**：每次开火后把弹匣写回容量上限，外加每 5 tick 兜底（捡来的 / 属性解锁前就已经半匣的枪）。
+  现在两边的枪械行为一致：**弹匣恒满、不用换弹**。
+- **容量怎么来的**：`GunData.get(GunProp.MAGAZINE)` —— 模组自己的口径（扩容弹匣、Perk 修正都已算进去，
+  它的 `reloadAmmo` 用的也是同一个属性）。已用 `javap` 核对：`GunProp.MAGAZINE` 是 public static 属性对象，
+  `GunData.ammo` 是 `IntValue`（`get()` / `set(int)`），弹匣本身在 `GunData` 里只被
+  `reloadAmmo` / `withdrawAmmo` / `changeAmmoConsumer` 写过。
+- **为什么不调用它的 `GunData.reloadAmmo(...)` 来补弹**：后者是**换弹收尾**函数，除了填弹匣还会顺手改换弹状态机
+  （`reload.setState(NOT_RELOADING)`、`bolt.needed`、`fireIndex.reset()`、`nbtVersion.invalidateStructural()`）——
+  拿它当补弹工具会打乱换弹动画 / 拉栓状态。直接写 `ammo` 既准确又无副作用。
+- **注入点**：`GunItem.shoot(ShootParameters)` 与 `GunItem.afterShoot(ShootParameters)` 的 RETURN 各挂一个
+  （扣弹在主流程还是收尾都不影响结果，也不需要猜先后顺序）；两个注入点与每 5 tick 兜底都调
+  `SuperbWarfareCompat#onGunFired` / `#onTick`，两条属性各自独立判定。
+- **容错**：弹匣相关句柄（`GUN_PROP_CLASS` / `MAGAZINE` / `ammo`）**单独解析**并各自 try/catch ——
+  以后某个版本若把容量属性收成私有，只让「补满弹匣」这一半失效（退化成 1.44.0 那种「备弹无限」），
+  不会把零热量、无后坐力一起拖下水。
+- 属性描述、中英文案与 README「无限子弹」小节同步改写。
+- 协议版本不变。
+
+## [1.44.0] - 2026-10-08
+
+### 🔫 三条枪械属性（无限子弹 / 零热量 / 无后坐力）现在同时支持 **Superb Warfare（卓越前线）**
+
+- 属性还是原来那三条（`infinite_ammo` / `no_heat` / `no_recoil`），没有新增属性、点数也不变；
+  **装上 Superb Warfare 后它们对卓越前线的枪械同样生效**（没装则该模组的注入点根本不应用）。
+  描述文案改为「TACZ / 卓越前线」。
+- **落点全部用 `javap` 对着整合包里的 `superbwarfare-0.8.9.2-mc1.20.1` 逐条核对过**
+  （该模组是 Kotlin + Parchment 映射，成员名与结构跟 TACZ 完全不同）：
+  - **无限子弹 → `GunData.hasInfiniteBackupAmmo(Entity)`**：这是它<b>自带</b>的无限弹药判定
+    （创造模式、创造弹药盒、能量 / 经验 / 饥饿等弹药策略、以及「附加来源」的检查最终都会问到它），
+    签名带实体上下文、可以按玩家判定。置为 true 等价于「此人此刻处于创造模式持枪」：
+    打完自动补弹、不消耗任何真实弹药，**所有弹药类型一并覆盖**。
+    与 TACZ 那条的差别已写进 README：TACZ 是「弹匣恒满」，这里是「自动补弹、不耗备弹」——
+    各自使用对方模组最自然的语义，本模组不去硬改它的弹匣计数（那会与它的换弹 / 退弹 / 配件重算逻辑打架）。
+  - **零热量 → `GunItem.shoot(ShootParameters)` 的 RETURN**：查字节码确认全类只有这个方法读
+    `GunProp.HEAT_PER_SHOOT`（唯一的加热点，也是判定过热的地方），在返回处把枪械 NBT 里的
+    `heat` / `overHeat` 清零，同一 tick 内归零、HUD 看不到升温。
+  - **无后坐力 → `ClientEventHandler.handleGunRecoil()`**：逐个方法扫过这个客户端处理器的字节码，
+    全类只有三处会改玩家 XRot（呼吸晃动 `handleWeaponBreathSway`、辅助方法 `look`、以及它），
+    因此只取消它，呼吸晃动等其它视角效果照常保留。
+- **共用一份开关判定**：新增 `compat/CompatToggles`（原本散在 `TaczCompat` 里的三个
+  `isXxxActive` 搬进来，两个模组的注入点共用），仍是「一次 Capability 查询 + 走缓存」，
+  可以被开火路径甚至每帧调用而不产生额外开销。
+- **新增 `compat/SuperbWarfareCompat`**（反射，和 `TaczCompat` / `ApotheosisEnchantCompat` 同一套思路）：
+  负责「零热量」的兜底清零 —— 把「属性解锁之前 / 捡来时就已经热了、甚至已被过热锁死」的枪拉回 0。
+  反射链：`GunData.DATA_CACHE`（`LoadingCache<ItemStack, GunData>`）→ `ShootParameters` 的
+  `data` / `shooter` 字段 → `GunData.heat`（`DoubleValue`）/ `overHeat`（`BooleanValue`）的读写。
+  没装 Superb Warfare 时 `Class.forName` 失败即永久短路、零开销。
+- **新增 3 个 Mixin**：`SbwGunDataMixin`、`SbwGunItemMixin`（双端）、`SbwClientEventHandlerMixin`（客户端）。
+- **注入点门控扩成一张表**：`InfiniteStatsMixinPlugin` 从「只认 `com.tacz.`」改成
+  「目标包前缀 → mod id」映射（`com.tacz.` → `tacz`，`com.atsuishio.superbwarfare.` → `superbwarfare`），
+  对应模组不在场时那两个 / 三个 Mixin 一律不应用；注入点本身仍是 `require = 0`。
+- **存根源集改名并扩容**：`src/taczApiStub` → **`src/compatApiStub`**（源集 `taczApiStub` → `compatApiStub`，
+  `build.gradle` 与 `compileJava` 的 dependsOn 同步改名），新增 4 个 Superb Warfare 空壳类
+  （`GunData` / `ShootParameters` / `GunItem` / `ClientEventHandler`）。
+  存根**不进 jar、运行时也不加载**，只为让 Mixin 注解处理器在编译期能解析目标类、并校验注入点名字。
+- `UtilityHandler` 的每 5 tick 兜底入口现在同时驱动 TACZ 与 Superb Warfare 两家（各自独立判定与异常隔离）。
+- 协议版本不变（未新增 / 修改任何网络包）。
+
+## [1.43.0] - 2026-10-07
+
+### 🎯 TACZ 联动新增属性「无后坐力」（`no_recoil`）
+
+- **新属性**：`no_recoil` 无后坐力（攻击类，**开关型，投入 3 点解锁**；内置属性 99 → **100**）。
+  解锁后开火时**视角不再被后坐力往上顶**，弹着点由玩家自己控制。枪械**散布（精准度）不受影响** ——
+  这条只管后坐力那一下抬手。
+- **落点确认**：TACZ 的后坐力全在客户端的 `CameraSetupEvent`（已对着
+  `tacz-1.20.1-1.1.8-hotfix2.jar` 逐字节核对 `initialCameraRecoil` / `applyCameraRecoil`）：
+  `initialCameraRecoil(GunFireEvent)` 在开火时按枪械数据 + 配件 / 瞄准 / 趴下修正算出 pitch / yaw
+  两条后坐力曲线并记下时间戳；`applyCameraRecoil(ComputeCameraAngles)` 之后**每一帧**求值曲线，把增量
+  直接减到 `player.setXRot / setYRot` 上 —— 注意它改的是**玩家真实朝向**（客户端会把朝向发给服务端），
+  不是只动渲染相机，所以「无后坐力」必须让这两个方法都不执行，而不是事后把角度掰回来。
+- **新增客户端 Mixin `TaczCameraRecoilMixin`**：在 `initialCameraRecoil` 与 `applyCameraRecoil`
+  的 HEAD 处按开关取消（两个都要拦，只拦一个会残留上一次曲线的状态）。
+  该 Mixin 放在 mixin 配置的 **`client` 列表**里 —— 目标类是纯客户端类，服务端不会加载它。
+  之所以不走事件：这段逻辑本身就是 Forge 事件处理器，事件层排在它后面改不了它的副作用，
+  只会和其它改视角的模组互相打架。
+- **新增编译期存根** `com.tacz.guns.client.event.CameraSetupEvent`（`src/taczApiStub`）：
+  两个方法名照抄真实实现，参数统一写 `Object` —— 注入处理器按方法名定位即可，不必把 TACZ 的
+  `GunFireEvent`、Forge 的 `ViewportEvent.ComputeCameraAngles` 也搬进存根。
+- **判定入口**：`TaczCompat#isNoRecoilActive` 与另外两条 TACZ 属性共用同一个「一次 Capability 查询 +
+  走缓存」的实现 —— 它会被**每帧**调用（后坐力求值在渲染帧里），所以刻意不加任何额外开销；
+  拿不到本地玩家（主菜单等）时按「未解锁」处理。
+- 文档与元数据同步：`README`（属性计数、攻击类清单、新增「无后坐力」小节）、`mods.toml` 描述。
+- 协议版本不变（未新增 / 修改任何网络包）。
+
+## [1.42.0] - 2026-10-07
+
+### ❄️ TACZ 联动新增属性「零热量」（`no_heat`）
+
+- **新属性**：`no_heat` 零热量（攻击类，**开关型，投入 3 点解锁**；内置属性 98 → **99**）。
+  解锁后手持带热量数据的 TACZ 枪械（机枪那类）**热量恒为 0** —— 不升温、不会进「过热锁」
+  （锁上就打不出子弹），HUD 热量条一直为空，顺便也消掉了热量带来的 RPM / 精度惩罚。
+- **覆盖 TACZ 的三条加热路径**（只做其中一条都会漏）：
+  1. **击发加热**：注入 `ModernKineticGunScriptAPI#handleShootHeat`（默认实现里加 heat、满值顺手
+     `setOverheatLocked(true)` 的地方）→ HEAD 取消；
+  2. **脚本加热**：注入同一类上的 `setHeatAmount`（枪械 Lua 脚本写热量的包装方法）→ HEAD 取消。
+     刻意只拦**这一个**包装方法：TACZ 自己的散热走的是枪械物品上的同名方法
+     （`ModernKineticGunItem#tickHeat`），不受影响；
+  3. **兜底清零**：`compat/TaczCompat` 每 5 tick 把**手持**枪械的 `HeatAmount` 清零、`OverHeated` 解锁 ——
+     管的是「本来就热了 / 已经被锁了」的枪（属性刚解锁、捡来的枪）。只在真的非零或已锁时才写 NBT，
+     避免把物品反复标脏同步。
+- **两条 TACZ 属性共用一个每 5 tick 的入口**（`TaczCompat#onTick`），各自独立判定；
+  两条都没解锁时在第一步返回，连背包扫描都不做。判定开关的 `isNoHeatActive` 与 `isInfiniteAmmoActive`
+  共用同一个私有实现，仍是纯 Capability 查询。
+- **编译期存根同步更新**：`src/taczApiStub` 里的 `ModernKineticGunScriptAPI` 补上 `handleShootHeat()` /
+  `setHeatAmount(float)` 两个空壳方法（注解处理器据此校验注入点名字）。所有要注入 / 反射的成员都已对着
+  整合包内的 `tacz-1.20.1-1.1.8-hotfix2.jar` 逐字节核对（`handleShootHeat`、`setHeatAmount`、
+  `getHeatAmount`、`hasHeatData`、`isOverheatLocked`、`setOverheatLocked` 均在）。
+- 文档与元数据同步：`README`（属性计数、攻击类清单、新增「零热量」小节）、`mods.toml` 描述。
+- 协议版本不变（未新增 / 修改任何网络包）。
+
+## [1.41.0] - 2026-10-07
+
+### 🔫 「无限子弹」改成**弹匣永远满**（1.40.0 的「虚拟备弹」方案作废）
+
+- **用户要的效果**：不是「备弹无限、弹匣照常打空再换弹」，而是**弹匣里永远是满的** —— 开了枪子弹不掉、
+  也永远不用换弹。1.40.0 写的是前者（`DummyAmmo` 虚拟备弹），本次改成后者。
+- **新的实现（两半，缺一不可）**：
+  1. **不再扣弹 —— Mixin 注入 TACZ 自己的扣弹落点**：`ModernKineticGunScriptAPI#reduceAmmoOnce`
+     （每次击发都走它）改成「先把弹匣补满，再当作扣弹成功返回」，`#removeAmmoFromMagazine`
+     （拉栓供弹、换弹收尾「推一发进枪膛」都走它）改为空操作。
+     **为什么必须 Mixin**：扣弹与生成子弹在同一次调用内完成，事件层面只能「取消整发」（那是打不出子弹），
+     而每 tick 事后补回来也赶不上同一 tick 的读数 —— HUD 会按射速在满匣与满匣 -1 之间闪。
+  2. **补满已有的弹匣 —— `compat/TaczCompat` 每 5 tick 补一次**：Mixin 只保证「不少」，
+     保证不了「本来就半匣的枪也是满的」（捡到 / 换到半匣的枪、别的模组改过数值之后靠这一步拉回满匣）。
+     弹匣上限连同扩容弹匣等配件的影响一律问 TACZ 自己
+     （反射 `ModernKineticGunScriptAPI#getMaxAmmoCount`，只需 `setItemStack` 即可读，不需要射手上下文）。
+- **顺带堵掉刷弹药漏洞**：无限子弹生效时取消 `AbstractGunItem#dropAllAmmo` ——
+  否则「更换弹匣类配件会把弹匣卸成真弹药物品塞进背包，而弹匣又立刻被补满」可以无限刷弹药。
+- **不再往枪械 NBT 里写任何本模组数据**：1.40.0 需要写 `DummyAmmo` + 自己的标记（关闭时还要回收），
+  现在只剩「TACZ 自己的弹匣计数」在被读写，关闭属性立即回到原版行为、没有残留。
+  判定开关的入口 `TaczCompat#isInfiniteAmmoActive` 是纯 Capability 查询（无反射），
+  即使 TACZ 版本变动让反射链失效，「不扣弹」这半边依然有效。
+- **新增 Mixin 配置插件 `InfiniteStatsMixinPlugin`（必须）**：本模组的 `infinitestats.mixins.json` 是
+  `"required": true`，而新加的两个 Mixin 目标类是 `com.tacz.*` —— 没装 TACZ 时目标类不存在，
+  Mixin 会抛 `ClassMetadataNotFoundException` 并**直接让游戏起不来**。插件按**目标类名前缀**
+  （`com.tacz.`）判定，没装 TACZ 时这两个 Mixin 根本不应用；同时把 `getRefMapperConfig()` 固定为
+  `infinitestats.refmap.json`（与 json 里的值一致，不依赖「插件与配置谁优先」的细节）。
+  注入点本身依旧是 `require = 0`：TACZ 版本变化导致锚点对不上时只打印警告、退化为原版行为。
+- **新增编译期存根 `src/taczApiStub/java`（必须）**：Mixin 注解处理器要求 `@Mixin` 的目标类在
+  **编译期**类路径上，缺了直接报 `Mixin target ... could not be found` 让构建失败。
+  不把对方几十 MB 的 jar 塞进仓库（会随它升级变味、也违背「无需任何前置」），改为在仓库里放两个
+  **空壳目标类**（`com.tacz.guns.item.ModernKineticGunScriptAPI`、`com.tacz.guns.api.item.gun.AbstractGunItem`），
+  只列出被注入 / 被反射用到的成员签名。`build.gradle` 里新增源集 `taczApiStub`，
+  把它的产物**只并进主源集的编译类路径**（`main.compileClasspath += sourceSets.taczApiStub.output`；
+  存根源集自身取 `configurations.compileClasspath`，避免「任务依赖自己产物」的循环依赖）。
+  已验证：**存根类不会被写进 jar**（jar 只打包 `sourceSets.main.output`），refmap 内容与原版注入无关、
+  未受影响（9 个 Mixin 的 SRG 映射照常生成）。注解处理器的目标校验器因此保持开启 ——
+  注入点写错名字会在编译期就报出来，而不是拖到运行时。
+- **不用 `@Shadow`，射手改用运行时反射**：影子成员解析失败是 Mixin **应用期硬错误**（`require = 0` 兜不住），
+  TACZ 一旦改名就变成启动崩溃。`compat/TaczCompat#shooterOf(Object)` 反射取 `getShooter()`，
+  解析不到/调用失败一律当作「未解锁」，TACZ 换版本最多让这条联动失效，不会把游戏带崩。
+- **验证**：对整合包内的 `tacz-1.20.1-1.1.8-hotfix2.jar` 逐字节核对了要注入 / 反射的成员
+  （`reduceAmmoOnce`、`removeAmmoFromMagazine`、`getNeededAmmoAmount`、`putAmmoInMagazine`、
+  `getMaxAmmoCount`、`setItemStack`、`getShooter`、`IGun#get/setCurrentAmmoCount`、`useInventoryAmmo`、
+  `AbstractGunItem#dropAllAmmo` 均在）。协议版本不变。
+
+## [1.40.0] - 2026-10-07
+
+> ⚠️ 本版「虚拟备弹」方案已在 **1.41.0** 被「弹匣永远满」取代，下方记录仅作历史留档。
+
+### 🔫 TACZ（永恒枪械工坊：零）联动：新属性「无限子弹」（`infinite_ammo`）
+
+- **新属性**：`infinite_ammo` 无限子弹（攻击类，**开关型，投入 5 点解锁**；内置属性 97 → **98**）。
+  解锁后手持 TACZ 枪械，射击与换弹改用枪械的**虚拟备弹**供弹，**不再消耗背包里的子弹** ——
+  空背包也能一路打下去。弹匣式（换弹补弹）与「背包直读」式枪械都覆盖，栓动 / 闭膛 / 开膛同样适用。
+- **为什么走「虚拟备弹」而不是拦事件**：TACZ 的供弹只有一条入口 `ModernKineticGunScriptAPI#consumeAmmoFromPlayer`，
+  它按「背包直读+不检查弹药 → 虚拟备弹 → 扣背包弹药」的优先级分流；而 `useDummyAmmo(gun)` 的判定就是
+  「枪的 NBT 里有没有 `DummyAmmo` 这个 int 键」，`canReload`（换弹前检查）与 `hasInventoryAmmo`（背包直读枪的供弹检查）
+  也都会在存在虚拟备弹时改走这条路。也就是说**只要枪上带着虚拟备弹，射击与换弹就都不再碰背包**，
+  不需要挂 `GunShootEvent` / `GunReloadEvent`、也不需要 Mixin。
+  实现上是每 5 tick 把虚拟备弹顶到 9999，换弹扣掉的那一小段下一个 tick 就补回来。
+- **只碰自己写进去的那一份**：
+  - 只补**手持的两格**（主手 + 副手），背包里躺着的枪不动；
+  - 枪上**本来就有的**虚拟备弹（创造模式枪械物品、弹药盒等 TACZ 自带机制）原样放过，不接管也不回收；
+  - 关掉属性后**回收本模组写进去的那份**（靠物品 NBT 标记 `InfinitestatsInfiniteAmmo` 区分），不会抹掉玩家原有的。
+- **零前置、零开销**：新增 `compat/TaczCompat`（反射，和 `ApotheosisEnchantCompat` 同一套思路）——
+  本模组**不声明**对 TACZ 的编译期依赖；没装 TACZ 时 `Class.forName` 直接失败并**永久短路**，
+  连背包扫描都不会执行。写入优先走 TACZ 官方 API（`IGun#setDummyAmmoAmount`），
+  反射失效时退化为直写 NBT（键名与 `GunItemDataAccessor.GUN_DUMMY_AMMO` 一致）。
+- 文档与元数据同步：`README`（属性计数、攻击类清单、新增「无限子弹」小节）、`mods.toml` 描述。
+- 协议版本不变（未新增 / 修改任何网络包）。
+
+## [1.39.3] - 2026-10-07
+
+### 📦 构建产物整理：三个包 → **两个包**（一内嵌、一不内嵌），逻辑代码零改动
+
+- **原先为什么是三个**：`jar` 任务会把 jarJar 的 `META-INF/jarjar/**`（内嵌 `pinyin_search`）
+  **并进主产物**，于是主产物与 jarJar 自己那个 `-all` **逐字节相同**；再加上过滤掉内嵌内容重打的
+  `-noembed` 变体，一次构建输出三个包，分发时只能靠肉眼分辨。
+- **现在改成两个**（各自对应一种内容，名字也能看出区别）：
+  - `infinite_stats-无限加点-1.20.1-<版本>.jar` —— **不内嵌**，标准产物名；
+  - `infinite_stats-无限加点-1.20.1-<版本>-all.jar` —— **内嵌 `pinyin_search`**（JAR-in-JAR）。
+  - `-noembed` 变体随之取消（标准名那份本身就是不内嵌的，不必再派生）。
+- **取舍变了，选包时注意**：以前推荐的是「含内嵌」的标准名那份，现在**标准名那份不含内嵌** ——
+  整合包 / 玩家没自带 `pinyin_search` 时请装 **`-all`** 那份（或另外把 `pinyin_search` 装进 `mods\`）；
+  没装也不影响启动与其它功能，只是搜索框退化成「纯原文包含」匹配。
+- **`build.bat`**：`dist\` 照旧复制两个包；`deploy` 会看目标 `mods\` 里有没有 `pinyin_search`，
+  有就装标准名那份、没有就装 `-all` 那份（并在输出里标明装的是哪一份）。
+- 本次**没有改动任何模组逻辑**（Java、语言文件、mixin 配置均未变），协议版本不变。
+
+## [1.39.2] - 2026-10-07
+
+### 🧪 统一「未解锁时的附魔上限」：跟随整合包实际生效的上限（Apotheosis 等）
+
+- **问题**：1.39.1 把铁砧那条路对齐了 Apotheosis 的上限，但本模组另外两处（**进阶高级附魔台**、
+  随身铁砧的判断口径）读的仍是写死的原版 `Enchantment#getMaxLevel()`。于是同包内自相矛盾：
+  本整合包里 Apotheosis 把锋利配到 **9** 级，铁砧能合到 9，**我们自己的附魔台却只让选到 5**
+  （服务端 `PortableInfuser` 的校验也按 5 卡，选了 9 会被判 `bad_selection`）。
+- **起因**：Apotheosis 的 coremod 只把原版**几个类里**的 `Enchantment#getMaxLevel()` 调用换成它自己的
+  `EnchHooks.getMaxLevel`，`Enchantment#getMaxLevel()` 这个方法本身没被改，所以「包里的真实上限」
+  只能从它那里读。
+- **修复**：新增 `compat/ApotheosisEnchantCompat`（反射读 `EnchHooks#getMaxLevel`，**不**在字节码里引用
+  它的类，没装 Apotheosis 时返回 -1），`util/EnchantLimits` 增加 `packCap(ench)`：
+  `maxLevel(player, ench) = 解锁 ? int 上限 : packCap(ench)`，`packCap` = Apotheosis 的值（有且 > 0）
+  否则原版值。三处口径（进阶附魔台 / 随身铁砧 / 铁砧的 Apotheosis 兼容注入）现在完全一致：
+  **未解锁 = 整合包上限（本包锋利 9）**，解锁后 = 不限。
+- **顺带**：
+  - 进阶附魔台按住 Shift 的「拉满」在未解锁时跳到**整合包满级**（9），解锁后仍只跳到原版满级
+    （int 上限跳过去既付不起也没意义），与界面提示文案一致；
+  - 行内悬停提示的「最高 N 级」改为显示实际生效的上限（不再固定显示原版数字）；
+  - `AnvilMenuMixin` 里那段本地反射搬进 `ApotheosisEnchantCompat` 复用，注入点本身不变。
+- 新增 gameTest `enchantCapFollowsUnlockState`（未解锁 = 整合包上限、解锁 = 不限、功能开关关掉后回落）。
+  协议版本不变。
+
+## [1.39.1] - 2026-10-07
+
+### 💥 修「装了 Apotheosis 的包启动即崩」（Critical injection failure）
+
+- **现象**：游戏在加载阶段直接崩掉，进不了主菜单，日志末尾是
+  `InjectionError: Critical injection failure: Redirector infinitestats$raiseMergeCap(...) in infinitestats.mixins.json:AnvilMenuMixin from mod infinitestats failed injection check, (0/1) succeeded`。
+- **原因**：Apotheosis 的 coremod（`coremods/ench/ench_info_redirector.js`）会把
+  `net.minecraft.world.inventory.AnvilMenu` 里那两处 `Enchantment#getMaxLevel()` **整段替换**成
+  它自己的静态钩子 `dev.shadowsoffire.apotheosis.ench.asm.EnchHooks.getMaxLevel`（日志里就是那行
+  `Replaced 2 calls to Enchantment#getMaxLevel() in ... AnvilMenu`）。coremod 跑在 Mixin 之前，
+  于是我们那个针对 `Enchantment#getMaxLevel()` 的 `@Redirect` 在字节码里已经**一个目标都找不到**，
+  而 Mixin 默认要求「至少命中 1 处」，直接把整个模组判为加载失败 —— 1.38.0 起带上铁砧注入后，
+  凡装了 Apotheosis 的包都起不来。1.38.0 里「改用 `@Redirect` 就能和 Apotheosis 共存」的判断只对
+  它的 **Mixin**（`apoth_removeLevelCap` 改常量 40）成立，漏算了它的 **coremod**。
+- **修复**：
+  1. **兼容注入点**：新增一个针对 `EnchHooks.getMaxLevel(Enchantment)` 的 `@Redirect`
+     （`ordinal = 0`，同样是「比较」那一处）。未解锁时返回 **Apotheosis 自己的上限**（不是原版的
+     `getMaxLevel()`）—— 大包里 Apotheosis 的等级上限普遍被配置得比原版高，返回原版值等于把人家
+     放宽的上限又收紧了；解锁后才返回不限。`EnchHooks` 用**反射**调用，不在字节码里直接引用它的类，
+     免得没装 Apotheosis 时给 AnvilMenu 的常量池添一条指向不存在类的引用。
+  2. **静态调用点拿不到铁砧实例**：Apotheosis 换上去的是静态方法，重定向处理器也必须是静态的，
+     读不到玩家 → 玩家上下文改为在 `createResult` 的 HEAD 捕获到 ThreadLocal、RETURN 释放
+     （两条注入同样都是可选注入）。
+  3. **所有注入点改为可选**：`AnvilMenuMixin` 的三处注入全部标 `require = 0`，
+     并把 `infinitestats.mixins.json` 的 `injectors.defaultRequire` 由 1 改为 **0**。
+     AnvilMenu / EnchantmentHelper 这类「大包里的公共战场」被别的模组挪走锚点是常态，
+     注入失败现在只打印一条警告、对应功能退化为原版行为，**绝不再让整个游戏起不来**。
+     代价是注入失效变成静默降级（日志里仍有 warn），换来的是任何包都能进游戏。
+- 本次没有新增属性、没有新增网络包，协议版本不变。
+
+## [1.39.0] - 2026-10-07
+
+### ⚡ 新属性「额外打击」（`extra_strike`，攻击类，97 条内置属性）
+
+每次造成伤害后追加**额外打击**：等级＝额外打击次数（最多 8 次），每次造成**本次伤害 20%** 的额外属性伤害，
+比例由配置 `ExtraStrike.extraStrikeDamageRatio` 决定（默认 0.2，满 8 级合计 **+160%**）。
+
+- **覆盖「玩家造成的所有伤害」**：近战、弓箭 / 三叉戟 / 模组弹射物、以玩家为来源的法术，
+  以及**玩家的召唤物 / 宠物 / 坐骑**打出的伤害。后者的伤害来源实体是召唤物自己，本模组新增
+  `getPlayerDamageOwner(DamageSource)`：在原有 `getPlayerAttacker`（玩家本体 + 玩家发射的弹射物）之外，
+  再接受「`OwnableEntity` 且主人是玩家」的实体。**只有这条属性用这个宽口径**，
+  暴击 / 吸血 / 处决等依旧只认玩家本体与其弹射物，不动既有平衡。
+- **独立结算、无视护甲与减伤**：额外打击不叠进本次伤害，而是在伤害结算完成后再单独扣血，
+  因此不会被目标护甲、抗性提升、保护附魔或其它模组的「单次伤害上限」削掉。
+- **挂点选在 `LivingDamageEvent`**：这是护甲与减伤都已结算的时机，取到的是**实际伤害**，
+  按它计算比例才不会出现「打高护甲目标时额外打击虚高」。
+- **不嵌套 `hurt()`**：此刻正处在目标本次受伤的 `actuallyHurt` 内部，再嵌套一次 `hurt()` 会让
+  **同一次受击走两遍死亡收尾**（掉落物 / 成就 / 击杀进度重复触发）。因此改用 `setHealth` 直接扣血
+  （与本模组「真实伤害」同一套安全结算），死亡依旧由外层本次受伤的原版收尾负责 ——
+  **击杀归属、掉落、击杀类任务照常算在玩家头上**。
+- **不触发的情形**：自伤（自己炸自己、箭落回自己身上）；本模组自己的次级直接伤害
+  （范围攻击 / 真实伤害 / 额外打击本身），否则会层层叠加；被格挡 / 闪避 / 免疫取消的攻击
+  （走取消后的结算，不会出现「打空也掉血」）；以及被「功能开关」关闭时（数值按 0 计）。
+- **其它**：新增配置项 `ExtraStrike.extraStrikeDamageRatio`（0 ~ 10，默认 0.2）；
+  属性面板攻击分类新增图标与中英文文案；新增 gameTest `extraStrikeDealsBonusAttributeDamage`
+  （校验追加总量、8 次上限、自伤不触发、非玩家来源不触发、功能开关关闭后失效）。
+  协议版本不变（本次没有新增网络包）。
+
+## [1.38.0] - 2026-10-07
+
+### 🧪 新属性「附魔上限突破」（`enchant_limit`，1 点解锁）
+
+开启后附魔等级不再受原版 `getMaxLevel()` 约束（上限放开到 int 上限，实际高度由价格决定）：
+**进阶高级附魔台**可以自选到任意等级、**铁砧（含随身铁砧）**能把同等级附魔继续往上叠
+（锋利 V + 锋利 V = 锋利 VI…），另配了 OP 指令 `/infstats enchant <附魔> <等级>`（权限等级 2，
+刻意不要求解锁，相当于参考实现的 `/cenchant`，方便发物品与调试）。
+
+**为什么不是「改一下上限判断」那么简单** —— 三处都得动（都对着 1.20.1 源码 / 字节码核过）：
+
+1. **上限判断**：铁砧的等级上限只卡在 `createResult` 里的
+   `if (j2 > enchantment1.getMaxLevel()) j2 = enchantment1.getMaxLevel();`（`javap` 核过：
+   全类仅两处 `getMaxLevel` 调用，就是这一行的比较与赋值）。用 `@Redirect` **只替换比较里的取数**：
+   解锁的玩家返回 int 上限 → 比较恒为 false → 等级原样保留，紧随其后的消耗计算也用真实等级
+   （越突破越贵）；未解锁时原样返回 `getMaxLevel()`，与原版逐字节一致。
+   只碰比较、不动赋值那一处，是为了不与其它铁砧模组（Apotheosis 的 `apoth_removeLevelCap` 等）
+   抢同一处字节码 —— 我们原有的消耗注入也是同样的思路。
+2. **NBT 根本存不下**：原版 `storeEnchantment` / `setEnchantmentLevel` 写的是
+   `putShort("lvl", (short) level)`（超过 32767 直接截断），而 `getEnchantmentLevel` 读回来还要
+   `Mth.clamp(..., 0, 255)` —— 也就是说物品上就算写着 1000 级，读回来也是 **255**。
+   这三处由新增的 `EnchantmentHelperMixin` 接管：**能塞进 short 的照旧写 short**
+   （不突破的存档 NBT 与其它模组看到的完全一样），超出才写 int；读取不再夹到 255。
+3. **名字会露馅**：原版语言文件只提供 `enchantment.level.1` ~ `.10`，11 级以上的附魔名
+   会原样显示成 `enchantment.level.11` 这种键名（物品提示、铁砧结果、附魔界面到处都会出现）。
+   新增 `EnchantmentMixin#getFullname` 接管：1~10 仍走原版译文（跟随客户端语言），
+   11~100 用罗马数字，再往上用阿拉伯数字。
+
+**顺带**：
+
+- 进阶附魔台的等级上限、价格换算、界面显示全部改为按玩家上限计算，金额一律用 long 相乘再饱和
+  （突破后的等级是天文数字，int 溢出会变成「倒贴钱」或符号翻转）；按住 Shift 点击仍是
+  「清零 / 回到原版满级」，刻意不跳到 int 上限。
+- 物品编辑器与附魔条目校验改用同一套 int 读写（原来读 `getShort("lvl")`、写 `putShort`，
+  会把超上限等级截断）。
+- 协议版本不变（本次没有新增网络包）。
+
+## [1.37.0] - 2026-10-07
+
+### ✨ 随身附魔台 → 随身「进阶高级附魔台」（自己挑附魔，不再随机）
+
+参考 Enchanting Infuser 的**进阶档**，把原来的随身附魔台整块换掉：**不再随机三档，而是自己挑附魔**。
+
+- **玩法**：左边放物品（或书），右侧列出它**能附的所有魔**，逐条 `0 ~ 满级` 用 `<` / `>` 调（Shift
+  直接清零 / 拉满），清单可滚轮滚动；**物品身上已有的附魔也在清单里**，升 / 降 / 清就是升级、降级、移除。
+- **付款方式可切换**：界面右上角一键切换 **经验等级 ⇄ 可用属性点数**，两种都**不消耗青金石**。
+  创造模式免经验（与原版附魔台一致），属性点数照扣。
+- **定价**（`crafting/PortableInfuser`）：稀有度基础价（常见 3 / 少见 4 / 稀有 6 / 极稀有 8）× 等级，
+  仅限宝藏的附魔（经验修补、冰霜行者…）**×2**；**按差额结算** —— 已有的附魔不重复收费，降级**退差价**。
+  定价用原版稀有度而不是拍脑袋的常数，好处是对模组附魔自动生效（它们也有自己的稀有度）。
+- **另外三项进阶档功能**：
+  - **经验修复**：花等级把耐久直接修满（每 1 级修回「总耐久 ÷ 25」，不需要修复材料）；
+  - **经验回收**：拆掉全部附魔返还计价总额的 **60%**，同时清掉铁砧的累积惩罚（否则附魔没了、
+    惩罚还留着，拿去铁砧改会莫名贵一大截）；
+  - **做附魔书**：槽里放书即可，书能承载全部附魔，选好就产出对应附魔书。
+- **铁砧限定组合**：原版铁砧组合不校验附魔类别，这里同样放宽到**同一大类**
+  （斧头加锋利、头盔加深海探索者、剑加效率…），但不会到「任意物品随便附」的地步。
+  互斥的附魔（锋利 / 亡灵杀手 / 节肢杀手…）在界面上标「冲突」并禁止选择。
+- **实现**：菜单与界面全部自建 —— `PortableInfuserMenu`（一个物品槽 + 玩家背包，双端同一个类：
+  不读书架、不写方块，没有世界侧依赖）+ `PortableInfuserScreen`（自己画的深色扁平界面，
+  可滚动清单 + 行内箭头）。原版那套「随机三档 + 数据槽同步线索」的模型（`EnchantmentMenu` 子类、
+  免青金石基类、`EnchantPowerPacket`、附魔强度隐藏属性）整体删除。
+  客户端用与服务端**同源**的纯函数现算清单与价格，只有点「附魔 / 修复 / 回收」才发
+  `InfuserActionPacket`，服务端**重新校验并结算**（附魔条目数还有上限，防止构造超长包）。
+- **旧存档迁移**：以前投在「随身附魔台」上的点数、以及被拆到隐藏属性 `enchant_power` 上的点数
+  **全部退回可用点数**，只留 1 点在开关上 —— 附魔强度（书架强度）这条限制随本次改造取消，想附多高就多高。
+- 协议版本 `17 → 18`（附魔强度包换成了附魔动作包）。
+
+## [1.36.3] - 2026-10-07
+
+### 🖌️ 「使用速度」把刷子刷废了
+
+- **现象**：加了「使用速度」（满级 Lv.100 = +200%）之后，**刷子完全不能用** —— 对着可疑的沙 / 沙砾
+  右键毫无反应，既没有刷的声音也没有进度。
+- **原因**（对着 1.20.1 的字节码核过）：
+  - 原版 `BrushItem` 的 `getUseDuration` = 200，而**真正"刷一下"只发生在 `onUseTick` 的特定节拍上**：
+    它按 `i = 200 - 剩余tick + 1` 算出进度，只在 `i % 10 == 5`（即 i = 5 / 15 / 25 … 195）的那些 tick
+    里播放刷的声音并调用 `BrushableBlockEntity.brush(...)`；
+  - 本属性的加速方式是「**每 tick 从剩余使用时长里多扣若干 tick**」（满级时一刀扣 200），
+    结果第一 tick 就把剩余压成 0 —— 而原版 `LivingEntity#updateUsingItem` 只在
+    **剩余 > 0 时**才调用 `onUseTick`，于是这次使用从头到尾一次 `onUseTick` 都没跑，
+    刷子的全部逻辑（声音 + 刷进度 + 掉耐久）都被跳过，自然"刷不动"。
+- **修复**：
+  1. **刷子不参与加速**（服务端 `StatEventHandler#onItemUseTick` 与客户端 `ClientEventHandler`
+     各加一道 `instanceof BrushItem` 的排除）—— 刷子恢复原版手感，其余物品照常加速；
+  2. 顺手把加速后的剩余时长**下限从 0 提到 1**：原版是靠「剩余 ≤ 0」才结算 `completeUsingItem()`、
+     靠「剩余 > 0」才调 `onUseTick`，压到 0 会让这次使用一个逐 tick 逻辑都不跑。吃东西虽然照样
+     能结算，但任何依赖 `onUseTick` 的物品（含其它模组的）都会失效。
+- 已知但**本次未改**：满级下「盾牌 / 望远镜」这类"持续按住"的物品会因为使用时长被压缩而提前结束
+  （盾牌约 18 秒后自动放下）。它们的行为由原版使用时长驱动，等有需要再单独排除。
+
+## [1.36.2] - 2026-10-07
+
+### 🩸 修「攻击削减生命上限」扣到自己身上
+
+- **现象**：玩家的最大生命值属性里出现一条 `-100 (infinitestats.reduce_max_health)`，自己的血上限被永久扣掉。
+- **原因**：`StatEventHandler.getPlayerAttacker` 把「伤害来源实体是玩家」一律当成玩家发起的攻击。而
+  **玩家被自己造成的伤害命中时，来源实体同样是玩家自己**（自己引爆的 TNT / 爆炸箭贴脸炸、
+  射上天又落回来的箭、自己召唤物的误伤等）。于是整套进攻属性作用到了自己身上：
+  - 「攻击削减生命上限」每命中一次就给自己叠一层负修饰符，累计成截图里的 `-100`；
+  - 自伤还会反过来给自己吸血（生命偷取）。
+- **修复**：
+  1. `getPlayerAttacker(LivingHurtEvent)` 增加「自伤不算攻击」判断 —— 受害者就是攻击者本人时返回
+     `null`，整个攻击分支（暴击 / 生命偷取 / 处决 / 范围攻击 / 护甲穿透 / 降上限 / 取消无敌帧…）
+     都不再作用到自己身上；
+  2. 生命偷取那里读的是 `DamageSource`（拿不到受害者），单独判一次，自伤不再吸血；
+  3. `AttackHandler.applyReduceMaxHealth` 兜底：`target == player` 直接返回。
+- **已经中招的存档**：那条修饰符是本模组用 `addTransientModifier` 加的**瞬态**修饰符、不写入存档，
+  重进存档或死一次重生就会消失；若还在，可手动清除：
+  `/attribute <玩家> minecraft:generic.max_health modifier remove a1b2c3d4-0000-4e5f-8a9b-0c1d2e3f4a5b`
+
+## [1.36.1] - 2026-10-06
+
+### 🛠️ 随身工作台：修掉「Shift 连着做一大批」时的卡顿/假死
+
+- **现象**：在随身工作台里按住 Shift 连续取出成品（尤其倍率调高、且接了 RS / AE2 等存储网络
+  会自动补料时），客户端会卡住几秒甚至像假死。
+- **原因**：原版的 Shift 取出是「一次点击 = 一个循环里反复合成」，而结果槽每次取出后都会从
+  存储网络把材料补满，于是这个循环能一直转下去。而每次取出都走了下面这条放大链路：
+  - 原版消耗材料会**连续改动 9 个网格槽**，本模组用的 `TransientCraftingContainer` 每改一个槽
+    就回调一次 `slotsChanged`；
+  - `slotsChanged` 里要做**整张配方表查找**（+ Polymorph 查询）并**给客户端发一次包**；
+  - 补水阶段再改几个槽，又是一轮。
+
+  即：一次取出 ≈ 十几次配方查找 + 十几次发包；连做几十次就是上千次，主线程自然被卡住。
+- **修复**：
+  1. **批量抑制**（主要修复）：新增 `beginGridBatch / endGridBatch`，`AutoRefillResultSlot.onTake`
+     把「原版消耗 + 自动补料」整段包起来，期间 `slotsChanged` 直接返回，整段结束只重算并同步一次。
+     每次取出的配方查找 / 发包从十几次降到 1 次；
+  2. **连做封顶**（保险）：同一游戏刻内最多连做 `MAX_CRAFTS_PER_CLICK = 64` 次，超出后
+     `quickMoveStack` 返回空、原版循环随即结束 —— 防止任何情况下被拖进长循环。松手再点一次即可继续。
+- 补料逻辑本身未改（仍是「先网络、再背包」），只是把 `onTake` 里那段抽成了 `refill(...)`。
+- 单次取出、成品去向（背包 / 存储）、Polymorph 配方选择等行为均不变。
+
+## [1.36.0] - 2026-10-06
+
+### 💍 「死亡不掉落」现在也保留 Curios 饰品栏
+
+- **现象**：开启「死亡不掉落」后死亡，背包 / 盔甲 / 副手都保住了，但**饰品栏（Curios）里的东西
+  还是会掉在地上**。
+- **原因**：饰品栏是 Curios 挂在实体上的独立 capability，既不在原版 `Inventory` 的
+  `items / armor / offhand` 里，也不受原版 `keepInventory` 游戏规则保护；本模组此前只把
+  原版那 41 格挪走，饰品自然仍按 Curios 自己的规则掉落。
+- **修复**：新增 `compat/CuriosBridge`（纯反射，无需编译期依赖，Curios 未加载时全是空操作），
+  死亡瞬间把饰品也抓走清空、重生时放回原槽位：
+  - 抓取按 `{slot 槽位ID, index 槽位下标, stack 物品}` 记录，**槽位类型与下标都保留**，
+    放回时能精确回到原来那一格（`ring / necklace / back / hands …` 各自归位）；
+  - 这份记录跟着 `PlayerStats` 一起落盘、一起随实体克隆，玩家在死亡界面断线 / 服务器重启
+    也不会丢；
+  - **归还时机放在重生事件（`PlayerEvent.PlayerRespawnEvent`）而不是 `PlayerEvent.Clone`**：
+    Curios 自己也监听 Clone 并把旧实体的饰品整份拷到新实体上，若在 Clone 里先放回，
+    随后会被那份「已被清空」的数据覆盖掉；
+  - **安全策略是"宁可掉落，绝不凭空消失"**：抓取阶段任何异常就整份作废（返回 null，饰品栏
+    保持原样，让饰品照原版掉落）；归还阶段槽位不存在 / 类型不匹配 / 放不下，一律退回玩家背包，
+    背包也满了就丢在脚下。
+- 属性描述（`StatType` 与中英 `lang`）同步补上"饰品栏"。
+- **不影响**：未安装 Curios 时行为与之前完全一致；未开启「死亡不掉落」时饰品照常掉落。
+
+## [1.35.0] - 2026-10-06
+
+### 💥 「排斥」改为等价交换（ProjectE）SWRG 护盾式的弹飞效果
+
+- **效果**：排斥不再是"每 0.5 秒轻推一下敌对生物"，而是**每 tick** 把范围内的一切
+  沿"你 → 目标"方向弹开，推力大小约 0.65 格/tick **且几乎不随距离衰减** ——
+  所以生物一进入范围就会被弹飞好几格，而不是被稳稳挡在边缘。
+- **作用目标**（对齐 ProjectE 的 `WorldHelper#validRepelEntity`）：
+  - 生物（`Mob`，含动物，**不含玩家**）——旧实现会把队友/其他玩家一起推开，现在不会了；
+  - **飞行中的弹射物**（箭、雪球、火球……）会连同方向一起被吹偏；已插在地上的箭不受影响；
+  - **不推自己扔出去的弹射物**（否则自己的箭会被自己吹飞）；
+  - 目标 100% 击退抗性（铁傀儡、劫掠兽等）时推不动。
+- **实现**：重写 `AttackHandler.applyRepulsion`，新增 `isRepellable` / `repelEntity` 两个私有方法，
+  公式照搬 ProjectE 的 `WorldHelper#repelEntitiesSWRG` + `#repelEntity`：
+  `推力 = (目标位置 - 玩家位置) / (1.5 * (距离 + 0.1))`，每 tick 累加到目标速度上
+  （并置 `hasImpulse`），与 ProjectE 一致。
+  - 注：ProjectE 里**没有**叫 "Blast Ring" 的物品，这套排斥来自 **SWRG（Swiftwolf's Rending Gale）
+    戒指的 Shield 模式**，本模组对齐的就是它。
+- **与 ProjectE 的两处有意差异**：
+  1. 半径仍由属性点数缩放（每点 +0.5 格），ProjectE 是固定 5 格；
+  2. 额外乘目标的击退抗性系数（等同 `Entity#push(Entity)` 的处理），
+     ProjectE 的 `Entity#push` 不吃抗性 —— 不这样改的话百抗生物也会被推飞。
+- 推力现在是**三维**的（ProjectE 原样）：玩家悬空时，正下方的生物会被向下推开。
+- 属性描述（`StatType` 与中英 `lang`）同步更新为新行为。
+- 仍在服务端 tick 执行（扫描范围 = 排斥半径），无新增协议 / 存档字段。
+
+## [1.34.1] - 2026-10-05
+
+### 🌏 补齐配置界面里三个分类的中文 / 英文（AutoFish / WeatherControl / ChunkLoader）
+
+- **现象**：模组列表 → 本模组 → Config 打开配置界面后，右侧那几个分类页签显示成裸键
+  `config.infinitestats.category.AutoFish` / `…WeatherControl` / `…ChunkLoader`，
+  点进去条目名同样是 `config.infinitestats.AutoFish.autoFishRecastDelayMin` 这类原始键名。
+- **原因**：这三个配置段是后加的（自动钓鱼 / 天气控制 / 区块强加载），
+  `lang/zh_cn.json` 与 `lang/en_us.json` 里只补了段内**注释**（注释直接取自配置文件的 comment，
+  所以是中文），漏了**分类名与条目名**的翻译键。
+- **修复**：中英各补 7 条键 —— 3 个分类名
+  （`category.AutoFish` / `category.WeatherControl` / `category.ChunkLoader`）
+  + 4 个条目名（`AutoFish.autoFishRecastDelayMin` / `.autoFishRecastDelayMax`、
+  `WeatherControl.weatherCycleDuration`、`ChunkLoader.maxForcedChunks`）。
+- 顺带核对：其余 12 个配置段的分类名与全部条目名都已齐全，没有别的漏译。
+- 纯文案改动，无代码 / 协议 / 存档变化。
+
+## [1.34.0] - 2026-10-05
+
+### 🧪 随身附魔台不再需要青金石
+
+- **效果**：随身附魔台附魔**不需要青金石**（青金石槽可以空着），**经验等级照常消耗**，
+  三档消耗与附魔结果都与原版一致；玩家自己放进青金石槽的青金石**一颗不少**（不会被吃掉），
+  该槽从此纯属装饰。
+- **实现**（新增 `crafting/AbstractLapisFreeEnchantingMenu`，客户端与服务端的菜单都继承它）：
+  原版 `EnchantmentMenu` 有两处离不开青金石 —— `clickMenuButton` 开头的「青金石槽数量 ≥ 档位序号」检查，
+  以及附魔成功时的 `itemstack1.shrink(i)` 扣除。关键在于这两处用的是**同一个局部变量**，
+  它来自方法开头唯一一次 `enchantSlots.getItem(1)`；因此做法是：调原版逻辑**之前**把青金石槽
+  临时换成一整组虚拟青金石，`finally` 里原样还原 —— 检查因此通过、被扣掉的只是那份虚拟的，
+  玩家放进去的青金石不受影响（也就不用再特判创造模式）。
+  - 临时换槽期间**不同步槽位**（`PortableStationMenus.Enchanting#slotsChanged` 按
+    `isSlotSyncSuppressed()` 跳过 `broadcastChanges`），否则客户端会看到青金石槽闪一下「64 颗」；
+  - 另外覆写 `getGoldCount()` 恒返回 3：原版界面正是用它决定「显示附魔线索」还是
+    「显示还差几颗青金石」的 —— 不装作够用的话，槽里没青金石时玩家就看不到自己要附什么魔
+    （那一行只剩一个数字）。
+  - **客户端那份菜单也必须继承**：原版 `EnchantmentScreen.mouseClicked` 会先在本地的菜单上
+    调一次 `clickMenuButton`，校验不过连点击都不会发给服务端。
+- **只影响随身附魔台**：只有它的菜单继承这个基类，世界里的真附魔台行为一字未改。
+- 无协议、无存档结构变化。
+
+## [1.33.2] - 2026-10-05
+
+### 📦 构建时同时产出「含内嵌 jar」和「不含内嵌 jar」两个包
+
+- **背景**：本模组把 `pinyin_search` 用 JAR-in-JAR 内嵌在主产物里，好处是玩家 / 整合包无需另装；
+  但如果整合包**自己也装了** `pinyin_search`，两份 jar 会声明同一个 modId，可能出问题。
+- **新增产物**（`build` / `assemble` 会一起产出，都进 `build\libs\` 与 `dist\`）：
+
+  | 产物 | 内容 | 用途 |
+  |---|---|---|
+  | `<名>-<版本>.jar` | 含 `META-INF/jarjar/**`（内嵌 `pinyin_search-<版本>.jar` + `metadata.json`） | **默认分发这个**，玩家 / 整合包无需另装 |
+  | `<名>-<版本>-noembed.jar` | 不含上述内嵌内容，其余完全一致 | 整合包**已自带 `pinyin_search`** 时用这个，避免重复 modId |
+
+- **实现**：新增 `noEmbedJar` 任务，**直接从主产物里过滤掉 `META-INF/jarjar/**` 再打一个包**
+  （而不是从零再打一遍），因此除内嵌内容外与主产物完全一致 —— 同一份 refmap、mixin 配置与重映射结果，
+  两个包不会各自漂移。任务 `dependsOn reobfJar`：`jar` 产出的是 official 名的包，`reobf` 是**就地改写**，
+  取早了会拿到没重映射的那份；清单由本任务自己写（排除主产物里的 `META-INF/MANIFEST.MF`）。
+  两个 jar 共用同一份清单属性生成函数，作者名走按 UTF-8 读出的 `modAuthors`。
+- **`build.bat` 同步**：同时列出、复制两个包；`deploy` 时**若目标整合包 mods 里已有 `pinyin_search`，
+  自动改用 no-embed 包**并在输出里标明用了哪一个。
+- 纯构建 / 打包改动，游戏内行为与产物代码完全不变。
+
+## [1.33.1] - 2026-10-05
+
+### 🖥️ 随身附魔台的加点面板挪到界面正上方（原先被 JEI 物品列表压住）
+
+- **问题**：1.32.0 把「附魔强度 ±」面板画在原版附魔界面的**右侧**，而屏幕右侧正是 JEI 物品列表的位置
+  —— JEI 是 GUI 覆盖层、画在界面之后，于是列表直接把面板压住，`Lv.0 / 15`、可用点数与说明文字全都看不全。
+- **改动**：面板改画在附魔界面**正上方**（与界面同宽 176，不外扩）：顶部一行标题、
+  中间一行「`Lv.N / 15`」+ 左右两端的 `−` / `+`、底部一行「可用点数 N · 每点 +1（1 个书架）」。
+  原版附魔界面本身一行未改（仍是不改 `imageWidth`、只另画一块面板，贴图不会被裁切错位）。
+- 说明文字的完整版挪进 `+` 按钮的浮窗，面板里只留短句 —— 176 宽的面板放不下长句，硬放会挤成两行压到界面。
+- 纯界面布局改动，无协议、无存档结构变化。
+
 ## [1.33.0] - 2026-10-05
 
 ### 🌦️ 天气控制改为独立面板（点哪档切哪档）

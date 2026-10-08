@@ -1,8 +1,10 @@
 package com.infinitestats.client;
 
 import com.infinitestats.compat.PinyinSearchBridge;
+import com.infinitestats.compat.SlashBladeCompat;
 import com.infinitestats.network.EditItemPacket;
 import com.infinitestats.network.NetworkHandler;
+import com.infinitestats.util.EnchantLevelStore;
 import com.infinitestats.util.ItemEditUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -146,7 +148,7 @@ public class ItemEditorScreen extends Screen {
             for (String k : c.getAllKeys()) {
                 if (!k.equals("id") && !k.equals("lvl")) extra.put(k, c.get(k).copy());
             }
-            enchants.add(new EnchantEntry(c.getString("id"), c.getShort("lvl"), extra));
+            enchants.add(new EnchantEntry(c.getString("id"), EnchantLevelStore.read(c), extra));
         }
 
         ListTag att = ItemEditUtil.readAttributes(stack);
@@ -170,12 +172,27 @@ public class ItemEditorScreen extends Screen {
         addColumnWidgets(0, colX(0));
         addColumnWidgets(1, colX(1));
 
-        addRenderableWidget(button(leftPos + COL_L, topPos + FOOTER_Y, 100, FOOTER_H,
+        // 底部按钮区：4 键等宽居中（更多属性 / 拔刀剑 / 取消 / 应用）
+        int bw = 88, gap = 8;
+        int total = 4 * bw + 3 * gap;
+        int bx = leftPos + (GUI_W - total) / 2;
+        int by = topPos + FOOTER_Y;
+
+        addRenderableWidget(button(bx, by, bw, FOOTER_H,
                 "screen.infinitestats.item_editor.more",
                 b -> minecraft.setScreen(new EditItemMetaScreen(this))));
-        addRenderableWidget(button(leftPos + (GUI_W - 120) / 2, topPos + FOOTER_Y, 120, FOOTER_H,
+
+        // 「拔刀剑」：仅主手是拔刀剑时可点（拔刀剑模组未安装 / 手持别物时置灰）
+        Button bladeBtn = button(bx + (bw + gap), by, bw, FOOTER_H,
+                "screen.infinitestats.item_editor.blade",
+                b -> minecraft.setScreen(new SlashBladeEditScreen(this)));
+        ItemStack held = minecraft.player == null ? ItemStack.EMPTY : minecraft.player.getMainHandItem();
+        bladeBtn.active = SlashBladeCompat.isBlade(held);
+        addRenderableWidget(bladeBtn);
+
+        addRenderableWidget(button(bx + 2 * (bw + gap), by, bw, FOOTER_H,
                 "screen.infinitestats.item_editor.cancel", b -> onClose()));
-        addRenderableWidget(button(leftPos + GUI_W - COL_L - 100, topPos + FOOTER_Y, 100, FOOTER_H,
+        addRenderableWidget(button(bx + 3 * (bw + gap), by, bw, FOOTER_H,
                 "screen.infinitestats.item_editor.apply", b -> apply()));
     }
 
@@ -726,7 +743,7 @@ public class ItemEditorScreen extends Screen {
             for (EnchantEntry e : enchants) {
                 CompoundTag entry = e.extra().copy();
                 entry.putString("id", e.id());
-                entry.putShort("lvl", (short) Math.max(1, Math.min(e.level(), Short.MAX_VALUE)));
+                EnchantLevelStore.write(entry, Math.max(1, e.level()));
                 en.add(entry);
             }
         }

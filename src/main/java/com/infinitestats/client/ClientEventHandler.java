@@ -24,6 +24,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.item.BowItem;
+import net.minecraft.world.item.BrushItem;
 import net.minecraft.world.item.CrossbowItem;
 import net.minecraft.world.item.TridentItem;
 import net.minecraft.world.effect.MobEffectInstance;
@@ -60,6 +61,10 @@ public final class ClientEventHandler {
                     || event.getItem().getItem() instanceof CrossbowItem
                     || event.getItem().getItem() instanceof TridentItem;
 
+            // 刷子不参与加速（理由见服务端 StatEventHandler#onItemUseTick）：它的「刷」只发生在
+            // onUseTick 的特定节拍上，跳步会把这些节拍整段跳过，表现为右键刷不动。
+            if (event.getItem().getItem() instanceof BrushItem) return;
+
             float totalSpeed = 0;
             if (!isBow) {
                 totalSpeed = stats.getStatValue(StatType.fromId("use_speed"));
@@ -69,7 +74,8 @@ public final class ClientEventHandler {
 
             if (totalSpeed > 0) {
                 int extraReduction = Math.max(1, (int) (totalSpeed * 100));
-                event.setDuration(Math.max(0, event.getDuration() - extraReduction));
+                // 与服务端保持一致：至少留 1 tick，别把这次使用压到 0
+                event.setDuration(Math.max(1, event.getDuration() - extraReduction));
             }
         });
     }
@@ -369,8 +375,8 @@ public final class ClientEventHandler {
                 MenuScreens.register(ModMenuTypes.PORTABLE_CRAFTING_MENU.get(), PortableCraftingScreen::new);
                 // 随身铁砧沿用原版铁砧界面
                 MenuScreens.register(ModMenuTypes.PORTABLE_ANVIL_MENU.get(), AnvilScreen::new);
-                // 随身附魔台：原版附魔界面 + 右侧「附魔强度」加点
-                MenuScreens.register(ModMenuTypes.PORTABLE_ENCHANTING_MENU.get(), PortableEnchantingScreen::new);
+                // 随身进阶高级附魔台：自选附魔 / 修复 / 回收的自建界面（不再复用原版附魔界面）
+                MenuScreens.register(ModMenuTypes.PORTABLE_ENCHANTING_MENU.get(), PortableInfuserScreen::new);
             });
         }
 

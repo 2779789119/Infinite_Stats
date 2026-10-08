@@ -2,7 +2,12 @@ package com.infinitestats.crafting;
 
 import com.infinitestats.Config;
 import com.infinitestats.compat.PolymorphCompat;
+import com.infinitestats.emc.EmcPlayerData;
+import com.infinitestats.emc.EmcPlayerDataProvider;
+import com.infinitestats.emc.EmcPricing;
+import com.infinitestats.emc.EmcTransactions;
 import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket;
@@ -47,6 +52,26 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
     /** 成品去向：false=放入玩家背包（默认），true=放入存储空间。 */
     private boolean outputToStorage = false;
     private boolean fillingGrid;
+    /** 「消耗材料 + 自动补充」批量更新深度：>0 时抑制 slotsChanged，整批结束再统一重算一次。 */
+    private int gridBatchDepth;
+    /** 连做封顶用：本游戏刻已连做的次数与所属游戏刻。 */
+    private long craftBudgetTick = Long.MIN_VALUE;
+    private int craftsMadeThisTick;
+    /**
+     * 自上次提示以来，因材料不足而由 EMC 自动补齐所花掉的 EMC（服务端累计）。
+     * 只在真正花钱时累加，用于给玩家一条动作栏提示，避免「悄悄扣钱」。
+     */
+    private long emcSpentSinceLastReport;
+
+    /**
+     * 同一次点击（按住 Shift 连续取出成品）在**同一个游戏刻内**最多连做多少次。
+     * <p>
+     * 原版的 Shift 取出是「一次点击 = 一个循环里反复合成」，而本模组的结果槽会从存储网络
+     * 自动补料 —— 只要网络里有货，这个循环就能一直转。每做一次都要重算配方并给客户端发包，
+     * 次数多了（尤其配方数以千计的大型整合包）主线程就会被卡住。这里封个顶：超出后
+     * {@link #quickMoveStack} 返回空，原版循环随即结束，玩家松手再点一次即可继续。
+     */
+    private static final int MAX_CRAFTS_PER_CLICK = 64;
 
     public PortableCraftingMenu(int windowId, Inventory inv) {
         super(ModMenuTypes.PORTABLE_CRAFTING_MENU.get(), windowId);
@@ -142,7 +167,8 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
     /** 任意网格槽变化 → 重新计算合成结果并同步到客户端（复刻 vanilla CraftingMenu 逻辑） */
     @Override
     public void slotsChanged(Container container) {
-        if (fillingGrid || level.isClientSide() || !(player instanceof ServerPlayer serverPlayer)) {
+        if (fillingGrid || gridBatchDepth > 0
+                || level.isClientSide() || !(player instanceof ServerPlayer serverPlayer)) {
             return;
         }
         // 装了 Polymorph（多态合成）时交给它挑配方：它会按玩家此前在原版合成台 / 随身工作台
@@ -178,6 +204,32 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
         slotsChanged(craftSlots);
     }
 
+    /**
+     * 开始一次网格批量更新：期间 {@link #slotsChanged} 被抑制。
+     * 一次取料会连续改动多个网格槽，逐个重算（配方查找 + 发包）是卡顿的主要来源。
+     */
+    void beginGridBatch() {
+        gridBatchDepth++;
+    }
+
+    /** 结束批量更新；回到最外层时立刻重算一次并把结果槽同步给客户端。 */
+    void endGridBatch() {
+        if (gridBatchDepth > 0) gridBatchDepth--;
+        if (gridBatchDepth == 0) refreshResult();
+    }
+
+    /** 领取一次「连做」额度；同一游戏刻内超过 {@link #MAX_CRAFTS_PER_CLICK} 次即拒绝。 */
+    private boolean takeCraftBudget() {
+        long now = level.getGameTime();
+        if (now != craftBudgetTick) {
+            craftBudgetTick = now;
+            craftsMadeThisTick = 0;
+        }
+        if (craftsMadeThisTick >= MAX_CRAFTS_PER_CLICK) return false;
+        craftsMadeThisTick++;
+        return true;
+    }
+
     @Override
     public ItemStack quickMoveStack(Player player, int index) {
         ItemStack result = ItemStack.EMPTY;
@@ -186,6 +238,9 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
             ItemStack stack = slot.getItem();
             result = stack.copy();
             if (index == 0) {
+                // 连做封顶：超出后返回空，原版的「连续取出」循环会立即结束，
+                // 避免一次点击在同一个游戏刻里做上百次（每次都要重算配方 + 发包）
+                if (!takeCraftBudget()) return ItemStack.EMPTY;
                 // 结果槽：按当前去向设置，把成品送往背包或存储空间
                 if (this.outputToStorage) {
                     List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_CRAFTING);
@@ -256,6 +311,7 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
         ItemStack[] inventory = new ItemStack[player.getInventory().getContainerSize()];
         int[] originalCounts = new int[inventory.length];
         List<ItemStack> borrowed = new ArrayList<>();
+        List<ItemStack> emcBought = new ArrayList<>();
         for (int i = 0; i < inventory.length; i++) {
             inventory[i] = player.getInventory().getItem(i).copy();
             originalCounts[i] = inventory[i].getCount();
@@ -291,7 +347,13 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
                 }
             }
             if (taken.isEmpty()) {
+                // 与 EMC 联动：背包与存储网络都取不到时，用 EMC 从知识库采购 1 个（需已学过该物品）
+                taken = buyOneWithEmc(sp, ingredient);
+                if (!taken.isEmpty()) emcBought.add(taken.copy());
+            }
+            if (taken.isEmpty()) {
                 for (ItemStack stack : borrowed) returnMaterial(nets, stack);
+                refundEmc(sp, emcBought);
                 sp.sendSystemMessage(Component.literal("§c材料不足，已保留原配方和材料"));
                 return;
             }
@@ -314,6 +376,9 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
         refreshResult();
         player.getInventory().setChanged();
         broadcastChanges();
+
+        // 用了 EMC 采购就同步余额并提示，避免「悄悄扣钱」
+        if (!emcBought.isEmpty()) reportEmcSpent(sp);
     }
 
     private static ItemStack takeOne(ItemStack[] inventory, Ingredient ingredient) {
@@ -321,6 +386,56 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
             if (!stack.isEmpty() && ingredient.test(stack)) return stack.split(1);
         }
         return ItemStack.EMPTY;
+    }
+
+    // ========== EMC 联动：材料不足时用 EMC 从知识库采购 ==========
+
+    /** 用 EMC 采购 1 个匹配该原料的物品（需玩家已学过该物品），失败返回空。 */
+    private ItemStack buyOneWithEmc(ServerPlayer sp, Ingredient ingredient) {
+        if (ingredient == null || ingredient.isEmpty()) return ItemStack.EMPTY;
+        EmcPlayerData data = sp.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).orElse(null);
+        if (data == null) return ItemStack.EMPTY;
+        for (ItemStack match : ingredient.getItems()) {
+            ItemStack got = EmcTransactions.purchase(sp, data, match.copyWithCount(1), 1);
+            if (!got.isEmpty()) {
+                emcSpentSinceLastReport += EmcPricing.buyPrice(sp, got) * got.getCount();
+                return got;
+            }
+        }
+        return ItemStack.EMPTY;
+    }
+
+    /** 用 EMC 采购至多 count 个 template（自动补料路径），并累计花费。 */
+    private ItemStack buyWithEmc(Player player, ItemStack template, int count) {
+        if (count <= 0 || !(player instanceof ServerPlayer sp)) return ItemStack.EMPTY;
+        EmcPlayerData data = sp.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).orElse(null);
+        if (data == null) return ItemStack.EMPTY;
+        ItemStack got = EmcTransactions.purchase(sp, data, template, count);
+        if (!got.isEmpty()) {
+            emcSpentSinceLastReport += EmcPricing.buyPrice(sp, got) * got.getCount();
+        }
+        return got;
+    }
+
+    /** 回滚一批「用 EMC 采购」的材料：按同一价格公式把钱退回。 */
+    private void refundEmc(ServerPlayer sp, List<ItemStack> bought) {
+        if (bought.isEmpty()) return;
+        sp.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+            long refund = 0;
+            for (ItemStack s : bought) refund += EmcPricing.buyPrice(sp, s) * s.getCount();
+            data.addEmc(refund);
+            emcSpentSinceLastReport = Math.max(0, emcSpentSinceLastReport - refund);
+        });
+    }
+
+    /** 若自上次提示以来花过 EMC，则同步余额并给一条动作栏提示。 */
+    private void reportEmcSpent(ServerPlayer sp) {
+        long spent = emcSpentSinceLastReport;
+        emcSpentSinceLastReport = 0;
+        if (spent <= 0) return;
+        NetworkHandler.syncEmcToClient(sp);
+        sp.displayClientMessage(Component.translatable("message.infinitestats.emc.craft_paid",
+                EmcTransactions.format(spent)), true);
     }
 
     /**
@@ -348,9 +463,34 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
             for (int i = 0; i < before.length; i++) {
                 before[i] = craftSlots.getItem(i).copy();
             }
-            // 交给原版逻辑消耗一份材料（每个槽 -1，并处理余料/容器物）
-            super.onTake(player, stack);
-            if (player.level().isClientSide() || !(player instanceof ServerPlayer)) return;
+            // 「消耗材料 + 自动补充」期间抑制网格变更回调：原版消耗一份材料会连续改动 9 个网格槽，
+            // 而每改一个槽都会触发一次 slotsChanged（重算配方 + 给客户端发包）。Shift 连做几十次时
+            // 这会放大成上千次配方查找 —— 配方数以千计的大型整合包里就是一次明显的卡顿甚至假死。
+            // 因此整段流程走完后再统一重算一次（见 endGridBatch）。
+            menu.beginGridBatch();
+            boolean changed = false;
+            try {
+                // 交给原版逻辑消耗一份材料（每个槽 -1，并处理余料/容器物）
+                super.onTake(player, stack);
+                if (!player.level().isClientSide() && player instanceof ServerPlayer sp) {
+                    menu.emcSpentSinceLastReport = 0;
+                    changed = refill(player, before);
+                    // 补料时若用掉了 EMC，同步余额并提示玩家
+                    menu.reportEmcSpent(sp);
+                }
+            } finally {
+                menu.endGridBatch();
+            }
+            if (changed) menu.broadcastChanges();
+        }
+
+        /**
+         * 按取出前的网格快照，把被消耗掉的槽位从存储网络 / 玩家背包补回差额，使网格保持满料，
+         * 从而可以连续取出。仅在服务端调用。
+         *
+         * @return 是否真的补进了东西（没补就不用再广播一次容器内容）
+         */
+        private boolean refill(Player player, ItemStack[] before) {
             List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_CRAFTING);
             boolean changed = false;
             for (int i = 0; i < before.length; i++) {
@@ -374,6 +514,15 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
                         else got.grow(fromBag.getCount());
                     }
                 }
+                // 与 EMC 联动：网络与背包都补不齐时，用 EMC 采购剩余差额（需已学过该物品）
+                int stillMissing = deficit - got.getCount();
+                if (stillMissing > 0) {
+                    ItemStack fromEmc = menu.buyWithEmc(player, pre, stillMissing);
+                    if (!fromEmc.isEmpty()) {
+                        if (got.isEmpty()) got = fromEmc;
+                        else got.grow(fromEmc.getCount());
+                    }
+                }
                 if (got.isEmpty()) continue;
 
                 if (now.isEmpty()) {
@@ -384,7 +533,7 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
                 }
                 changed = true;
             }
-            if (changed) menu.broadcastChanges();
+            return changed;
         }
 
         /** 从玩家背包抽取至多 amount 个与模板同种（含 NBT）的物品，返回实际取得的堆。 */

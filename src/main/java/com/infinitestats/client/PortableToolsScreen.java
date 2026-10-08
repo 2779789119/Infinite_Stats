@@ -1,10 +1,8 @@
 package com.infinitestats.client;
 
-import com.infinitestats.crafting.PortableGuis;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
-import com.infinitestats.stats.StatType;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -46,8 +44,6 @@ public final class PortableToolsScreen extends Screen {
             "portable_cartography",
             "portable_grindstone");
 
-    /** 「随身附魔台」开关属性 id：点击后打开的附魔界面里可以调「附魔强度」。 */
-    private static final String ENCHANTING_ID = PortableGuis.STAT_ENCHANTING;
 
     private int leftPos;
     private int topPos;
@@ -80,17 +76,9 @@ public final class PortableToolsScreen extends Screen {
 
             boolean unlocked = isUnlocked(id);
             Component label = Component.translatable("stat.infinitestats." + id);
-            Component tip;
-            if (!unlocked) {
-                tip = Component.translatable("gui.infinitestats.tools.tip_locked", label);
-            } else if (ENCHANTING_ID.equals(id)) {
-                // 附魔强度是隐藏属性，面板里看不到 —— 在这里把当前强度告诉玩家
-                tip = Component.translatable("gui.infinitestats.tools.tip_enchanting",
-                        Math.round(stats.getStatValue(PortableGuis.STAT_ENCHANT_POWER)),
-                        maxEnchantPower());
-            } else {
-                tip = Component.translatable("gui.infinitestats.tools.tip_unlocked");
-            }
+            Component tip = unlocked
+                    ? Component.translatable("gui.infinitestats.tools.tip_unlocked")
+                    : Component.translatable("gui.infinitestats.tools.tip_locked", label);
 
             Button btn = Button.builder(label, b -> openTool(id))
                     .bounds(x, y, btnW, btnH)
@@ -151,12 +139,6 @@ public final class PortableToolsScreen extends Screen {
      */
     private boolean isUnlocked(String id) {
         return stats != null && stats.getEffectiveStatLevel(id) > 0;
-    }
-
-    /** 「附魔强度」属性的等级上限（＝满强度），用于提示文案。 */
-    private static int maxEnchantPower() {
-        StatType stat = StatType.fromId(PortableGuis.STAT_ENCHANT_POWER);
-        return stat == null ? 0 : stat.getMaxLevel();
     }
 
     @Override

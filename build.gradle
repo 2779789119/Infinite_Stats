@@ -29,6 +29,22 @@ sourceSets {
         compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
         runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
     }
+    // 第三方模组联动的「编译期存根」（源码在 src/compatApiStub/java）：
+    // Mixin 注解处理器要求 @Mixin 的目标类必须在**编译期**类路径上，否则报
+    // "Mixin target ... could not be found" 直接让构建失败；而 TACZ / Superb Warfare 对本模组
+    // 只是「装了才生效」的可选运行时联动 —— 把对方几十 MB 的 jar 塞进仓库不合适，也会随
+    // 对方升级变味。所以这里只把「被注入 / 被反射用到的成员」编译成空壳，
+    // 通过下面的 main.compileClasspath 供编译期使用；它的产物**不会**进 jar，运行时也永远不会被加载。
+    compatApiStub {
+        java.srcDir 'src/compatApiStub/java'
+        // 存根只用到原版类（ItemStack / Player / LivingEntity …），直接复用主源集的编译类路径。
+        // 注意这里取的是 configurations.compileClasspath 本身（而不是 sourceSets.main.compileClasspath）：
+        // 后者在下面被并入了存根的产物，写在一起会变成「任务依赖自己的产物」的循环依赖。
+        compileClasspath = configurations.compileClasspath
+    }
+    // 把存根产物只加到**主源集的编译类路径**上：Mixin 注解处理器据此解析 com.tacz.* 等目标，
+    // 但不会进 jar（jar 只打包 sourceSets.main.output 里的类，而存根在另一个源集的输出目录里）。
+    main.compileClasspath += sourceSets.compatApiStub.output
 }
 
 println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
@@ -100,10 +116,11 @@ dependencies {
     runtimeOnly fg.deobf("me.shedaniel.cloth:cloth-config-forge:${cloth_config_version}")
 
     // pinyin_search（通用拼音搜索库，包名 com.pinyinsearch / modId pinyin_search）
-    // —— 编译期 API + 运行期内嵌（JAR-in-JAR），玩家无需另装
+    // —— 编译期 API + 内嵌变体（JAR-in-JAR，见下面「打包」一节：
+    // 标准名产物**不**内嵌它，内嵌的那份是 `-all`）
     // transitive = false：JitPack 发布出来的 POM 把 Forge / MC 的一堆库都算作它的依赖
     // （netty / asm / antlr4 / oshi / brigadier / patchy / srgutils…），
-    // 不切断传递依赖的话 jarJar 会把它们全部嵌进本模组（主 jar 体积暴涨且可能撞类）。
+    // 不切断传递依赖的话 jarJar 会把它们全部嵌进本模组（实测主 jar 从 875 KB 涨到 91.7 MB / 116 个嵌套 jar）。
     // 我们只需要它自己那一个 mod jar；它真正需要的 fastutil 由 MC 自带。
     compileOnly('com.github.2779789119:pinyinsearch:1.1.3') { transitive = false }
     // 注意：jarJar 只接受 maven 区间版本（写精确版本会报 "The given version specification is invalid"）
@@ -130,23 +147,24 @@ mixin {
 //     转成 SRG 名（报 No refMap loaded），所有注入 Critical injection failure，启动即崩。
 // 显式声明成 compileJava 的输出后，它会一起进缓存条目，FROM-CACHE 也能被正确还原。
 tasks.named('compileJava', JavaCompile).configure {
+    // 先编译第三方模组的编译期存根（src/compatApiStub）—— 注解处理器要靠它解析 @Mixin 的目标类
+    dependsOn tasks.named('compileCompatApiStubJava')
     outputs.file(layout.buildDirectory.file("tmp/compileJava/${mod_id}.refmap.json"))
 }
 
 // ============================================================
-// JAR-in-JAR：把依赖里的 pinyin_search 内嵌进本模组 jar
-// （走 Forge 的 JarJar 机制，运行时当作嵌套模组加载，玩家无需另装）
+// 打包：两个产物（assemble / build 一起产出，一内嵌一不内嵌）
+//   <名>-<版本>.jar        不内嵌 —— 标准产物名。整合包自己装了 pinyin_search 时用它
+//   <名>-<版本>-all.jar    内嵌 pinyin_search（Forge JAR-in-JAR）—— 没另装拼音库时用它
+// 为什么不再合并：原先 `jar` 任务会把 jarJar 的 `META-INF/jarjar/**` 并进主产物，
+//   于是主产物与 `-all` 内容逐字节相同 —— 一次构建出三个包（主产物 / `-all` / 过滤出来的
+//   `-noembed`），分发时全靠肉眼分辨。现在不合并：主产物本身就不内嵌，`-all` 才内嵌，
+//   两个包各自对应一种内容，名字也能看出区别，`-noembed` 变体因此不再需要。
 // ============================================================
 jarJar.enable()
+tasks.named('assemble') { dependsOn tasks.named('jarJar') }
 
-// jarJar 默认只在独立的 `<jar 名>-all.jar` 里带上 META-INF/jarjar/*，主产物不带。
-// 这里把内嵌部分并进主产物，按既有习惯分发主 jar 也能带上 pinyin_search。
 tasks.named('jar', Jar).configure {
-    dependsOn tasks.named('jarJar')
-    from({ zipTree(tasks.named('jarJar').get().archiveFile.get().asFile) }) {
-        include 'META-INF/jarjar/**'
-    }
-
     // 兜底校验：refmap 没进 jar 就直接让构建失败。
     // 缺 refmap 的 jar 依然能编译、能装、能启动到一半，只在 Mixin 注入阶段炸——
     // 这类「产得出来但必定崩」的包不应该被分发出去。
@@ -191,21 +209,30 @@ tasks.named('processResources', ProcessResources).configure {
     }
 }
 
+// 两个 jar 共用同一份清单属性（作者名用按 UTF-8 读出来的 modAuthors，见上面的说明）
+def manifestAttributes = { Object archiveVersion ->
+    return [
+            "Specification-Title"     : mod_id,
+            "Specification-Vendor"    : modAuthors,
+            "Specification-Version"   : "1",
+            "Implementation-Title"    : project.name,
+            "Implementation-Version"  : archiveVersion.toString(),
+            "Implementation-Vendor"   : modAuthors,
+            "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+    ]
+}
+
 jar {
     manifest {
-        attributes([
-                "Specification-Title"     : mod_id,
-                "Specification-Vendor"    : modAuthors,
-                "Specification-Version"   : "1",
-                "Implementation-Title"    : project.name,
-                "Implementation-Version"  : project.jar.archiveVersion,
-                "Implementation-Vendor"   : modAuthors,
-                "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
-        ])
+        attributes(manifestAttributes(project.jar.archiveVersion))
     }
 }
 
 jar.finalizedBy('reobfJar')
+
+// 注：`<名>-<版本>.jar` 就是唯一产物（内容 = 编译产物 + 资源 + refmap，不带内嵌 jar）。
+// reobf 是**就地改写** jar 任务的那份，所以 build\libs 里的就是重映射后的成品。
+
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'

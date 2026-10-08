@@ -13,10 +13,14 @@ import net.minecraft.world.damagesource.CombatRules;
 import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.damagesource.DamageType;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.List;
 import java.util.UUID;
@@ -85,7 +89,7 @@ public class AttackHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
-        // 排斥：持续推开周围的敌对生物
+        // 排斥：持续推开周围的生物与飞行中的弹射物
         applyRepulsion(player, stats, tickCount);
     }
 
@@ -279,6 +283,10 @@ public class AttackHandler implements StatEffectHandler {
         float reduce = stats.getStatValue(StatType.fromId("reduce_max_health"));
         if (reduce <= 0) return;
 
+        // 兜底：绝不给攻击者自己扣上限。自伤已在 getPlayerAttacker 里被排除，
+        // 这里再挡一层，确保无论如何都不会让玩家把自己永久削成 1 点血。
+        if (target == player) return;
+
         var maxHp = target.getAttribute(Attributes.MAX_HEALTH);
         if (maxHp == null) return;
 
@@ -325,6 +333,61 @@ public class AttackHandler implements StatEffectHandler {
         target.setHealth((float) Math.min(oldHealth, maxHp.getValue()));
     }
 
+    /** 「额外打击」的次数上限，与属性面板上的 maxLevel 保持一致。 */
+    public static final int MAX_EXTRA_STRIKES = 8;
+
+    /** 「额外打击」每次打击的伤害比例（默认 0.2 = 20%），配置尚未加载时回退到默认值。 */
+    public static double extraStrikeDamageRatio() {
+        try {
+            double ratio = com.infinitestats.Config.EXTRA_STRIKE_DAMAGE_RATIO.get();
+            return Double.isFinite(ratio) && ratio > 0 ? ratio : 0.0;
+        } catch (Throwable ignored) {
+            return 0.0; // 配置尚未加载
+        }
+    }
+
+    /**
+     * 「额外打击」的次数：等级即次数（被「功能开关」关闭时 getStatValue 返回 0，自动失效）。
+     * 属性点可以为负（界面允许），因此这里把负数一律按 0 处理。
+     */
+    public static int extraStrikeCount(PlayerStats stats) {
+        float value = stats.getStatValue("extra_strike");
+        if (!(value > 0) || !Float.isFinite(value)) return 0;
+        return Math.min(MAX_EXTRA_STRIKES, (int) value);
+    }
+
+    /**
+     * 额外打击：在本次伤害之外，对同一目标追加 N 次独立结算的额外属性伤害。
+     * <p>
+     * 为什么用 {@code setHealth} 直接扣血，而不是循环调用 {@code target.hurt(...)}：
+     * 本方法是从 {@code LivingDamageEvent} 里调用的（此刻正处在目标本次受伤的
+     * {@code actuallyHurt} 内部），嵌套一次 {@code hurt()} 会让「同一次受击」走两遍死亡收尾
+     * —— 掉落物、成就、击杀进度都会重复触发。直接扣血后，死亡依旧由外层本次受伤的
+     * 原版收尾负责（{@code setHealth(getHealth() - f)} → {@code getHealth() <= 0} → {@code die(玩家伤害来源)}），
+     * 击杀归属与掉落保持正常，这与本模组「真实伤害」的做法一致。
+     * <p>
+     * 伤害按「次」结算，但总量固定 = 本次伤害 × 比例 × 次数，目标倒下即停止，不会因为循环而漂移。
+     *
+     * @param baseDamage 本次实际造成的伤害（已扣除护甲与减伤，取 {@code LivingDamageEvent#getAmount()}）
+     */
+    public static void applyExtraStrikes(PlayerStats stats, float baseDamage, LivingEntity target) {
+        int strikes = extraStrikeCount(stats);
+        if (strikes <= 0 || !(baseDamage > 0) || !Float.isFinite(baseDamage)) return;
+
+        double ratio = extraStrikeDamageRatio();
+        if (!(ratio > 0)) return;
+
+        double perStrike = (double) baseDamage * ratio;
+        if (!(perStrike > 0) || !Double.isFinite(perStrike)) return;
+
+        for (int i = 0; i < strikes; i++) {
+            if (target.isRemoved() || target.isDeadOrDying()) return;
+            double hp = target.getHealth();
+            if (hp <= 0) return;
+            target.setHealth((float) Math.max(0.0, hp - perStrike));
+        }
+    }
+
     /**
      * 应用范围攻击：对目标周围敌人造成 50% 伤害（直接削减，无递归重入）
      */
@@ -344,40 +407,75 @@ public class AttackHandler implements StatEffectHandler {
     }
 
     /**
-     * 应用排斥：持续将周围敌对生物推开（每 10 tick 触发一次）
+     * 应用排斥：每 tick 把周围的生物与飞行中的弹射物推开。
+     * <p>
+     * 行为对齐 ProjectE 的 SWRG 护盾（{@code WorldHelper#repelEntitiesSWRG}）：
+     * 作用范围是以玩家为中心的立方体，推力沿"玩家 → 目标"方向，大小为
+     * {@code 距离 / (1.5 * (距离 + 0.1))} —— 距离越近推得越"实"，但整体近似一个
+     * 与距离无关的恒定推力（约 0.65 单位/tick），所以生物一进入范围就会被弹飞出去，
+     * 而不是被稳稳地挡在边缘。
+     * <p>
+     * 两处与 ProjectE 的差异：
+     * 1. 半径由属性点数缩放（每点 +0.5 格），ProjectE 是固定 5 格；
+     * 2. 额外乘以目标的击退抗性系数（与 {@code Entity#push(Entity)} 一致），
+     *    否则百抗生物（铁傀儡等）也会被推飞。
      */
     public static void applyRepulsion(ServerPlayer player, PlayerStats stats, long tickCount) {
         float radius = stats.getStatValue(StatType.fromId("repulsion"));
         if (radius <= 0) return;
-        if (tickCount % 10 != 0) return;
 
-        AABB area = player.getBoundingBox().inflate(radius, radius + 1, radius);
-        List<LivingEntity> nearby = player.level().getEntitiesOfClass(LivingEntity.class, area,
-                e -> e.isAlive() && e != player && !e.isAlliedTo(player));
+        AABB area = player.getBoundingBox().inflate(radius);
+        List<Entity> nearby = player.level().getEntitiesOfClass(Entity.class, area,
+                e -> isRepellable(e, player));
 
-        for (LivingEntity e : nearby) {
-            // 手动计算"从玩家指向实体"的水平方向并施加推力，
-            // 这样无论 knockback 的 (x,z) 语义如何，都能以玩家为中心向四周推开
-            double dx = e.getX() - player.getX();
-            double dz = e.getZ() - player.getZ();
-            double dist = Math.sqrt(dx * dx + dz * dz);
-            if (dist < 1e-5) {
-                // 实体与玩家几乎重合时，给一个随机水平方向
-                double angle = player.getRandom().nextDouble() * Math.PI * 2.0;
-                dx = Math.cos(angle);
-                dz = Math.sin(angle);
-                dist = 1.0;
-            }
-            double resist = 1.0 - e.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE);
-            if (resist > 0.0) {
-                double strength = 0.6 * resist / dist;
-                e.setDeltaMovement(
-                        e.getDeltaMovement().x + dx * strength,
-                        e.getDeltaMovement().y,
-                        e.getDeltaMovement().z + dz * strength
-                );
-                e.hasImpulse = true;
-            }
+        Vec3 center = player.position();
+        for (Entity e : nearby) {
+            repelEntity(center, e);
         }
+    }
+
+    /**
+     * 排斥的目标筛选，规则同 ProjectE：只推生物（不推玩家）与"未落地"的弹射物，
+     * 且不推自己扔出去的弹射物；旁观者一律不推。
+     */
+    private static boolean isRepellable(Entity entity, ServerPlayer player) {
+        if (entity.isSpectator() || entity == player) return false;
+        if (entity instanceof Projectile projectile) {
+            // 已落地的弹射物（插在地上的箭等）不动
+            if (projectile.onGround()) return false;
+            Entity owner = projectile.getOwner();
+            return owner == null || !player.getUUID().equals(owner.getUUID());
+        }
+        return entity instanceof Mob;
+    }
+
+    /**
+     * 沿"中心 → 实体"方向施加一次推力，并保留实体原有的速度分量。
+     */
+    private static void repelEntity(Vec3 center, Entity entity) {
+        Vec3 offset = entity.position().subtract(center);
+        double distance = offset.length() + 0.1;
+        Vec3 direction;
+        if (offset.lengthSqr() < 1.0E-10) {
+            // 与玩家几乎重合时给一个随机水平方向，避免推力为零、卡在玩家身上
+            double angle = entity.level().getRandom().nextDouble() * Math.PI * 2.0;
+            direction = new Vec3(Math.cos(angle), 0.0, Math.sin(angle))
+                    .scale(1.0 / (1.5 * distance));
+        } else {
+            direction = offset.scale(1.0 / (1.5 * distance));
+        }
+
+        // 击退抗性越高被推得越少（100% 抗性 → 完全推不动）
+        double susceptibility = entity instanceof LivingEntity living
+                ? 1.0 - living.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE)
+                : 1.0;
+        if (susceptibility <= 0.0) return;
+
+        Vec3 delta = entity.getDeltaMovement();
+        entity.setDeltaMovement(
+                delta.x + direction.x * susceptibility,
+                delta.y + direction.y * susceptibility,
+                delta.z + direction.z * susceptibility);
+        entity.hasImpulse = true;
     }
 }

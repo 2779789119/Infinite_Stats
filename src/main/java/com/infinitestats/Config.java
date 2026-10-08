@@ -146,6 +146,22 @@ public final class Config {
     /** 每个维度最多可同时强加载的区块数量。 */
     public static ForgeConfigSpec.IntValue CHUNK_LOADER_MAX_FORCED_CHUNKS;
 
+    // ========== 额外打击设置 ==========
+
+    /** 「额外打击」每次打击造成的伤害占本次伤害的比例。 */
+    public static ForgeConfigSpec.DoubleValue EXTRA_STRIKE_DAMAGE_RATIO;
+
+    // ========== 无限能源：能量方块设置 ==========
+
+    /** 「无限能源」是否也覆盖玩家自己放置的能量方块（方块实体上的 FE 能量源）。 */
+    public static ForgeConfigSpec.BooleanValue INFINITE_ENERGY_BLOCKS;
+
+    /** 能量方块的扫描半径（方块），以玩家为中心，水平与垂直方向同半径。 */
+    public static ForgeConfigSpec.IntValue ENERGY_BLOCK_RADIUS;
+
+    /** 能量方块的扫描 / 补电间隔（tick）。 */
+    public static ForgeConfigSpec.IntValue ENERGY_BLOCK_INTERVAL;
+
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
 
@@ -260,10 +276,10 @@ public final class Config {
                          "例如 lossRate=0.2 时学习一个 100 EMC 的物品获得 80 EMC。")
                 .defineInRange("emcLossRate", 0.0, 0.0, 1.0);
         PE_AUTO_LEARN = builder
-                .comment("等价交换（ProjectE）联动：自动学习【全局主开关】。",
-                         "仅在检测到 projecte 模组时生效；未安装 ProjectE 时无任何作用。",
+                .comment("等价交换「自动学习」【全局主开关】（常驻功能，不依赖是否安装 ProjectE）。",
                          "开启后，玩家还需要在属性面板投入 5 点解锁「pe_auto_learn」属性，",
-                         "解锁后拾取 / 合成的物品会自动加入 ProjectE 转化知识库。",
+                         "解锁后拾取 / 合成的物品会自动记入本模组的 EMC 知识库；",
+                         "若同时安装了 ProjectE，也会一并写入其转化知识库。",
                          "关闭此开关则所有玩家（无论是否加点）的自动学习全部禁用。")
                 .define("autoLearnProjectE", true);
         EMC_FALLBACK_VALUE = builder
@@ -354,6 +370,35 @@ public final class Config {
                          "强加载的区块即使附近没有玩家也会被服务端持续加载，数量越多服务器负担越重，",
                          "因此这里做硬性上限，防止误操作拖垮服务器。")
                 .defineInRange("maxForcedChunks", 16, 1, 256);
+        builder.pop();
+
+        // 额外打击设置
+        builder.push("ExtraStrike");
+        EXTRA_STRIKE_DAMAGE_RATIO = builder
+                .comment("「额外打击」每次打击造成的伤害占本次伤害的比例（默认 0.2 = 20%）。",
+                         "追加伤害总量 = 本次伤害 × 该比例 × 额外打击等级（最多 8 级，即最高 160%）。",
+                         "额外打击独立结算并忽略护甲与减伤；设为 0 可只保留属性条目、不造成伤害。")
+                .defineInRange("extraStrikeDamageRatio", 0.2, 0.0, 10.0);
+        builder.pop();
+
+        // 无限能源：能量方块设置
+        builder.push("InfiniteEnergy");
+        INFINITE_ENERGY_BLOCKS = builder
+                .comment("「无限能源」是否覆盖世界里的方块。",
+                         "true（默认）= 在玩家自身携带 / 骑乘的能量源之外，再把玩家【自己放置】的",
+                         "FE 能量方块（储能方块、耗电机器、发电机等，方块实体上挂能量能力的）也补满；",
+                         "false = 只补玩家自身携带 / 骑乘的能量源，不碰世界里的任何方块。",
+                         "归属按「谁放的」记录，只补玩家本人放置的方块，不会影响别人或公共机器。")
+                .define("infiniteEnergyBlocks", true);
+        ENERGY_BLOCK_RADIUS = builder
+                .comment("能量方块的扫描半径（方块）。以玩家为中心，水平与垂直方向同半径。",
+                         "只补该范围内、玩家本人放置的能量方块。数值越大覆盖越广，但每次扫描的方块实体越多、开销越高。")
+                .defineInRange("energyBlockRadius", 16, 1, 64);
+        ENERGY_BLOCK_INTERVAL = builder
+                .comment("能量方块的扫描 / 补电间隔（tick，20tick = 1 秒），默认 20tick = 1 秒。",
+                         "方块实体扫描比遍历背包贵，所以单独用这个间隔节流；间隔越短补得越勤、开销越高。",
+                         "玩家自身携带 / 骑乘的能量源不受此项影响，仍是每 tick 补满。")
+                .defineInRange("energyBlockInterval", 20, 1, 200);
         builder.pop();
 
         SPEC = builder.build();

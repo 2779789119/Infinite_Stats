@@ -15,19 +15,19 @@ import net.minecraftforge.network.NetworkHooks;
  * <ul>
  *   <li><b>末影箱</b>：原版 9×3 箱子菜单（{@code MenuType.GENERIC_9x3}），容器直接接
  *       {@code player.getEnderChestInventory()}，因此与原版末影箱共用同一份库存；</li>
- *   <li><b>锻造台 / 切石机 / 织布机 / 制图台 / 磨石 / 附魔台</b>：原版菜单算法 + 解除方块校验，
+ *   <li><b>锻造台 / 切石机 / 织布机 / 制图台 / 磨石</b>：原版菜单算法 + 解除方块校验，
  *       见 {@link PortableStationMenus}。它们需要一个真实的 {@code ContainerLevelAccess}
- *       才能正常计算成品与附魔等级，因此统一走 {@link PortableStationMenus#contextOf}，
- *       只是把「必须站在对应方块旁」这条校验去掉了。附魔台的强度另由点数决定（见下）。</li>
+ *       才能正常计算成品，因此统一走 {@link PortableStationMenus#contextOf}，
+ *       只是把「必须站在对应方块旁」这条校验去掉了；</li>
+ *   <li><b>进阶高级附魔台</b>：不是「复用原版菜单」，而是自选附魔的全新菜单 + 界面
+ *       （见 {@link PortableInfuserMenu} 与 {@link PortableInfuser}）——
+ *       自选附魔、改已有附魔、经验修复、经验回收、制作附魔书，付款可用经验等级或属性点数。</li>
  * </ul>
  */
 public final class PortableGuis {
 
-    /** 「随身附魔台」属性 id：1 点解锁的开关（是否能用随身附魔台）。 */
+    /** 「随身附魔台」属性 id：1 点解锁的开关（是否能用随身进阶高级附魔台）。 */
     public static final String STAT_ENCHANTING = "portable_enchanting";
-
-    /** 「附魔强度」属性 id：隐藏属性，只在随身附魔台界面里加点（每点等价于原版 1 个书架）。 */
-    public static final String STAT_ENCHANT_POWER = "enchant_power";
 
     private PortableGuis() {}
 
@@ -47,15 +47,16 @@ public final class PortableGuis {
     }
 
     /**
-     * 为玩家打开随身附魔台。
-     *
-     * @param enchantPower 附魔强度（等价于原版书架数量），由隐藏属性 `enchant_power` 的点数决定
+     * 为玩家打开随身进阶高级附魔台（调用方需先校验属性开关）。
+     * <p>
+     * 与服务端其它随身站点不同，这里<b>不</b>复用原版附魔菜单：进阶高级附魔台是「自己挑附魔」
+     * 的全新界面（自选附魔 + 改已有附魔 + 经验修复 + 经验回收 + 制作附魔书），
+     * 与「三档随机附魔」的原版附魔台没有共用逻辑，见 {@link PortableInfuserMenu}。
      */
-    public static void openEnchanting(ServerPlayer player, int enchantPower) {
-        PortableStationMenus.Context context = PortableStationMenus.contextOf(player);
+    public static void openEnchanting(ServerPlayer player) {
         NetworkHooks.openScreen(player, new SimpleMenuProvider(
-                (windowId, inv, p) -> new PortableStationMenus.Enchanting(windowId, inv, context, enchantPower),
-                Component.translatable("container.enchant")));
+                (windowId, inv, p) -> new PortableInfuserMenu(windowId, inv),
+                Component.translatable("stat.infinitestats.portable_enchanting")));
     }
 
     /** 为玩家打开随身切石机。 */
@@ -99,7 +100,7 @@ public final class PortableGuis {
     public static boolean openStation(ServerPlayer player, PlayerStats stats, String toolId) {
         if (toolId == null) return false;
         switch (toolId) {
-            case STAT_ENCHANTING -> openEnchanting(player, enchantPowerOf(stats));
+            case STAT_ENCHANTING -> openEnchanting(player);
             case "portable_stonecutter" -> openStonecutter(player);
             case "portable_loom" -> openLoom(player);
             case "portable_cartography" -> openCartography(player);
@@ -110,11 +111,5 @@ public final class PortableGuis {
             }
         }
         return true;
-    }
-
-    /** 「附魔强度」当前值（＝在随身附魔台界面里投入的点数，属性被「功能开关」关闭时按 0 计）。 */
-    public static int enchantPowerOf(PlayerStats stats) {
-        if (stats == null) return 0;
-        return Math.max(0, Math.round(stats.getStatValue(STAT_ENCHANT_POWER)));
     }
 }

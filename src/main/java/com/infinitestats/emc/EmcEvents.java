@@ -179,7 +179,7 @@ public final class EmcEvents {
                     source.sendFailure(Component.literal("你已经学习过该物品了"));
                     return;
                 }
-                long sale = EmcDatabase.getSellValue(held, 1);
+                long sale = EmcPricing.sellValue(player, held, 1);
                 data.learnAndConvert(itemId, sale, held.getTag());
                 Component name = held.getHoverName();
                 held.shrink(1);
@@ -203,7 +203,7 @@ public final class EmcEvents {
                     long emcValue = EmcDatabase.getEmc(stack);
                     if (emcValue <= 0) continue;
 
-                    long sale = EmcDatabase.getSellValue(stack, 1);
+                    long sale = EmcPricing.sellValue(player, stack, 1);
                     data.learnAndConvert(itemId, sale, stack.getTag());
                     stack.shrink(1);
                     learned.incrementAndGet();

@@ -4,18 +4,31 @@
   "package": "com.infinitestats.mixin",
   "compatibilityLevel": "JAVA_17",
   "refmap": "infinitestats.refmap.json",
+  "plugin": "com.infinitestats.mixin.InfiniteStatsMixinPlugin",
   "mixins": [
     "ItemCombinerMenuAccessor",
     "MerchantMenuAccessor",
     "AnvilMenuMixin",
     "AnimalMixin",
     "EntityMoveRelativeMixin",
-    "FishingHookAccessor"
+    "FishingHookAccessor",
+    "EnchantmentMixin",
+    "EnchantmentHelperMixin",
+    "TaczGunScriptApiMixin",
+    "TaczGunItemMixin",
+    "SbwGunDataMixin",
+    "SbwGunItemMixin",
+    "SbwVehicleMixin",
+    "SbwVehicleEnergyStorageMixin",
+    "CreateKineticNetworkMixin",
+    "CreateKineticBlockEntityMixin"
   ],
   "client": [
-    "AnvilScreenMixin"
+    "AnvilScreenMixin",
+    "TaczCameraRecoilMixin",
+    "SbwClientEventHandlerMixin"
   ],
   "injectors": {
-    "defaultRequire": 1
+    "defaultRequire": 0
   }
 }

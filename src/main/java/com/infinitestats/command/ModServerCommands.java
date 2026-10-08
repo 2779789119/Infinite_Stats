@@ -13,14 +13,18 @@ import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import com.infinitestats.stats.Waypoint;
+import com.infinitestats.util.EnchantText;
 import com.infinitestats.util.TeleportUtil;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.commands.arguments.ResourceArgument;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
@@ -37,6 +41,9 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.MenuType;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.enchantment.Enchantment;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.level.Level;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.network.NetworkHooks;
@@ -77,6 +84,15 @@ public final class ModServerCommands {
                                 .executes(ModServerCommands::openEnderChest))
                         .then(Commands.literal("smithing")
                                 .executes(ModServerCommands::openSmithing))
+                        // 附魔上限突破的配套 OP 工具：/infstats enchant <附魔> <等级>
+                        // 直接给主手物品写入任意等级（写入走 EnchantmentHelper，落库时由
+                        // EnchantmentHelperMixin 写成 int，因此不受原版 short / 255 的截断限制）
+                        .then(Commands.literal("enchant")
+                                .requires(source -> source.hasPermission(2))
+                                .then(Commands.argument("enchantment", ResourceArgument.resource(
+                                                event.getBuildContext(), Registries.ENCHANTMENT))
+                                        .then(Commands.argument("level", IntegerArgumentType.integer(1))
+                                                .executes(ModServerCommands::enchantItem))))
                         // 功能开关（按玩家）：/infstats feature [id] [on|off]
                         // 给整合包作者用的：开局默认禁用由配置 disabledStats 决定，做任务后用指令逐步开放；
                         // 玩家没有界面可自行开关，指令一律要求权限等级 2（OP），普通玩家连子命令都看不到。
@@ -104,6 +120,41 @@ public final class ModServerCommands {
                                         .then(Commands.literal("off")
                                                 .executes(ctx -> featureSet(ctx, true)))))
         );
+    }
+
+    /**
+     * /infstats enchant &lt;附魔&gt; &lt;等级&gt; —— 给主手物品直接写入任意等级的附魔（OP 工具）。
+     * <p>
+     * 与「进阶高级附魔台」不同，这里刻意<b>不</b>校验「附魔上限突破」属性：它是给整合包作者 / 管理员的
+     * 发物品与调试工具（对应参考实现的 {@code /cenchant}），等级上限由 int 本身兜底。
+     * 写入走 {@link EnchantmentHelper#setEnchantments}，因此同样受 Mixin 的 int 存储支持，
+     * 写出来的等级不会在保存 / 读取时被截断。
+     */
+    private static int enchantItem(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("只能在玩家身上使用此命令"));
+            return 0;
+        }
+        ItemStack stack = player.getMainHandItem();
+        if (stack.isEmpty()) {
+            source.sendFailure(Component.literal("请先把要附魔的物品拿在主手"));
+            return 0;
+        }
+
+        Enchantment enchantment = ResourceArgument.getEnchantment(ctx, "enchantment").value();
+        int level = IntegerArgumentType.getInteger(ctx, "level");
+
+        Map<Enchantment, Integer> enchantments = new LinkedHashMap<>(EnchantmentHelper.getEnchantments(stack));
+        enchantments.put(enchantment, level);
+        EnchantmentHelper.setEnchantments(enchantments, stack);
+        player.getInventory().setChanged();
+        player.containerMenu.broadcastChanges();
+
+        source.sendSuccess(() -> Component.translatable("message.infinitestats.enchant.given",
+                EnchantText.name(enchantment, level), level), true);
+        return 1;
     }
 
     private static int crossDim(CommandContext<CommandSourceStack> ctx) {

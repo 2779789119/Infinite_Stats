@@ -6,6 +6,7 @@ import com.infinitestats.network.EditItemPacket;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
+import com.infinitestats.util.EnchantLimits;
 import com.infinitestats.util.ItemEditUtil;
 import com.mojang.authlib.GameProfile;
 import io.netty.buffer.Unpooled;
@@ -211,6 +212,71 @@ public final class ItemAndDamageRegressionTests {
             StatEventHandler.onLivingDamage(new LivingDamageEvent(first, source, 1));
             close(firstHealth, first.getHealth(), "Abandoned hit leaked into next tick");
         } finally { AttackHandler.clearPendingTrueDamage(); }
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void extraStrikeDealsBonusAttributeDamage(GameTestHelper helper) {
+        FakePlayer player = new FakePlayer(helper.getLevel(), new GameProfile(UUID.randomUUID(), "ExtraStrikeTest"));
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .orElseThrow(() -> new IllegalStateException("Missing player stats capability"));
+        stats.setAvailablePoints(1000);
+        helper.assertTrue(stats.addPoints(StatType.fromId("extra_strike"), 4), "Could not allocate extra strike");
+        var target = EntityType.ZOMBIE.create(helper.getLevel());
+        DamageSource source = player.damageSources().playerAttack(player);
+        float ratio = (float) AttackHandler.extraStrikeDamageRatio();
+
+        // 4 级 = 追加 4 次「本次伤害 × 比例」，总量 = 5 + 5 × 比例 × 4
+        float health = target.getHealth();
+        StatEventHandler.onLivingDamage(new LivingDamageEvent(target, source, 5));
+        close(health - 5 - 5 * ratio * 4, target.getHealth(), "Extra strike bonus damage wrong");
+
+        // 次数上限 8：点数堆满后也只按 8 次结算
+        helper.assertTrue(stats.addPoints(StatType.fromId("extra_strike"), 100), "Could not stack extra strike");
+        close(8, AttackHandler.extraStrikeCount(stats), "Extra strike count should cap at 8");
+
+        // 自伤不触发（与其它进攻属性口径一致）
+        float playerHealth = player.getHealth();
+        StatEventHandler.onLivingDamage(new LivingDamageEvent(
+                player, player.damageSources().playerAttack(player), 3));
+        close(playerHealth, player.getHealth(), "Self damage still received extra strikes");
+
+        // 非玩家来源（生物互殴）不触发
+        var mobTarget = EntityType.ZOMBIE.create(helper.getLevel());
+        var mobSource = EntityType.ZOMBIE.create(helper.getLevel());
+        float mobHealth = mobTarget.getHealth();
+        StatEventHandler.onLivingDamage(new LivingDamageEvent(
+                mobTarget, mobSource.damageSources().mobAttack(mobSource), 5));
+        close(mobHealth - 5, mobTarget.getHealth(), "Mob damage received player extra strikes");
+
+        // 「功能开关」把整条属性关掉后不再追加
+        stats.setStatDisabled("extra_strike", true);
+        float disabledHealth = target.getHealth();
+        StatEventHandler.onLivingDamage(new LivingDamageEvent(target, source, 5));
+        close(disabledHealth - 5, target.getHealth(), "Disabled extra strike still dealt bonus damage");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void enchantCapFollowsUnlockState(GameTestHelper helper) {
+        FakePlayer player = new FakePlayer(helper.getLevel(), new GameProfile(UUID.randomUUID(), "EnchantCapTest"));
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .orElseThrow(() -> new IllegalStateException("Missing player stats capability"));
+        stats.setAvailablePoints(1000);
+        var sharpness = Enchantments.SHARPNESS;
+
+        // 未解锁 = 整合包实际生效的上限。开发环境没装 Apotheosis，这里应回退到原版上限。
+        close(sharpness.getMaxLevel(), EnchantLimits.maxLevel(player, sharpness),
+                "Locked cap must follow the pack cap");
+        close(sharpness.getMaxLevel(), EnchantLimits.packCap(sharpness), "Pack cap must fall back to vanilla");
+
+        helper.assertTrue(stats.addPoints(StatType.fromId("enchant_limit"), 1), "Could not unlock enchant limit");
+        close(EnchantLimits.UNLIMITED, EnchantLimits.maxLevel(player, sharpness), "Unlocked cap must be unlimited");
+
+        // 「功能开关」关掉后视为未解锁，上限回到整合包上限
+        stats.setStatDisabled("enchant_limit", true);
+        close(sharpness.getMaxLevel(), EnchantLimits.maxLevel(player, sharpness),
+                "Disabled enchant limit must fall back to the pack cap");
         helper.succeed();
     }
 }

@@ -2,7 +2,6 @@ package com.infinitestats.client;
 
 import com.infinitestats.Config;
 import com.infinitestats.compat.PinyinSearchBridge;
-import com.infinitestats.compat.ProjectEBridge;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
@@ -176,6 +175,10 @@ public class StatsScreen extends Screen {
         icon("scope_attack", Items.TRIDENT);
         icon("repulsion", Items.SLIME_BALL);
         icon("infinite_arrows", Items.SPECTRAL_ARROW);
+        icon("extra_strike", Items.STONE_SWORD);
+        icon("infinite_ammo", Items.CROSSBOW);
+        icon("no_heat", Items.BLUE_ICE);
+        icon("no_recoil", Items.HEAVY_WEIGHTED_PRESSURE_PLATE);
 
         // ═══════ 防御 ═══════
         icon("max_health", Items.RED_BED);
@@ -257,13 +260,17 @@ public class StatsScreen extends Screen {
         icon("auto_fish", Items.FISHING_ROD);
         icon("instant_bite", Items.TROPICAL_FISH);
         icon("portable_enchanting", Items.ENCHANTING_TABLE);
-        icon("enchant_power", Items.ENCHANTED_BOOK);
+        icon("enchant_limit", Items.ENCHANTED_BOOK);
         icon("portable_stonecutter", Items.STONECUTTER);
         icon("portable_loom", Items.LOOM);
         icon("portable_cartography", Items.CARTOGRAPHY_TABLE);
         icon("portable_grindstone", Items.GRINDSTONE);
         icon("weather_control", Items.LIGHTNING_ROD);
         icon("chunk_loader", Items.BEACON);
+        icon("infinite_energy", Items.REDSTONE_BLOCK);
+        icon("sbw_infinite_health", Items.MINECART);
+        icon("goety_infinite_soul", Items.SOUL_LANTERN);
+        icon("create_infinite_stress", Items.PISTON);
     }
 
     private static void icon(String statId, net.minecraft.world.item.Item item) {
@@ -488,9 +495,6 @@ public class StatsScreen extends Screen {
                     if (!stat.isHidden() || Config.SHOW_HIDDEN_STATS.get()) {
                         // 「功能开关」里被玩家关闭的属性：面板不显示，也不能加点
                         if (cachedStats != null && cachedStats.isStatDisabled(stat.getId())) {
-                            continue;
-                        }
-                        if (stat.getId().equals("pe_auto_learn") && !ProjectEBridge.isProjectELoaded()) {
                             continue;
                         }
                         if (matchesSearch(stat, search)) {

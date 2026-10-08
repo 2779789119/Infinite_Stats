@@ -1,6 +1,11 @@
 package com.infinitestats.furnace;
 
+import com.infinitestats.emc.EmcPlayerData;
+import com.infinitestats.emc.EmcPlayerDataProvider;
+import com.infinitestats.emc.EmcPricing;
+import com.infinitestats.emc.EmcTransactions;
 import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.Config;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
@@ -291,6 +296,13 @@ public class PortableFurnaceMenu extends BulkStorageMenu {
         if (!(player instanceof ServerPlayer sp)) return;
         List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_FURNACE);
         if (nets.isEmpty()) {
+            // 与 EMC 联动：一个存储网络都没有时，仍可用 EMC 采购输入槽内已有的那种矿物
+            int bought = refillSlotFromEmc(sp, PlayerFurnaceData.inputSlot(0), 64);
+            if (bought > 0) {
+                sp.sendSystemMessage(Component.literal("§a已用 EMC 采购 §f" + bought + "§a 个矿物到输入槽"));
+                broadcastChanges();
+                return;
+            }
             sp.sendSystemMessage(Component.literal(NetworkIO.diagnose(player)));
             return;
         }
@@ -319,8 +331,18 @@ public class PortableFurnaceMenu extends BulkStorageMenu {
             total += got.getCount();
             if (total >= 64 * 16) break;
         }
-        if (total == 0) sp.sendSystemMessage(Component.literal("§e网络中没有可熔炼的矿物"));
-        else sp.sendSystemMessage(Component.literal("§a已从网络提取 §f" + total + "§a 个矿物到输入槽"));
+        if (total == 0) {
+            // 与 EMC 联动：网络里没有这种矿物时，用输入槽内的物品作模板，从 EMC 知识库采购补齐
+            int bought = refillSlotFromEmc(sp, idx, 64);
+            if (bought > 0) {
+                sp.sendSystemMessage(Component.literal("§a网络没有，已用 EMC 采购 §f" + bought + "§a 个矿物到输入槽"));
+                broadcastChanges();
+                return;
+            }
+            sp.sendSystemMessage(Component.literal("§e网络中没有可熔炼的矿物"));
+        } else {
+            sp.sendSystemMessage(Component.literal("§a已从网络提取 §f" + total + "§a 个矿物到输入槽"));
+        }
         broadcastChanges();
     }
 
@@ -329,6 +351,13 @@ public class PortableFurnaceMenu extends BulkStorageMenu {
         if (!(player instanceof ServerPlayer sp)) return;
         List<NetworkHandle> nets = NetworkIO.getNetworks(player, PlayerStats.SCOPE_FURNACE);
         if (nets.isEmpty()) {
+            // 与 EMC 联动：没有存储网络时，仍可用 EMC 采购燃料槽内已有的那种燃料
+            int bought = refillSlotFromEmc(sp, PlayerFurnaceData.FUEL_SLOT, 1024);
+            if (bought > 0) {
+                sp.sendSystemMessage(Component.literal("§a已用 EMC 采购 §f" + bought + "§a 个燃料到燃料槽"));
+                broadcastChanges();
+                return;
+            }
             sp.sendSystemMessage(Component.literal(NetworkIO.diagnose(player)));
             return;
         }
@@ -357,9 +386,51 @@ public class PortableFurnaceMenu extends BulkStorageMenu {
             total += got.getCount();
             if (total >= 1024) break;
         }
-        if (total == 0) sp.sendSystemMessage(Component.literal("§e网络中没有可用的燃料"));
-        else sp.sendSystemMessage(Component.literal("§a已从网络提取 §f" + total + "§a 个燃料到燃料槽"));
+        if (total == 0) {
+            // 与 EMC 联动：网络里没有这种燃料时，用燃料槽内的物品作模板，从 EMC 知识库采购补齐
+            int bought = refillSlotFromEmc(sp, idx, 1024);
+            if (bought > 0) {
+                sp.sendSystemMessage(Component.literal("§a网络没有，已用 EMC 采购 §f" + bought + "§a 个燃料到燃料槽"));
+                broadcastChanges();
+                return;
+            }
+            sp.sendSystemMessage(Component.literal("§e网络中没有可用的燃料"));
+        } else {
+            sp.sendSystemMessage(Component.literal("§a已从网络提取 §f" + total + "§a 个燃料到燃料槽"));
+        }
         broadcastChanges();
+    }
+
+    /**
+     * 与 EMC 联动：把槽内**已有**的物品用 EMC 补齐（模板取自该槽现有物品）。
+     * 存储网络抽不到料时作为最后一级回退 —— 槽为空或该物品没学过时不做事。
+     *
+     * @param maxCount 本次最多采购多少个
+     * @return 实际采购并放入槽位的数量
+     */
+    private int refillSlotFromEmc(ServerPlayer sp, int idx, int maxCount) {
+        ItemStack template = furnaceData.getStack(idx);
+        if (template.isEmpty()) return 0;
+        long space = (long) PlayerFurnaceData.UNBOUNDED - furnaceData.getAmount(idx);
+        int request = (int) Math.min(space, maxCount);
+        if (request <= 0) return 0;
+
+        EmcPlayerData data = sp.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).orElse(null);
+        if (data == null) return 0;
+        ItemStack got = EmcTransactions.purchase(sp, data, template, request);
+        if (got.isEmpty()) return 0;
+
+        long spaceLeft = (long) PlayerFurnaceData.UNBOUNDED - furnaceData.getAmount(idx);
+        int put = (int) Math.min(got.getCount(), spaceLeft);
+        if (put <= 0) {
+            // 槽位已满：把刚买的退回去，避免白扣 EMC
+            data.addEmc(EmcPricing.buyPrice(sp, got) * got.getCount());
+            return 0;
+        }
+        furnaceData.setAmountOnly(idx, furnaceData.getAmount(idx) + put);
+        this.slots.get(idx).set(furnaceData.getStack(idx));
+        NetworkHandler.syncEmcToClient(sp);
+        return put;
     }
 
     /** 将成品储备箱（成品仓）中的成品存入 RS 网络。 */

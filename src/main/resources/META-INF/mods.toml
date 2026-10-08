@@ -15,13 +15,16 @@ issueTrackerURL = "https://github.com/example/infinitestats/issues"
     points into any stat - there is no level cap, and points can always be
     refunded and re-spent.
 
-    - 96 built-in stats in 4 categories: Attack / Defense / Mobility / Utility
+    - 103 built-in stats in 4 categories: Attack / Defense / Mobility / Utility
     - Auto-discovery: attributes registered by other mods appear as an
       "External" category and can be leveled exactly like built-in ones
     - Ships with Chinese translations for 30+ mods external attributes,
       so raw keys like [gunsmithlib:bullet_damage] are never shown
     - Toggle abilities: Flight, Night Vision, Vein Miner, Auto Smelt, Auto Fish,
-      Infinite Arrows, Keep Inventory, No Fall Damage and many more
+      Infinite Arrows, Infinite Ammo / Zero Heat / No Recoil for TACZ and
+      Superb Warfare guns, Infinite Energy (FE / RF / Mekanism / Thermal / EIO /
+      Immersive Engineering) and Infinite Health for Superb Warfare vehicles,
+      Keep Inventory, No Fall Damage and many more
     - Panels: Stats (P), HUD (H), Item Editor (O), EMC Transmutation (V),
       Achievements (U) and Waypoints (Y)
     - Portable stations: crafting table, furnace, anvil, enchanting table,
@@ -31,7 +34,10 @@ issueTrackerURL = "https://github.com/example/infinitestats/issues"
       later with /infstats feature)
     - Full multiplayer support: stats, EMC and waypoints are stored per player
       and synced to the server
-    - No required dependencies (the pinyin search library is bundled)
+    - No required dependencies
+    - Optional: pinyin_search powers the pinyin search boxes; it is embedded in
+      the "-all" build, the plain build needs it installed separately
+      (without it the search boxes fall back to plain text matching)
     '''
 
 [[dependencies.infinitestats]]
