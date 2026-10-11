@@ -1,6 +1,7 @@
 package com.infinitestats.stats;
 
 import com.infinitestats.Config;
+import com.infinitestats.crafting.PortableBrewingData;
 import com.infinitestats.furnace.PlayerFurnaceData;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -76,8 +77,10 @@ public class PlayerStats {
 
     // buff 过滤模式：true = 黑名单（列表中的拦截），false = 白名单（列表中的绝对不拦截，其他不管）
     private boolean buffUseBlacklist = true;
-    // 效果 ID 过滤列表（如 "minecraft:poison"，包含正面和负面效果）
-    private final Set<String> buffFilterList = new HashSet<>();
+    // 效果 ID 黑名单（黑名单模式下拦截这些效果，如 "minecraft:poison"）
+    private final Set<String> buffBlacklist = new HashSet<>();
+    // 效果 ID 白名单（白名单模式下保护这些效果）。与黑名单各自独立，切换模式不会互相污染
+    private final Set<String> buffWhitelist = new HashSet<>();
 
     // 定点传送点集合：名称 → 传送点
     private final Map<String, Waypoint> waypoints = new HashMap<>();
@@ -87,6 +90,13 @@ public class PlayerStats {
 
     public PlayerFurnaceData getFurnaceData() {
         return furnaceData;
+    }
+
+    // 随身酿造台的持久化状态（5 格物品 + 酿造进度 + 燃料）—— 关掉界面也继续酿
+    private final PortableBrewingData brewingData = new PortableBrewingData();
+
+    public PortableBrewingData getBrewingData() {
+        return brewingData;
     }
 
     // 随身工作台的物品倍率（基础为 1，可通过点数提升，影响每次合成的产出数量）
@@ -123,8 +133,17 @@ public class PlayerStats {
      */
     private boolean autoDepositUseWhitelist = false;
 
-    /** 自动入库过滤列表：物品 ID（如 {@code minecraft:diamond}）。 */
-    private final Set<String> autoDepositFilterList = new HashSet<>();
+    /** 自动入库黑名单：物品 ID（如 {@code minecraft:diamond}）。 */
+    private final Set<String> autoDepositBlacklist = new HashSet<>();
+
+    /** 自动入库白名单。与黑名单各自独立，切换模式不会互相污染。 */
+    private final Set<String> autoDepositWhitelist = new HashSet<>();
+
+    /**
+     * 连锁挖掘的个人设置（匹配方式、上限、代价、名单等）。
+     * 随玩家数据存档并同步到客户端，游戏内通过「连锁设置」面板修改。
+     */
+    private VeinMinerConfig veinMinerConfig = new VeinMinerConfig();
 
     /**
      * 死亡不掉落（keep_inventory）的暂存物品。
@@ -180,32 +199,49 @@ public class PlayerStats {
         return autoDepositUseWhitelist;
     }
 
+    /** 只切换模式，不动任何名单（界面切换模式时调用）。 */
+    public void setAutoDepositUseWhitelist(boolean useWhitelist) {
+        this.autoDepositUseWhitelist = useWhitelist;
+    }
+
+    /** 当前模式生效的名单。 */
     public Set<String> getAutoDepositFilterList() {
-        return Collections.unmodifiableSet(autoDepositFilterList);
+        return Collections.unmodifiableSet(autoDepositActiveList());
     }
 
     /** 是否设置了过滤条目（为空时无论白/黑名单都不做限制）。 */
     public boolean hasAutoDepositFilter() {
-        return !autoDepositFilterList.isEmpty();
+        return !autoDepositActiveList().isEmpty();
     }
 
     public void addAutoDepositFilter(String itemId) {
-        if (itemId != null && !itemId.isEmpty()) autoDepositFilterList.add(itemId);
+        if (itemId != null && !itemId.isEmpty()) autoDepositActiveList().add(itemId);
     }
 
     public void removeAutoDepositFilter(String itemId) {
-        autoDepositFilterList.remove(itemId);
+        autoDepositActiveList().remove(itemId);
     }
 
     public void clearAutoDepositFilters() {
-        autoDepositFilterList.clear();
+        autoDepositActiveList().clear();
     }
 
-    /** 设置完整过滤列表（从网络同步 / 界面提交时调用）。 */
+    /**
+     * 设置当前模式的过滤列表（从网络同步 / 界面提交时调用）。
+     * <p>
+     * 只覆盖当前模式对应的那一份名单，另一份（黑或白）保持原样，
+     * 所以「黑名单选完切到白名单」不会再看到黑名单的条目。
+     */
     public void setAutoDepositFilterList(Set<String> list, boolean useWhitelist) {
-        autoDepositFilterList.clear();
-        if (list != null) autoDepositFilterList.addAll(list);
         this.autoDepositUseWhitelist = useWhitelist;
+        Set<String> target = autoDepositActiveList();
+        target.clear();
+        if (list != null) target.addAll(list);
+    }
+
+    /** 当前模式生效的名单（内部可变引用，仅本类使用）。 */
+    private Set<String> autoDepositActiveList() {
+        return autoDepositUseWhitelist ? autoDepositWhitelist : autoDepositBlacklist;
     }
 
     /**
@@ -216,8 +252,27 @@ public class PlayerStats {
      * 白名单：只允许列表内的物品；黑名单：不允许列表内的物品。
      */
     public boolean allowsAutoDeposit(String itemId) {
-        if (itemId == null || autoDepositFilterList.isEmpty()) return true;
-        return autoDepositUseWhitelist == autoDepositFilterList.contains(itemId);
+        if (itemId == null) return true;
+        Set<String> list = autoDepositActiveList();
+        if (list.isEmpty()) return true;
+        return autoDepositUseWhitelist == list.contains(itemId);
+    }
+
+    // ========== 连锁挖掘设置 ==========
+
+    /** 连锁挖掘的个人设置（永不为 null）。界面直接读写这个对象，提交时整份覆盖。 */
+    public VeinMinerConfig getVeinMinerConfig() {
+        return veinMinerConfig;
+    }
+
+    /** 整份替换连锁设置（网络同步 / 界面提交时调用）；传入 null 视为恢复默认。 */
+    public void setVeinMinerConfig(VeinMinerConfig config) {
+        if (config == null) {
+            veinMinerConfig = new VeinMinerConfig();
+        } else {
+            config.sanitize();
+            veinMinerConfig = config;
+        }
     }
 
     // ========== 死亡不掉落暂存 ==========
@@ -456,40 +511,49 @@ public class PlayerStats {
     }
 
     /**
-     * 获取过滤列表（不可变副本）
+     * 获取当前模式生效的过滤列表（不可变副本）
      */
     public Set<String> getBuffFilterList() {
-        return Collections.unmodifiableSet(buffFilterList);
+        return Collections.unmodifiableSet(buffActiveList());
     }
 
     /**
-     * 添加效果到过滤列表
+     * 添加效果到当前模式的过滤列表
      */
     public void addBuffFilter(String effectId) {
-        buffFilterList.add(effectId);
+        buffActiveList().add(effectId);
     }
 
     /**
-     * 从过滤列表移除效果
+     * 从当前模式的过滤列表移除效果
      */
     public void removeBuffFilter(String effectId) {
-        buffFilterList.remove(effectId);
+        buffActiveList().remove(effectId);
     }
 
     /**
-     * 清空过滤列表
+     * 清空当前模式的过滤列表
      */
     public void clearBuffFilters() {
-        buffFilterList.clear();
+        buffActiveList().clear();
     }
 
     /**
-     * 设置完整过滤列表（从网络同步）
+     * 设置当前模式的过滤列表（从网络同步 / 界面提交时调用）。
+     * <p>
+     * 只覆盖当前模式对应的那一份名单，另一份保持原样 ——
+     * 黑名单切到白名单后不会再把黑名单的条目当成白名单条目。
      */
     public void setBuffFilterList(Set<String> list, boolean useBlacklist) {
-        buffFilterList.clear();
-        buffFilterList.addAll(list);
         this.buffUseBlacklist = useBlacklist;
+        Set<String> target = buffActiveList();
+        target.clear();
+        if (list != null) target.addAll(list);
+    }
+
+    /** 当前模式生效的名单（内部可变引用，仅本类使用）。 */
+    private Set<String> buffActiveList() {
+        return buffUseBlacklist ? buffBlacklist : buffWhitelist;
     }
 
     /**
@@ -497,14 +561,32 @@ public class PlayerStats {
      * @return true = 应该拦截
      */
     public boolean shouldBlockEffect(String effectId) {
-        boolean inList = buffFilterList.contains(effectId);
-        if (buffUseBlacklist) {
-            // 黑名单模式：列表中的就是要拦截的
-            // 空列表 = 没有要拦截的 = 全放行
-            return inList;
-        } else {
-            // 白名单模式：列表中的绝对不拦截，其他的不管（不处理）
+        if (!buffUseBlacklist) {
+            // 白名单模式：名单中的绝对不拦截，其他的不管（不处理）
             return false;
+        }
+        // 黑名单模式：名单中的就是要拦截的；空列表 = 没有要拦截的 = 全放行
+        return buffBlacklist.contains(effectId);
+    }
+
+    /** 把 ID 集合写成 NBT 列表（元素形如 {@code { id: "..." }}）。 */
+    private static ListTag toIdList(Set<String> ids) {
+        ListTag list = new ListTag();
+        for (String id : ids) {
+            CompoundTag tag = new CompoundTag();
+            tag.putString("id", id);
+            list.add(tag);
+        }
+        return list;
+    }
+
+    /** 从 NBT 列表读取 ID 集合（自动跳过空 id）。 */
+    private static void readIds(CompoundTag parent, String key, Set<String> target) {
+        if (!parent.contains(key)) return;
+        ListTag list = parent.getList(key, Tag.TAG_COMPOUND);
+        for (int i = 0; i < list.size(); i++) {
+            String id = list.getCompound(i).getString("id");
+            if (!id.isEmpty()) target.add(id);
         }
     }
 
@@ -898,15 +980,10 @@ public class PlayerStats {
         }
         tag.put("providedAbilities", abilitiesList);
 
-        // 序列化 buff 过滤列表
+        // 序列化 buff 过滤名单（黑 / 白各自一份）
         tag.putBoolean("debuffUseBlacklist", buffUseBlacklist);
-        ListTag filterList = new ListTag();
-        for (String effectId : buffFilterList) {
-            CompoundTag fTag = new CompoundTag();
-            fTag.putString("id", effectId);
-            filterList.add(fTag);
-        }
-        tag.put("debuffFilterList", filterList);
+        tag.put("debuffBlacklist", toIdList(buffBlacklist));
+        tag.put("debuffWhitelist", toIdList(buffWhitelist));
 
         // 序列化定点传送点
         ListTag wpList = new ListTag();
@@ -920,6 +997,9 @@ public class PlayerStats {
 
         // 序列化随身熔炉状态
         tag.put("furnace", furnaceData.serializeNBT());
+
+        // 序列化随身酿造台状态（关掉界面也继续酿，所以必须落盘）
+        tag.put("brewing", brewingData.serializeNBT());
 
         // 序列化收藏列表
         ListTag favList = new ListTag();
@@ -946,15 +1026,13 @@ public class PlayerStats {
         }
         tag.put("networkPriorities", priorityTag);
 
-        // 序列化自动入库过滤（白 / 黑名单）
+        // 序列化自动入库过滤名单（黑 / 白各自一份）
         tag.putBoolean("depositUseWhitelist", autoDepositUseWhitelist);
-        ListTag depositFilter = new ListTag();
-        for (String id : autoDepositFilterList) {
-            CompoundTag fTag = new CompoundTag();
-            fTag.putString("id", id);
-            depositFilter.add(fTag);
-        }
-        tag.put("depositFilterList", depositFilter);
+        tag.put("depositBlacklist", toIdList(autoDepositBlacklist));
+        tag.put("depositWhitelist", toIdList(autoDepositWhitelist));
+
+        // 序列化连锁挖掘设置
+        tag.put("veinMinerConfig", veinMinerConfig.serialize());
 
         // 序列化死亡不掉落暂存物品（必须落盘：玩家在死亡界面断线 / 服务器重启也不能丢）
         ListTag keptList = new ListTag();
@@ -1043,12 +1121,14 @@ public class PlayerStats {
             }
         }
         buffUseBlacklist = tag.contains("debuffUseBlacklist") ? tag.getBoolean("debuffUseBlacklist") : true;
-        buffFilterList.clear();
-        if (tag.contains("debuffFilterList")) {
-            ListTag filterList = tag.getList("debuffFilterList", Tag.TAG_COMPOUND);
-            for (int i = 0; i < filterList.size(); i++) {
-                buffFilterList.add(filterList.getCompound(i).getString("id"));
-            }
+        buffBlacklist.clear();
+        buffWhitelist.clear();
+        if (tag.contains("debuffBlacklist") || tag.contains("debuffWhitelist")) {
+            readIds(tag, "debuffBlacklist", buffBlacklist);
+            readIds(tag, "debuffWhitelist", buffWhitelist);
+        } else {
+            // 旧存档只有单份 debuffFilterList：按当前模式归入对应名单
+            readIds(tag, "debuffFilterList", buffUseBlacklist ? buffBlacklist : buffWhitelist);
         }
 
         // 反序列化定点传送点
@@ -1067,6 +1147,11 @@ public class PlayerStats {
         // 反序列化随身熔炉状态
         if (tag.contains("furnace")) {
             furnaceData.deserializeNBT(tag.getCompound("furnace"));
+        }
+
+        // 反序列化随身酿造台状态
+        if (tag.contains("brewing")) {
+            brewingData.deserializeNBT(tag.getCompound("brewing"));
         }
 
         // 反序列化收藏列表
@@ -1108,16 +1193,22 @@ public class PlayerStats {
             if (!order.isEmpty()) networkPriorities.put(SCOPE_AUTO_DEPOSIT, order);
         }
 
-        // 反序列化自动入库过滤（白 / 黑名单）
+        // 反序列化自动入库过滤名单（黑 / 白各自一份）
         autoDepositUseWhitelist = tag.contains("depositUseWhitelist") && tag.getBoolean("depositUseWhitelist");
-        autoDepositFilterList.clear();
-        if (tag.contains("depositFilterList")) {
-            ListTag depositFilter = tag.getList("depositFilterList", Tag.TAG_COMPOUND);
-            for (int i = 0; i < depositFilter.size(); i++) {
-                String id = depositFilter.getCompound(i).getString("id");
-                if (!id.isEmpty()) autoDepositFilterList.add(id);
-            }
+        autoDepositBlacklist.clear();
+        autoDepositWhitelist.clear();
+        if (tag.contains("depositBlacklist") || tag.contains("depositWhitelist")) {
+            readIds(tag, "depositBlacklist", autoDepositBlacklist);
+            readIds(tag, "depositWhitelist", autoDepositWhitelist);
+        } else {
+            // 旧存档只有单份 depositFilterList：按当前模式归入对应名单
+            readIds(tag, "depositFilterList",
+                    autoDepositUseWhitelist ? autoDepositWhitelist : autoDepositBlacklist);
         }
+
+        // 反序列化连锁挖掘设置（老存档没有这一段 → 用默认值）
+        veinMinerConfig = VeinMinerConfig.deserialize(
+                tag.contains("veinMinerConfig") ? tag.getCompound("veinMinerConfig") : null);
 
         // 反序列化死亡不掉落暂存物品
         pendingKeptInventory.clear();
@@ -1165,13 +1256,16 @@ public class PlayerStats {
         this.providedAbilities.clear();
         this.providedAbilities.addAll(other.providedAbilities);
         this.buffUseBlacklist = other.buffUseBlacklist;
-        this.buffFilterList.clear();
-        this.buffFilterList.addAll(other.buffFilterList);
+        this.buffBlacklist.clear();
+        this.buffBlacklist.addAll(other.buffBlacklist);
+        this.buffWhitelist.clear();
+        this.buffWhitelist.addAll(other.buffWhitelist);
         this.allocatedPoints.clear();
         this.allocatedPoints.putAll(other.allocatedPoints);
         this.waypoints.clear();
         this.waypoints.putAll(other.waypoints);
         this.furnaceData.copyFrom(other.furnaceData);
+        this.brewingData.copyFrom(other.brewingData);
         this.craftingMultiplier = other.craftingMultiplier;
         this.favorites.clear();
         this.favorites.addAll(other.favorites);
@@ -1190,8 +1284,11 @@ public class PlayerStats {
             this.networkPriorities.put(entry.getKey(), new ArrayList<>(entry.getValue()));
         }
         this.autoDepositUseWhitelist = other.autoDepositUseWhitelist;
-        this.autoDepositFilterList.clear();
-        this.autoDepositFilterList.addAll(other.autoDepositFilterList);
+        this.autoDepositBlacklist.clear();
+        this.autoDepositBlacklist.addAll(other.autoDepositBlacklist);
+        this.autoDepositWhitelist.clear();
+        this.autoDepositWhitelist.addAll(other.autoDepositWhitelist);
+        this.veinMinerConfig = other.veinMinerConfig.copy();
         this.disabledStats.clear();
         this.disabledStats.addAll(other.disabledStats);
         this.defaultDisabledApplied = other.defaultDisabledApplied;
@@ -1207,13 +1304,15 @@ public class PlayerStats {
                 lastReviveTime, passiveTickCounter,
                 new HashMap<>(allocatedPoints),
                 buffUseBlacklist,
-                new HashSet<>(buffFilterList),
+                new HashSet<>(buffBlacklist),
+                new HashSet<>(buffWhitelist),
                 new HashMap<>(waypoints),
                 reviveInvulnUntilTick,
                 new HashSet<>(favorites),
                 copyNetworkPriorities(),
                 autoDepositUseWhitelist,
-                new HashSet<>(autoDepositFilterList),
+                new HashSet<>(autoDepositBlacklist),
+                new HashSet<>(autoDepositWhitelist),
                 new HashSet<>(disabledStats)
         );
     }
@@ -1240,8 +1339,10 @@ public class PlayerStats {
         this.allocatedPoints.clear();
         this.allocatedPoints.putAll(snapshot.allocatedPoints);
         this.buffUseBlacklist = snapshot.buffUseBlacklist;
-        this.buffFilterList.clear();
-        this.buffFilterList.addAll(snapshot.buffFilterList);
+        this.buffBlacklist.clear();
+        if (snapshot.buffBlacklist != null) this.buffBlacklist.addAll(snapshot.buffBlacklist);
+        this.buffWhitelist.clear();
+        if (snapshot.buffWhitelist != null) this.buffWhitelist.addAll(snapshot.buffWhitelist);
         this.waypoints.clear();
         this.waypoints.putAll(snapshot.waypoints);
         this.favorites.clear();
@@ -1253,8 +1354,10 @@ public class PlayerStats {
             }
         }
         this.autoDepositUseWhitelist = snapshot.autoDepositUseWhitelist;
-        this.autoDepositFilterList.clear();
-        if (snapshot.autoDepositFilterList != null) this.autoDepositFilterList.addAll(snapshot.autoDepositFilterList);
+        this.autoDepositBlacklist.clear();
+        if (snapshot.autoDepositBlacklist != null) this.autoDepositBlacklist.addAll(snapshot.autoDepositBlacklist);
+        this.autoDepositWhitelist.clear();
+        if (snapshot.autoDepositWhitelist != null) this.autoDepositWhitelist.addAll(snapshot.autoDepositWhitelist);
         this.disabledStats.clear();
         if (snapshot.disabledStats != null) this.disabledStats.addAll(snapshot.disabledStats);
         invalidateCache();
@@ -1270,7 +1373,10 @@ public class PlayerStats {
         public final int passiveTickCounter;
         public final Map<String, Long> allocatedPoints;
         public final boolean buffUseBlacklist;
-        public final Set<String> buffFilterList;
+        /** buff 黑名单（黑名单模式生效） */
+        public final Set<String> buffBlacklist;
+        /** buff 白名单（白名单模式生效） */
+        public final Set<String> buffWhitelist;
         public final Map<String, Waypoint> waypoints;
         public final long reviveInvulnUntilTick;
         public final Set<String> favorites;
@@ -1278,18 +1384,20 @@ public class PlayerStats {
         public final Map<String, List<String>> networkPriorities;
         /** 自动入库过滤模式：true = 白名单 */
         public final boolean autoDepositUseWhitelist;
-        /** 自动入库过滤列表（物品 ID） */
-        public final Set<String> autoDepositFilterList;
+        /** 自动入库黑名单（物品 ID） */
+        public final Set<String> autoDepositBlacklist;
+        /** 自动入库白名单（物品 ID） */
+        public final Set<String> autoDepositWhitelist;
         /** 「功能开关」中已关闭的属性 id */
         public final Set<String> disabledStats;
 
         public StatsSnapshot(long level, long experience, long availablePoints,
                 long lastReviveTime, int passiveTickCounter,
                 Map<String, Long> allocatedPoints,
-                boolean buffUseBlacklist, Set<String> buffFilterList,
+                boolean buffUseBlacklist, Set<String> buffBlacklist, Set<String> buffWhitelist,
                 Map<String, Waypoint> waypoints, long reviveInvulnUntilTick, Set<String> favorites,
                 Map<String, List<String>> networkPriorities,
-                boolean autoDepositUseWhitelist, Set<String> autoDepositFilterList,
+                boolean autoDepositUseWhitelist, Set<String> autoDepositBlacklist, Set<String> autoDepositWhitelist,
                 Set<String> disabledStats) {
             this.level = level;
             this.experience = experience;
@@ -1298,13 +1406,15 @@ public class PlayerStats {
             this.passiveTickCounter = passiveTickCounter;
             this.allocatedPoints = allocatedPoints;
             this.buffUseBlacklist = buffUseBlacklist;
-            this.buffFilterList = buffFilterList;
+            this.buffBlacklist = buffBlacklist;
+            this.buffWhitelist = buffWhitelist;
             this.waypoints = waypoints;
             this.reviveInvulnUntilTick = reviveInvulnUntilTick;
             this.favorites = favorites;
             this.networkPriorities = networkPriorities;
             this.autoDepositUseWhitelist = autoDepositUseWhitelist;
-            this.autoDepositFilterList = autoDepositFilterList;
+            this.autoDepositBlacklist = autoDepositBlacklist;
+            this.autoDepositWhitelist = autoDepositWhitelist;
             this.disabledStats = disabledStats;
         }
     }

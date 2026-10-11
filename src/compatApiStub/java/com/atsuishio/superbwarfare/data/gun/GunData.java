@@ -61,4 +61,21 @@ public class GunData {
     public final void shakePlayers(net.minecraft.world.entity.Entity entity) {
         throw new UnsupportedOperationException("compile-time stub");
     }
+
+    /**
+     * <b>「还有多少备弹」的唯一口径</b>：物品弹药 / 玩家背包弹药 / 能量 / 经验 / 饥饿 / 生命
+     * 各类策略都由它汇总（射击前够不够、装填取多少也都问它），所以「无限子弹」在这里改返回值即可 —
+     * 注意 {@code hasInfiniteBackupAmmo} 只被 HUD 与脚本代理解读，<b>不是</b>消耗的闸门。
+     */
+    public final int countBackupAmmo(net.minecraft.world.entity.Entity entity) {
+        throw new UnsupportedOperationException("compile-time stub");
+    }
+
+    /**
+     * 真正的扣备弹：内部走 {@code AmmoConsumer.consume(...)} → 对应弹药策略。
+     * 「无限子弹」时整个取消，弹药就一点不少（也不会有「必须带弹药」的前置）。
+     */
+    public final void consumeBackupAmmo(net.minecraft.world.entity.Entity entity, int amount) {
+        throw new UnsupportedOperationException("compile-time stub");
+    }
 }

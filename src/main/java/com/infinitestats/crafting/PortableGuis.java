@@ -92,6 +92,16 @@ public final class PortableGuis {
     }
 
     /**
+     * 为玩家打开随身酿造台（调用方需先校验属性开关）。
+     * <p>
+     * 与上面几台不同：酿造台没有「读世界数据算成品」这一步，配方与进度全在方块实体里，
+     * 因此走 {@link PortableBrewing} 的虚拟酿造台（不占世界坐标），详见该类注释。
+     */
+    public static void openBrewing(ServerPlayer player) {
+        PortableBrewing.open(player);
+    }
+
+    /**
      * 按属性 id 打开对应的随身站点（供统一数据包 {@code PortableToolOpenPacket} 调用）。
      *
      * @param stats  玩家属性数据（附魔台需要读点数），可为 null
@@ -106,6 +116,7 @@ public final class PortableGuis {
             case "portable_cartography" -> openCartography(player);
             case "portable_grindstone" -> openGrindstone(player);
             case "portable_smithing" -> openSmithing(player);
+            case "portable_brewing" -> openBrewing(player);
             default -> {
                 return false;
             }

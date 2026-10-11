@@ -2,7 +2,9 @@ package com.infinitestats.client;
 
 import com.infinitestats.compat.PinyinSearchBridge;
 import com.infinitestats.network.NetworkHandler;
+import com.infinitestats.network.UpdateVeinMinerConfigPacket;
 import com.infinitestats.stats.PlayerStatsProvider;
+import com.infinitestats.stats.VeinMinerConfig;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -13,9 +15,11 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Block;
 import net.minecraftforge.registries.ForgeRegistries;
 import org.lwjgl.glfw.GLFW;
 
@@ -27,46 +31,43 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * 「自动入库」过滤界面 —— 用白名单 / 黑名单控制哪些物品会被自动存入存储网络。
+ * 「连锁挖掘 · 自定义名单」界面 —— 用白名单 / 黑名单限定哪些方块能互相连锁。
  * <p>
- * 视觉与交互沿用 {@link EditorUi} 规范（与物品编辑器、效果过滤一致）：
- * <ul>
- *   <li>搜索框支持物品名与物品 ID（装了 pinyin_search 时按拼音匹配）；</li>
- *   <li>列表列出全部物品，<b>点击行即切换「在名单内 / 不在名单内」</b>，在名单内的行有绿色指示条；</li>
- *   <li>底栏「手持加入」可一键把当前主手物品加入名单，省去搜索；</li>
- *   <li>「只看已选」把列表收窄到已选条目，方便核对与移除。</li>
- * </ul>
- * 语义：<b>白名单</b> = 只入库名单内的物品；<b>黑名单</b> = 名单内的物品不入库。
- * 名单为空时不做任何限制（避免清空列表后自动入库整体失效）。
+ * 交互与 {@link AutoDepositFilterScreen} 保持一致（同一个 {@link EditorUi} 规范）：
+ * 搜索框支持方块名 / 方块 ID（装了 pinyin_search 时按拼音匹配）、点击行即切换在不在名单里、
+ * 底栏可一键「手持加入」与「只看已选」。
+ * <p>
+ * 只列出「有对应物品形态」的方块：图标与译名都靠物品，纯技术方块（没有 BlockItem）列出来也没法辨认。
+ * 语义与自动入库一致：名单为空时不做限制（避免清空后连锁整体失效）。
  */
-public class AutoDepositFilterScreen extends Screen {
+public class VeinMinerFilterScreen extends Screen {
 
     // ======================== 布局常量 ========================
 
     private static final int GUI_W = 420;
     private static final int GUI_H = 272;
 
-    private static final int SEARCH_Y = EditorUi.HEADER_H + 4;   // 28
+    private static final int SEARCH_Y = EditorUi.HEADER_H + 4;
     private static final int SEARCH_H = 18;
-    private static final int HINT_Y = SEARCH_Y + SEARCH_H + 2;    // 48
-    private static final int LIST_Y = HINT_Y + EditorUi.ROW_H - 8; // 60
+    private static final int HINT_Y = SEARCH_Y + SEARCH_H + 2;
+    private static final int LIST_Y = HINT_Y + EditorUi.ROW_H - 8;
     private static final int VISIBLE_ROWS = 8;
     private static final int LIST_H = VISIBLE_ROWS * EditorUi.ROW_H;
 
-    private static final int FOOTER_Y = LIST_Y + LIST_H + 8;      // 244
+    private static final int FOOTER_Y = LIST_Y + LIST_H + 8;
     private static final int FOOTER_H = 20;
 
     private static final int MODE_W = 118;
 
     // ======================== 状态 ========================
 
-    /** 候选物品（全部注册物品，按名称排序；item 直接缓存，避免每帧查注册表） */
+    /** 候选方块（有物品形态的方块，按名称排序） */
     private record Candidate(ResourceLocation id, String display, Item item) {}
 
     private final List<Candidate> all = new ArrayList<>();
     private List<Candidate> filtered = new ArrayList<>();
 
-    /** 当前名单（物品 ID），本地立即生效，同时提交给服务端 */
+    /** 当前名单（方块 ID 或 #标签），本地立即生效，同时提交给服务端 */
     private final Set<String> selectedIds = new HashSet<>();
     private boolean useWhitelist;
     private boolean onlySelected;
@@ -85,11 +86,10 @@ public class AutoDepositFilterScreen extends Screen {
 
     private int leftPos, topPos;
 
-    /** 关闭本界面时返回的属性面板（沿用物品编辑器的「返回父界面」模式） */
     private final Screen parent;
 
-    public AutoDepositFilterScreen(Screen parent) {
-        super(Component.translatable("screen.infinitestats.deposit_filter"));
+    public VeinMinerFilterScreen(Screen parent) {
+        super(Component.translatable("screen.infinitestats.vein_filter"));
         this.parent = parent;
         buildCandidates();
     }
@@ -99,22 +99,24 @@ public class AutoDepositFilterScreen extends Screen {
         if (minecraft != null) minecraft.setScreen(parent);
     }
 
-    /** 构建全部物品候选（名称翻译优先，缺失时回退到可读的物品 ID）。 */
+    /** 构建候选方块：只收「有 BlockItem」的方块，名称翻译优先、缺失时回退到可读 ID。 */
     private void buildCandidates() {
-        for (Item item : ForgeRegistries.ITEMS) {
+        for (Block block : ForgeRegistries.BLOCKS) {
+            Item item = block.asItem();
             if (item == Items.AIR) continue;
-            ResourceLocation id = ForgeRegistries.ITEMS.getKey(item);
+            ResourceLocation id = ForgeRegistries.BLOCKS.getKey(block);
             if (id == null) continue;
-            all.add(new Candidate(id, displayName(item, id), item));
+            all.add(new Candidate(id, displayName(block, item, id), item));
         }
         all.sort(Comparator.comparing(Candidate::display, String.CASE_INSENSITIVE_ORDER));
     }
 
-    private static String displayName(Item item, ResourceLocation id) {
+    private static String displayName(Block block, Item item, ResourceLocation id) {
+        String translated = block.getName().getString();
+        if (!translated.isEmpty() && !translated.startsWith("block.")) return translated;
         String key = item.getDescriptionId();
-        String translated = Component.translatable(key).getString();
-        if (!translated.equals(key)) return translated;
-        // 模组没提供译文：用「命名空间: 可读路径」兜底，避免直接摆出 item.modid.foo 这种键名
+        String itemName = Component.translatable(key).getString();
+        if (!itemName.equals(key)) return itemName;
         return id.getNamespace() + ": " + id.getPath().replace('_', ' ');
     }
 
@@ -136,8 +138,8 @@ public class AutoDepositFilterScreen extends Screen {
         if (player == null) return;
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             selectedIds.clear();
-            selectedIds.addAll(stats.getAutoDepositFilterList());
-            useWhitelist = stats.isAutoDepositUseWhitelist();
+            selectedIds.addAll(stats.getVeinMinerConfig().getFilterList());
+            useWhitelist = stats.getVeinMinerConfig().isUseWhitelist();
         });
     }
 
@@ -148,7 +150,7 @@ public class AutoDepositFilterScreen extends Screen {
                 GUI_W - EditorUi.GAP * 2 - MODE_W - 4, SEARCH_H, Component.empty());
         searchBox.setMaxLength(60);
         searchBox.setTextColor(EditorUi.PRIMARY);
-        searchBox.setHint(Component.translatable("screen.infinitestats.deposit_filter.search_hint"));
+        searchBox.setHint(Component.translatable("screen.infinitestats.vein_filter.search_hint"));
         searchBox.setValue(searchText);
         searchBox.setResponder(v -> {
             searchText = v;
@@ -176,7 +178,7 @@ public class AutoDepositFilterScreen extends Screen {
 
         addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.deposit_filter.add_held"),
-                        b -> toggleHeldItem())
+                        b -> toggleHeldBlock())
                 .bounds(leftPos + GUI_W - EditorUi.GAP - 80 - 4 - 84, topPos + FOOTER_Y, 84, FOOTER_H).build());
 
         addRenderableWidget(Button.builder(
@@ -228,9 +230,10 @@ public class AutoDepositFilterScreen extends Screen {
         var player = Minecraft.getInstance().player;
         if (player != null) {
             player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                stats.setAutoDepositUseWhitelist(useWhitelist);
+                VeinMinerConfig cfg = stats.getVeinMinerConfig();
+                cfg.setUseWhitelist(useWhitelist);
                 selectedIds.clear();
-                selectedIds.addAll(stats.getAutoDepositFilterList());
+                selectedIds.addAll(cfg.getFilterList());
             });
         }
         applyFilter();
@@ -245,16 +248,16 @@ public class AutoDepositFilterScreen extends Screen {
         sendUpdate();
     }
 
-    /** 一键把主手物品加入 / 移出名单。 */
-    private void toggleHeldItem() {
+    /** 一键把手持方块加入 / 移出名单。 */
+    private void toggleHeldBlock() {
         var player = Minecraft.getInstance().player;
         if (player == null) return;
         ItemStack held = player.getMainHandItem();
-        if (held.isEmpty()) {
-            setStatus(Component.translatable("screen.infinitestats.deposit_filter.held_empty").getString());
+        if (held.isEmpty() || !(held.getItem() instanceof BlockItem blockItem)) {
+            setStatus(Component.translatable("screen.infinitestats.vein_filter.held_empty").getString());
             return;
         }
-        ResourceLocation id = BuiltInRegistries.ITEM.getKey(held.getItem());
+        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(blockItem.getBlock());
         if (id == null) return;
         String idStr = id.toString();
         Candidate target = null;
@@ -264,7 +267,10 @@ public class AutoDepositFilterScreen extends Screen {
                 break;
             }
         }
-        if (target == null) return;
+        if (target == null) {
+            setStatus(Component.translatable("screen.infinitestats.vein_filter.held_empty").getString());
+            return;
+        }
         toggle(target);
         setStatus(Component.translatable(
                 selectedIds.contains(idStr)
@@ -280,16 +286,17 @@ public class AutoDepositFilterScreen extends Screen {
         sendUpdate();
     }
 
-    /** 提交到服务端，并同步更新本地数据，让界面立即反映结果而不用等服务端回包。 */
+    /** 提交整份配置（名单只是其中两项），并同步本地数据让界面立即反映结果。 */
     private void sendUpdate() {
-        NetworkHandler.CHANNEL.sendToServer(
-                new NetworkHandler.UpdateDepositFilterPacket(useWhitelist, new HashSet<>(selectedIds)));
-
         var player = Minecraft.getInstance().player;
-        if (player != null) {
-            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
-                    stats.setAutoDepositFilterList(new HashSet<>(selectedIds), useWhitelist));
-        }
+        if (player == null) return;
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            VeinMinerConfig cfg = stats.getVeinMinerConfig().copy();
+            cfg.setFilterList(new HashSet<>(selectedIds));
+            cfg.setUseWhitelist(useWhitelist);
+            NetworkHandler.CHANNEL.sendToServer(new UpdateVeinMinerConfigPacket(cfg));
+            stats.setVeinMinerConfig(cfg.copy());
+        });
     }
 
     private void setStatus(String msg) {
@@ -305,7 +312,6 @@ public class AutoDepositFilterScreen extends Screen {
         EditorUi.panel(g, leftPos, topPos, GUI_W, GUI_H);
         EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
 
-        // 说明行：左＝模式语义，右＝已选数量
         String hint = Component.translatable(useWhitelist
                 ? "screen.infinitestats.deposit_filter.hint_whitelist"
                 : "screen.infinitestats.deposit_filter.hint_blacklist").getString();

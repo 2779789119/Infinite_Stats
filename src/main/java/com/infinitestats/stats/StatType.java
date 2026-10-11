@@ -802,6 +802,14 @@ public final class StatType {
                 .behavior(StatBehavior.TOGGLE).maxLevel(3).perPointValue(0)
                 .build(),
 
+            create("always_eat").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：饱食度满时也能继续吃普通食物（原版满饱食度只有金苹果一类能吃，"
+                        + "其余食物右键只会失败）；金苹果这类原版就允许满饱食度进食的不受影响。"
+                        + "可用配置 AlwaysEat 分组里的限制 / 例外名单限定哪些食物适用")
+                .build(),
+
             create("invisibility").category(StatCategory.UTILITY)
                 .behavior(StatBehavior.TOGGLE).maxLevel(3).perPointValue(0)
                 .build(),
@@ -903,6 +911,12 @@ public final class StatType {
                 .toggle()
                 .maxLevel(1)
                 .description("开启后可随时打开磨石（属性面板「随身工具」入口）")
+                .build(),
+
+            create("portable_brewing").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后可随时打开酿造台（自带无限燃料、不需要烈焰粉；属性面板「随身工具」入口或 /infstats brewing）")
                 .build(),
 
             create("weather_control").category(StatCategory.UTILITY)
@@ -1075,6 +1089,21 @@ public final class StatType {
     /** 是否为隐藏属性（不在 GUI 中显示，除非解锁） */
     public boolean isHidden() {
         return hidden;
+    }
+
+    /**
+     * 随身工具属性：解锁 / 关闭都在「随身工具」面板里用左键 / 右键完成，
+     * 属性面板不再单独列出它们（见 {@code StatsScreen#buildCategoryMap}）；
+     * 「重置分类」也不会连带清掉它们 —— 面板里看不到的东西不该被面板的整体操作动到。
+     */
+    private static final Set<String> PORTABLE_TOOL_IDS = Set.of(
+            "portable_crafting", "portable_furnace", "portable_anvil", "portable_ender_chest",
+            "portable_smithing", "portable_enchanting", "portable_stonecutter", "portable_loom",
+            "portable_cartography", "portable_grindstone", "portable_brewing");
+
+    /** 是否为随身工具属性（统一在「随身工具」面板里开关，属性面板默认不列出）。 */
+    public boolean isPortableTool() {
+        return PORTABLE_TOOL_IDS.contains(id);
     }
 
     /**

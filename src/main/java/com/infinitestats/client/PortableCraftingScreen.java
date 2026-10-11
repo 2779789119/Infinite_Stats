@@ -118,6 +118,8 @@ public class PortableCraftingScreen extends AbstractContainerScreen<PortableCraf
                     text(toStorage ? "output_storage_tip" : "output_bag_tip")));
         }
         super.render(gfx, mouseX, mouseY, partialTick);
+        // 原版容器界面的物品悬浮提示要子类自己触发（AbstractContainerScreen#render 不调用 renderTooltip）
+        this.renderTooltip(gfx, mouseX, mouseY);
     }
 
     /** Shift 按住时一次调整 10 级倍率，否则 1 级。 */

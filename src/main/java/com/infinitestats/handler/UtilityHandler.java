@@ -5,9 +5,12 @@ import com.infinitestats.mixin.MerchantMenuAccessor;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.StatCategory;
 import com.infinitestats.stats.StatType;
+import com.infinitestats.stats.VeinMinerConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.stats.Stats;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.ExperienceOrb;
@@ -30,8 +33,11 @@ import net.minecraft.world.item.trading.MerchantOffers;
 import net.minecraft.world.item.crafting.AbstractCookingRecipe;
 import net.minecraft.world.item.crafting.RecipeManager;
 import net.minecraft.world.item.crafting.RecipeType;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.event.level.BlockEvent;
 
 import java.util.*;
 
@@ -500,86 +506,166 @@ public class UtilityHandler implements StatEffectHandler {
     }
 
     /**
-     * 处理连锁挖掘和自动冶炼
+     * 连锁流程的递归闸门。
+     * <p>
+     * 非接管模式下，连锁方块走 {@code player.gameMode.destroyBlock}，它会再触发一次方块破坏事件；
+     * 没有这道闸门就会「连锁里的连锁」层层扩散（每一层都重新 BFS 一遍）。
+     */
+    private static final ThreadLocal<Boolean> CHAINING = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /**
+     * 处理连锁挖掘和自动冶炼。
+     * <p>
+     * 分工是这样定的（旧实现自己在事件里补主方块掉落，而原版的掉落发生得更晚，于是主方块掉两份）：
+     * <ul>
+     *   <li>{@code auto_smelt} 关闭 → 完全不碰掉落。主方块照旧由原版处理；连锁方块用
+     *       {@code player.gameMode.destroyBlock} 走完整原版流程，保护类模组的事件、统计、
+     *       耐久、经验一律正确。</li>
+     *   <li>{@code auto_smelt} 开启 → 取消事件、由本模组接管这一批方块的破坏与掉落
+     *       （不接管就没法往掉落里额外塞一份成品），接管时自行补发经验、统计与工具耐久。</li>
+     * </ul>
+     *
+     * @param event        触发这次处理的事件；接管时会被取消
+     * @param expFromEvent 原版为这次破坏算好的经验，接管时用它补发
      */
     public static void handleVeinMinerAndAutoSmelt(ServerPlayer player, PlayerStats stats,
-            BlockPos pos, BlockState state, ServerLevel level) {
-        boolean veinMiner = stats.isToggleActive("vein_miner");
-        boolean autoSmelt = stats.isToggleActive("auto_smelt");
+            BlockPos pos, BlockState state, ServerLevel level, BlockEvent.BreakEvent event) {
+        // 连锁过程中触发的破坏事件：交给原版处理这一格即可，不再二次扩散
+        if (CHAINING.get()) return;
 
+        boolean autoSmelt = stats.isToggleActive("auto_smelt");
+        boolean veinMiner = stats.isToggleActive("vein_miner");
+
+        VeinMinerConfig cfg = stats.getVeinMinerConfig();
+        if (veinMiner && cfg.isRequireSneak() && !player.isShiftKeyDown()) veinMiner = false;
         if (!veinMiner && !autoSmelt) return;
 
         ItemStack tool = player.getMainHandItem();
-        Block block = state.getBlock();
+        // 「自动冶炼」与「掉落直接进背包」都需要自己掌管掉落，因此都会接管这一批方块
+        boolean takeover = autoSmelt || cfg.isCollectDrops();
 
-        // 主方块掉落物
-        List<ItemStack> drops = Block.getDrops(state, level, pos,
-                level.getBlockEntity(pos), player, tool);
+        CHAINING.set(Boolean.TRUE);
+        try {
+            // 主方块：接管时才由本模组破坏（并额外产出成品 / 直接进背包），否则原封不动交给原版
+            if (takeover) {
+                event.setCanceled(true);
+                breakBlock(player, level, pos, state, tool, true, event.getExpToDrop(), cfg, autoSmelt);
+            }
 
-        // 自动冶炼主方块掉落物
-        if (autoSmelt) {
-            smeltDrops(drops, level);
-        }
+            if (!veinMiner) return;
 
-        // 连锁挖掘
-        if (veinMiner) {
-            int maxBlocks = Config.VEIN_MINER_MAX_BLOCKS.get();
-            int mined = 1;
-            Set<BlockPos> visited = new HashSet<>();
-            Deque<BlockPos> queue = new ArrayDeque<>();
-            queue.add(pos);
-            visited.add(pos);
+            List<BlockPos> targets = VeinMinerLogic.collectTargets(level, cfg, pos, state, tool);
+            int limit = VeinMinerLogic.effectiveMaxBlocks(cfg);
+            int mined = 0;
+            double xpAccum = 0.0D;
 
-            while (!queue.isEmpty() && mined < maxBlocks) {
-                BlockPos current = queue.poll();
-                for (int dx = -1; dx <= 1; dx++) {
-                    for (int dy = -1; dy <= 1; dy++) {
-                        for (int dz = -1; dz <= 1; dz++) {
-                            if (dx == 0 && dy == 0 && dz == 0) continue;
-                            BlockPos neighbor = current.offset(dx, dy, dz);
-                            if (visited.contains(neighbor)) continue;
-                            visited.add(neighbor);
-                            BlockState nState = level.getBlockState(neighbor);
-                            if (nState.getBlock() == block && level.getBlockEntity(neighbor) == null) {
-                                if (tool.isCorrectToolForDrops(nState)) {
-                                    List<ItemStack> nDrops = Block.getDrops(nState, level, neighbor,
-                                            level.getBlockEntity(neighbor), player, tool);
-                                    level.destroyBlock(neighbor, false, player);
-                                    if (autoSmelt) {
-                                        smeltDrops(nDrops, level);
-                                    }
-                                    for (ItemStack d : nDrops) {
-                                        Block.popResource(level, neighbor, d);
-                                    }
-                                    mined++;
-                                    if (mined >= maxBlocks) break;
-                                    queue.add(neighbor);
-                                }
-                            }
-                        }
-                        if (mined >= maxBlocks) break;
+            for (BlockPos target : targets) {
+                if (mined >= limit) break;
+
+                ItemStack current = player.getMainHandItem();
+                if (current.isEmpty()) break;
+                // 工具保护：耐久只剩最后 1 点时收手，避免连锁把工具挖爆
+                if (cfg.isProtectTool() && current.isDamageableItem()
+                        && current.getDamageValue() >= current.getMaxDamage() - 1) break;
+
+                if (takeover) {
+                    BlockState targetState = level.getBlockState(target);
+                    if (targetState.isAir()) continue;
+                    breakBlock(player, level, target, targetState, current, false, 0, cfg, autoSmelt);
+                } else {
+                    // 走完整原版流程：其他模组的破坏事件与保护、统计、耐久、经验都由原版负责
+                    if (!player.gameMode.destroyBlock(target)) continue;
+                }
+                mined++;
+
+                // 代价：饥饿与经验按「实际破坏的方块数」结算
+                if (cfg.getExhaustionPerBlock() > 0.0D) {
+                    player.causeFoodExhaustion((float) cfg.getExhaustionPerBlock());
+                }
+                if (cfg.getXpPerBlock() > 0.0D) {
+                    xpAccum += cfg.getXpPerBlock();
+                    int whole = (int) xpAccum;
+                    if (whole > 0) {
+                        xpAccum -= whole;
+                        player.giveExperiencePoints(-whole);
                     }
                 }
             }
-        }
-
-        // 生成主方块掉落物
-        for (ItemStack drop : drops) {
-            Block.popResource(level, pos, drop);
+        } finally {
+            CHAINING.set(Boolean.FALSE);
         }
     }
 
-    private static void smeltDrops(List<ItemStack> drops, ServerLevel level) {
-        for (int i = 0; i < drops.size(); i++) {
-            ItemStack stack = drops.get(i);
-            ItemStack result = getSmeltResult(stack, level);
-            if (!result.isEmpty()) {
-                // 保持原掉落数量，并按配方产出倍数放大（多数配方产出为 1）
-                ItemStack out = result.copy();
-                out.setCount(result.getCount() * stack.getCount());
-                drops.set(i, out);
-            }
+    /**
+     * 接管模式下破坏一格方块（主方块与连锁方块共用）。
+     * <p>
+     * 掉落自己算、自己发，所以处理器（时运 / 精准采集）依旧生效；精准采集时不冶炼 ——
+     * 免得玩家专门附的精准采集白搭。
+     * 开了「掉落直接进背包」时掉落直接塞进背包，塞不下（背包满 / 单格上限）的那部分才照常掉在地上。
+     * <p>
+     * 自动冶炼是**额外产出**：手挖的那一格与被连锁带走的方块一视同仁 —— 原矿照掉，
+     * 另加一份（有熔炼配方的给成品，没有配方的原样再给一份原矿）。
+     */
+    private static void breakBlock(ServerPlayer player, ServerLevel level, BlockPos pos, BlockState state,
+            ItemStack tool, boolean primary, int expFromEvent, VeinMinerConfig cfg, boolean autoSmelt) {
+        List<ItemStack> drops = Block.getDrops(state, level, pos,
+                level.getBlockEntity(pos), player, tool);
+        if (autoSmelt && !hasSilkTouch(tool)) {
+            addSmeltedDrops(drops, level);
         }
+
+        level.destroyBlock(pos, false, player);
+        for (ItemStack drop : drops) {
+            if (cfg.isCollectDrops() && player.getInventory().add(drop)) {
+                continue;
+            }
+            Block.popResource(level, pos, drop);
+        }
+
+        int exp = primary ? expFromEvent
+                : state.getBlock().getExpDrop(state, level, level.random, pos, 0, 0);
+        if (exp > 0) player.giveExperiencePoints(exp);
+
+        // 原版这两项统计/耐久是在破坏流程里顺手做的，接管后由我们补上
+        player.awardStat(Stats.BLOCK_MINED.get(state.getBlock()));
+        if (!tool.isEmpty()) {
+            player.awardStat(Stats.ITEM_USED.get(tool.getItem()));
+        }
+
+        if (tool.isDamageableItem()) {
+            tool.hurtAndBreak(1, player, p -> p.broadcastBreakEvent(EquipmentSlot.MAINHAND));
+        }
+    }
+
+    private static boolean hasSilkTouch(ItemStack tool) {
+        return EnchantmentHelper.getItemEnchantmentLevel(Enchantments.SILK_TOUCH, tool) > 0;
+    }
+
+    /**
+     * 「额外产出」冶炼：为掉落里每一项**再补一份** ——
+     * <ul>
+     *   <li>有熔炼配方的：补成品（铁矿 → 原矿 + 铁锭）；</li>
+     *   <li>没有熔炼配方的：**原样再给一份**（钻石、泥土这类就是两份原矿）。</li>
+     * </ul>
+     * 后半条是**特意保留**的旧版行为：旧实现是「原版掉一份原始掉落 + 本模组补一份」，
+     * 所以没配方的方块自然也是两份 —— 于是「自动冶炼」实际上让每一格都是双份产出。
+     * <p>
+     * 有配方时数量按时运后的原掉落数量 × 配方产出倍数算（时运挖出 3 个粗铁矿 → 再给 3 个铁锭）。
+     * 先收集再追加，避免边遍历边往同一个列表里塞。
+     */
+    private static void addSmeltedDrops(List<ItemStack> drops, ServerLevel level) {
+        List<ItemStack> extra = new ArrayList<>();
+        for (ItemStack stack : drops) {
+            ItemStack result = getSmeltResult(stack, level);
+            if (result.isEmpty()) {
+                extra.add(stack.copy());
+                continue;
+            }
+            ItemStack out = result.copy();
+            out.setCount(result.getCount() * stack.getCount());
+            extra.add(out);
+        }
+        drops.addAll(extra);
     }
 
     /**

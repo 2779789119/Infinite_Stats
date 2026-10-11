@@ -1,13 +1,15 @@
 modLoader = "javafml"
 loaderVersion = "[47,)"
-license = "MIT"
-issueTrackerURL = "https://github.com/example/infinitestats/issues"
+license = "GPL-3.0-only"
+issueTrackerURL = "https://github.com/2779789119/Infinite_Stats/issues"
 
 [[mods]]
     modId = "infinitestats"
     version = "${mod_version}"
     displayName = "infinite_stats-无限加点"
     authors = "${mod_authors}"
+    # 游戏内「模组列表」的图标，路径相对 jar 根目录（src/main/resources/logo.png）
+    logoFile = "logo.png"
     description = '''
     A Terraria-like infinite stat point system for Minecraft 1.20.1 (Forge).
 
@@ -15,12 +17,13 @@ issueTrackerURL = "https://github.com/example/infinitestats/issues"
     points into any stat - there is no level cap, and points can always be
     refunded and re-spent.
 
-    - 103 built-in stats in 4 categories: Attack / Defense / Mobility / Utility
+    - 108 built-in stats in 4 categories: Attack / Defense / Mobility / Utility
     - Auto-discovery: attributes registered by other mods appear as an
       "External" category and can be leveled exactly like built-in ones
     - Ships with Chinese translations for 30+ mods external attributes,
       so raw keys like [gunsmithlib:bullet_damage] are never shown
     - Toggle abilities: Flight, Night Vision, Vein Miner, Auto Smelt, Auto Fish,
+      Eat When Full (keep eating food when your hunger bar is full),
       Infinite Arrows, Infinite Ammo / Zero Heat / No Recoil for TACZ and
       Superb Warfare guns, Infinite Energy (FE / RF / Mekanism / Thermal / EIO /
       Immersive Engineering) and Infinite Health for Superb Warfare vehicles,

@@ -240,11 +240,9 @@ public final class PortableInfuser {
             if (!canApply(enchantment, stack) || level > EnchantLimits.maxLevel(player, enchantment)) {
                 return message("bad_selection");
             }
-            for (Enchantment other : result.keySet()) {
-                if (other != enchantment && !enchantment.isCompatibleWith(other)) {
-                    return message("bad_selection");
-                }
-            }
+            // 刻意**不做互斥校验**：进阶高级附魔台的定位就是「想怎么配就怎么配」，
+            // 锋利 / 亡灵杀手 / 节肢杀手这类原版互斥的组合允许同时附在一件物品上
+            // （它们的效果本来就是各自独立结算的，互斥只是原版为了保证随机附魔不出怪组合）。
             cost += costOf(enchantment, level) - (before == null ? 0L : costOf(enchantment, before));
             if (before == null || before != level) changed++;
             result.put(enchantment, level);

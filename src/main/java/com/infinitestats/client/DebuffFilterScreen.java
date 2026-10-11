@@ -326,9 +326,29 @@ public class DebuffFilterScreen extends Screen {
 
     private void toggleMode() {
         useBlacklist = !useBlacklist;
+        // 黑白名单各自独立：切到新模式后显示的是该模式自己的名单，不沿用另一边的勾选
+        reloadSelection();
         if (modeButton != null) modeButton.setMessage(modeLabel());
         playClick();
         sendFilterUpdate();
+    }
+
+    /** 按当前模式重新读取名单（切换模式后调用）。 */
+    private void reloadSelection() {
+        var player = Minecraft.getInstance().player;
+        if (player != null) {
+            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                stats.setBuffUseBlacklist(useBlacklist);
+                filteredEffects.clear();
+                filteredEffects.addAll(stats.getBuffFilterList());
+                customIds.clear();
+                for (String id : filteredEffects) {
+                    ResourceLocation rl = ResourceLocation.tryParse(id);
+                    if (rl == null || ForgeRegistries.MOB_EFFECTS.getValue(rl) == null) customIds.add(id);
+                }
+            });
+        }
+        applyFilters();
     }
 
     private Component modeLabel() {

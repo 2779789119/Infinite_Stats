@@ -53,6 +53,9 @@ public final class Config {
     public static ForgeConfigSpec.IntValue MAGNET_RANGE;
     public static ForgeConfigSpec.IntValue VEIN_MINER_MAX_BLOCKS;
 
+    // 连锁挖掘「按标签组匹配」时视为同一类的方块标签（支持 * / ? 通配）
+    public static ForgeConfigSpec.ConfigValue<List<? extends String>> VEIN_MINER_MATCH_TAGS;
+
     // 弹射物追踪扫描半径（方块），以玩家为中心
     public static ForgeConfigSpec.IntValue PROJECTILE_TRACKING_RANGE;
 
@@ -162,6 +165,14 @@ public final class Config {
     /** 能量方块的扫描 / 补电间隔（tick）。 */
     public static ForgeConfigSpec.IntValue ENERGY_BLOCK_INTERVAL;
 
+    // ========== 满饱食度进食设置 ==========
+
+    /** 「满饱食度进食」的【限制名单】（物品 ID，{@code #} 开头表示物品标签）。留空 = 所有食物都适用。 */
+    public static ForgeConfigSpec.ConfigValue<List<? extends String>> ALWAYS_EAT_ONLY_LIST;
+
+    /** 「满饱食度进食」的【例外名单】（物品 ID，{@code #} 开头表示物品标签）。优先级高于限制名单。 */
+    public static ForgeConfigSpec.ConfigValue<List<? extends String>> ALWAYS_EAT_EXCLUDE_LIST;
+
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
 
@@ -223,8 +234,18 @@ public final class Config {
                 .comment("物品/经验磁铁吸引范围")
                 .defineInRange("magnetRange", 10, 3, 50);
         VEIN_MINER_MAX_BLOCKS = builder
-                .comment("连锁挖掘最大方块数")
+                .comment("连锁挖掘单次方块数的默认值。",
+                         "玩家可以在「连锁设置」面板里单独调整（8~256），",
+                         "面板里选择「跟随服务端」时用的就是这里的数值。")
                 .defineInRange("veinMinerMaxBlocks", 64, 8, 256);
+        VEIN_MINER_MATCH_TAGS = builder
+                .comment("连锁挖掘「按标签组匹配」时，把哪些方块标签视为同一类（支持 * 与 ? 通配）。",
+                         "默认只认矿物与原木：铁矿与深板岩铁矿共享 forge:ores/iron 所以能一起连锁，",
+                         "而石头/泥土不共享这些标签，因此不会被误连锁。",
+                         "加入 *:storage_blocks/* 会让铁块等存储方块也互相连锁，谨慎开启。")
+                .defineList("veinMinerMatchTags",
+                        List.of("*:ores", "*:ores/*", "minecraft:logs", "minecraft:logs_that_burn"),
+                        o -> o instanceof String);
         PROJECTILE_TRACKING_RANGE = builder
                 .comment("弹射物追踪的扫描半径（方块）。以玩家为中心，水平与垂直方向同半径。",
                          "追踪会在该范围内寻找玩家发射的弹射物与最近的敌人，",
@@ -399,6 +420,20 @@ public final class Config {
                          "方块实体扫描比遍历背包贵，所以单独用这个间隔节流；间隔越短补得越勤、开销越高。",
                          "玩家自身携带 / 骑乘的能量源不受此项影响，仍是每 tick 补满。")
                 .defineInRange("energyBlockInterval", 20, 1, 200);
+        builder.pop();
+
+        // 满饱食度进食设置
+        builder.push("AlwaysEat");
+        ALWAYS_EAT_ONLY_LIST = builder
+                .comment("「满饱食度进食」【限制名单】：只有名单里的食物能在饱食度已满时继续吃。",
+                         "物品 ID（如 minecraft:bread），或 # 开头的物品标签（如 #forge:foods）。",
+                         "留空（默认）= 解锁该属性的玩家对【所有】食物都能满饱食度进食。")
+                .defineList("alwaysEatOnlyList", List.<String>of(), o -> o instanceof String);
+        ALWAYS_EAT_EXCLUDE_LIST = builder
+                .comment("「满饱食度进食」【例外名单】：名单里的食物不适用本功能，一律交回原版判定。",
+                         "写法同上（物品 ID 或 # 标签）；优先级高于上面的限制名单 ——",
+                         "同时出现在两份名单里时按【例外】处理。")
+                .defineList("alwaysEatExcludeList", List.<String>of(), o -> o instanceof String);
         builder.pop();
 
         SPEC = builder.build();

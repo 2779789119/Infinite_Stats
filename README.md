@@ -1,3 +1,5 @@
+![无限加点 Infinite Stats](cover.jpg)
+
 # 无限加点（Infinite Stats）
 
 > 泰拉瑞亚（Terraria）风格的**无限属性加点系统** —— 打怪升级 → 自由分配属性点 → 打造属于自己的 Build。
@@ -5,16 +7,16 @@
 | | |
 |---|---|
 | **Mod ID** | `infinitestats` |
-| **当前版本** | `1.46.6`（以 `gradle.properties` 的 `mod_version` 为准） |
+| **当前版本** | `1.54.0`（以 `gradle.properties` 的 `mod_version` 为准） |
 | **运行环境** | Minecraft `1.20.1` / Forge `47.3.0+` |
-| **许可证** | MIT |
+| **许可证** | GPL-3.0 |
 
 ---
 
 ## ✨ 核心特性
 
 - 🎯 **经验升级加点** —— 击杀怪物与挂机被动获取经验，升级发放可分配属性点
-- 📊 **106 个内置属性**，分为攻击 / 防御 / 机动 / 功能四大类
+- 📊 **108 个内置属性**，分为攻击 / 防御 / 机动 / 功能四大类
 - 🔌 **自动发现外部属性** —— 其他模组注册的属性自动收进「外部属性」分类，无需手动适配
 - 🌏 **内置 30+ 模组的外部属性中文译文** —— 装包即用，不再显示 `[gunsmithlib:bullet_damage]` 这类原始键名
 - 🖥️ **属性面板 GUI**（默认 `P`）—— 分类浏览 / 搜索 / 一键加点 / 重置
@@ -64,6 +66,7 @@
 | `V` | 打开 EMC 转化桌 |
 | `U` | 打开成就 / 统计面板 |
 | `Y` | 打开传送点面板 |
+| `G` | 打开随身工具面板 |
 
 > 以上均可在「设置 → 按键绑定 → 无限加点」中修改。
 
@@ -98,6 +101,7 @@
 | `/infstats anvil` | 打开随身铁砧 | 随身铁砧 |
 | `/infstats enderchest` | 打开随身末影箱 | 随身末影箱 |
 | `/infstats smithing` | 打开随身锻造台 | 随身锻造台 |
+| `/infstats brewing` | 打开随身酿造台 | 随身酿造台 |
 
 随身熔炉支持 **Shift 连续放料**：燃料优先放入燃料槽，可熔炼材料先补入当前输入，不同材料进入待炼仓排队。手动将木头放入材料槽或待炼仓可烧木炭。主界面和成品仓都能一键收取，背包放不下的成品继续留仓。空闲时保留余热，缺燃料时保留进度；仓库内按 Esc 可返回熔炉。物品悬停显示精确库存数量。
 
@@ -152,7 +156,7 @@
 ### 🎛️ 功能开关（每个玩家独立，不是全局配置）
 
 - **入口**：属性面板（默认 `P`）标题栏**右上角的「功能开关」按钮**（关闭后返回属性面板）。
-- **作用**：100 条内置属性可以逐条关掉 —— 关掉后一律**从属性面板隐藏、不能继续加点**，页脚里对应的功能入口也一起消失；**「整条失效」还是「只隐藏」由下面的模式决定**（**全局设置，由整合包作者定**，配置项 `GUI.featureDisableMode`；OP 也可用指令改）：
+- **作用**：108 条内置属性可以逐条关掉 —— 关掉后一律**从属性面板隐藏、不能继续加点**，页脚里对应的功能入口也一起消失；**「整条失效」还是「只隐藏」由下面的模式决定**（**全局设置，由整合包作者定**，配置项 `GUI.featureDisableMode`；OP 也可用指令改）：
 
   | 模式 | 效果 | 已投入的点数 |
   |---|---|---|
@@ -204,9 +208,13 @@
   - **顺带堵了口子**：无限子弹生效时，**更换弹匣类配件不会再「卸弹」变成一堆真弹药物品**
     （`AbstractGunItem#dropAllAmmo` 被取消），否则「换配件拿弹药 → 弹匣又被补满」就是刷弹药。
 - **Superb Warfare 枪械**：**弹匣同样恒满、同样不用换弹**，两边一起做（缺一不可）：
-  1. **备弹侧**：接管它**自带**的无限弹药判定 `GunData.hasInfiniteBackupAmmo(Entity)`
-     （创造模式 / 创造弹药盒 / 各类弹药策略最终都问它）—— 保证射击永远不被弹药卡住、
-     换弹也不消耗任何真实弹药（物品弹、能量弹匣、经验 / 饥饿、附加来源一并覆盖）。
+  1. **备弹侧**：`GunData.countBackupAmmo(Entity)` 报无限 + `GunData.consumeBackupAmmo(Entity, int)` 整个取消 ——
+     这是「还有多少备弹 / 真正扣多少」的唯一口径：物品弹药、玩家背包弹药（`@RifleAmmo`）、能量弹匣、
+     经验 / 饥饿 / 生命各策略都由它汇总，射击前够不够与装填取多少也都看它，所以**一次覆盖所有弹药类型**，
+     也不再有「必须先带弹药」的前置（载具机炮那种吃 `small_shell_*` 物品、弹匣容量为 0 的武器因此才生效）。
+     **注意**模组自带的 `GunData.hasInfiniteBackupAmmo(Entity)` **不是**消耗闸门 —— 反汇编核对过
+     `GunData` 自己从不调用它，全模组只有 HUD（`AmmoBarOverlay`）与脚本代理（`GunDataProxy`）读它；
+     只挂那一条只会让 HUD 显示「∞」而弹药照扣。我们两条都挂：它管界面语义，上面两条才是真正拦下消耗。
   2. **弹匣侧**：每次开火后把弹匣写回容量上限，外加每 5 tick 兜底。
      **只做第 1 步是不行的** —— 那会变成「能一直打，但弹匣照常掉空、游戏仍要求你换弹」。
      容量取模组自己的属性 `GunData.get(GunProp.MAGAZINE)`（扩容弹匣、Perk 修正都已算进去，
@@ -283,6 +291,8 @@
   `GUN_DATA_MAP` 上（`getGunData(int)` / `modifyGunData(...)`），开火同样走
   `GunData.shoot(ShootParameters)`（反汇编核对：`VehicleEntity.vehicleShoot(...)` 里就是 `data.shoot(params)`），
   所以**补弹匣 / 清热量的注入点对载具天然覆盖**。
+  **机炮（物品弹药）**：这类武器吃的是 `small_shell_ap/he/gs` 这类**弹药物品**、弹药口径是「备弹」而不是弹匣，
+  所以靠的是上面那条「备弹侧」接管（`countBackupAmmo` / `consumeBackupAmmo`）—— 现在不装弹也能一直打。
   **另加一道每 5 tick 的兜底**：反射 `VehicleEntity#getGunDataMap()` 把玩家所在载具的每个武器都顶满 ——
   开火收尾的注入点只有「已经打过一发」之后才触发，而**空弹匣连 `canShoot` 都过不了**、
   压根进不了开火链路，否则会表现为「必须先手动塞一发弹药才能打」（进车约 0.25 秒后即满匣）。
@@ -415,10 +425,11 @@
 
 ### 🧰 随身工具面板（统一入口）
 
-- 所有随身站点（工作台 / 熔炉 / 铁砧 / 末影箱 / 锻造台 / 进阶附魔台 / 切石机 / 织布机 / 制图台 / 磨石）
+- 所有随身站点（工作台 / 熔炉 / 铁砧 / 末影箱 / 锻造台 / 进阶附魔台 / 切石机 / 织布机 / 制图台 / 磨石 / 酿造台）
   收敛到**一个**「随身工具」入口，点开后是独立面板：
-  - 未解锁的工具按钮**灰色不可点**，悬停会提示需要解锁哪条属性；
-  - 已解锁的点一下即打开，服务端还会再校验一次开关（改造过的客户端无法绕过）。
+  - **左键**：已解锁 → 打开对应界面；未解锁 → **直接花 1 点解锁**（不必再回属性面板加点）；
+  - **右键**：关闭该工具并**退还投入的点数**；
+  - 未解锁的按钮文字呈灰色，悬停会提示解锁价格；服务端还会再校验一次开关（改造过的客户端无法绕过）。
 - 页脚导航行只有 3 个相关入口：**随身工具 / 天气 / 强加载**（后两个需先激活对应属性才出现）。
 - 全部复用原版菜单类型，客户端自动套用原版界面，无需自建界面与菜单类型。
 - **随身铁砧是唯一例外**：它要放宽原版「过于昂贵」门槛并把消耗封顶到 **50 级**，而客户端必须能区分「随身铁砧」与「真铁砧」，因此它拥有自己的菜单类型 `PortableAnvilMenu`（客户端仍套用原版铁砧界面），由 Mixin 在两端识别后只对随身铁砧生效。
@@ -426,8 +437,13 @@
   `ContainerLevelAccess`（玩家脚下的维度 + 坐标）以保证世界侧回调正常执行（制图台成品、
   关闭时归还物品），再用子类覆写 `stillValid` 去掉「必须站在对应方块旁」的校验。
   - **随身末影箱**与原版末影箱**共用同一份库存**。
-- 对比：`/infstats craft | furnace | anvil | enderchest | smithing` 指令保持不变；
-  新增的 5 个站点只从「随身工具」面板进入。
+- **随身酿造台**走 `crafting/PortableBrewing` + `crafting/PortableBrewingData`：酿造台没有
+  「读世界数据算成品」这一步（药水配方、400 tick 进度都在方块实体里），状态因此挂在
+  玩家数据上（随存档保存）—— **关掉界面也继续酿，东西留在台子里**，下次打开接着看；
+  **自带无限燃料、不需要烈焰粉**（界面燃料条恒满）；原版菜单与界面直接套用，
+  其它模组扩展的酿造配方同样生效。
+- 对比：`/infstats craft | furnace | anvil | enderchest | smithing | brewing` 指令保持不变；
+  新增的站点只从「随身工具」面板进入。
 
 ### ✨ 随身进阶高级附魔台（`portable_enchanting`）
 
@@ -451,8 +467,9 @@
   （可直接搭自己的附魔库）。
 - **铁砧限定组合**：原版铁砧组合时不校验附魔类别，这里同样放宽到**同一大类**
   （斧头加锋利、头盔加深海探索者、剑加效率…），但不会到「任意物品随便附」的地步。
-- **互斥**：选择里互斥的附魔（锋利 / 亡灵杀手 / 节肢杀手…）会被标成「冲突」并禁止选择，
-  需要先把那一条清掉。
+- **互斥附魔可以共存**：原版互斥的组合（锋利 / 亡灵杀手 / 节肢杀手、保护 / 爆炸保护…）
+  都能同时附在一件物品上 —— 附魔台的定位就是「想怎么配就怎么配」，不做互斥校验，
+  价格照常按条计价（它们的效果本来就是各自独立结算的）。
 - **等级上限**：默认只能点到**整合包实际生效的上限**（装了 Apotheosis 时是它配置的等级上限，
   本整合包里锋利是 9 级；没有这类模组时就是原版上限）；解锁「附魔上限突破」后不再受限（见下一节）。
 - **旧存档迁移**：以前投在「随身附魔台」上的点数（含被拆到隐藏属性 `enchant_power` 上的）会
@@ -523,6 +540,21 @@
 - 与原版 `/forceload` 同一套机制（`ServerLevel#setChunkForced` + `ForcedChunksSavedData`）：强加载数据随存档保存，重启后依然有效；并做世界边界校验。
 - 数量上限由配置 `ChunkLoader.maxForcedChunks` 限制（默认 16，上限 256），超限时拒绝并提示，避免"一次点满"把服务器拖垮。
 
+### 🍎 满饱食度进食（`always_eat`）
+
+- 投入 **3 点**解锁：**饱食度已经满了也能继续吃普通食物**（原版这时右键只会失败）——
+  按在原版 `Item#use` 卡住的那一步上，与「无限弓箭」接管的是同一处，
+  自己调 `startUsingItem` 启动进食再取消事件，**手感与原版进食完全一致**（一样的 1.6 秒、一样的音效与粒子）。
+- **只多给一种可能，不改变任何已有行为**：金苹果 / 附魔金苹果这类原版 `canAlwaysEat`
+  的食物本来就能满饱食度吃，本功能直接交回原版处理；还饿着的时候同样不插手。
+  因此不存在「加了本模组反而吃不了」的情况。
+- 与 **免饥饿（`no_hunger`）** 是天然搭配：免饥饿会把饱食度永久锁满，此时想吃东西就得靠这个属性。
+- 想限定范围可用配置 **`AlwaysEat`** 分组的两份名单（改 `config/infinitestats-common.toml`，
+  或走「模组列表 → 本模组 → Config」的配置界面）：
+  - `alwaysEatOnlyList`【限制名单】：留空（默认）= 所有食物都能这样吃；填了就**只有名单里的食物**能；
+  - `alwaysEatExcludeList`【例外名单】：名单里的食物**不适用**本功能，一律交回原版（优先级更高）。
+  两份名单都支持物品 ID（`minecraft:cake`）与 `#` 开头的物品标签（`#forge:foods`）。
+
 ### 🗡️ 拔刀剑联动（SlashBlade: Resharped）—— 物品编辑器改刀
 
 - 物品编辑器（默认 `O`）底部新增 **「拔刀剑」** 按钮：**主手是拔刀剑时可点**（未装拔刀剑或手持别物时置灰），
@@ -579,7 +611,8 @@
 | `AutoRevive.autoReviveClearDebuffsOnly` | `true` | 仅清除负面效果、保留增益 |
 | `PassiveEffects.healthRegenInterval` | `20` | 生命恢复间隔（tick） |
 | `PassiveEffects.magnetRange` | `10` | 物品 / 经验磁铁吸引范围 |
-| `PassiveEffects.veinMinerMaxBlocks` | `64` | 连锁挖掘最大方块数 |
+| `PassiveEffects.veinMinerMaxBlocks` | `64` | 连锁挖掘单次方块数的**默认值**（玩家可在「连锁设置」面板里单独调整） |
+| `PassiveEffects.veinMinerMatchTags` | `*:ores` 等 | 连锁「按标签组匹配」时视为同一类的方块标签（支持 `*` / `?` 通配） |
 | `PassiveEffects.projectileTrackingRange` | `64` | 弹射物追踪扫描半径（方块，范围 8–256） |
 | `GUI.showHiddenStats` | `false` | 是否显示隐藏属性（如 `invincibility` 无敌） |
 | `GUI.featureDisableMode` | `keep` | 功能开关「关掉时」的**全局**执行模式（`keep`/`refund`/`hide`），改完即时生效 |
@@ -598,12 +631,17 @@
 | `WeatherControl.weatherCycleDuration` | `6000` | 「天气」按钮切换后新天气持续的时间（tick，默认 5 分钟） |
 | `ChunkLoader.maxForcedChunks` | `16` | 「强加载」每个维度最多可同时保持加载的区块数量（上限 256） |
 | `ExtraStrike.extraStrikeDamageRatio` | `0.2` | 「额外打击」每次打击造成的伤害占本次伤害的比例（× 等级＝追加总量，满 8 级 = 160%） |
+| `InfiniteEnergy.infiniteEnergyBlocks` | `true` | 「无限能源」是否也补满玩家自己放置的能量方块（方块实体上的 FE 能量源） |
+| `InfiniteEnergy.energyBlockRadius` | `16` | 能量方块的扫描半径（方块） |
+| `InfiniteEnergy.energyBlockInterval` | `20` | 能量方块的扫描 / 补电间隔（tick） |
+| `AlwaysEat.alwaysEatOnlyList` | `[]` | 「满饱食度进食」限制名单：留空 = 所有食物都适用；填写后只有名单内食物适用（物品 ID 或 `#` 标签） |
+| `AlwaysEat.alwaysEatExcludeList` | `[]` | 「满饱食度进食」例外名单：名单内食物不适用本功能，交回原版判定（优先级高于限制名单） |
 
 > 大部分配置改后即时生效，标注「需重启」的除外。
 
 ---
 
-## 🧬 内置属性一览（共 106 个）
+## 🧬 内置属性一览（共 108 个）
 
 > 标 **[开关]** 的为功能型开关，激活后即时生效，可随时开启 / 关闭。
 
@@ -619,9 +657,13 @@
 
 `movement_speed` 移动速度 · `swim_speed` 游泳速度 · `jump_height` 跳跃高度 · `multi_jump` N 段跳 · `step_height` 抬腿高度 · `auto_step` **[开关]** 自动抬腿 · `fly_speed` 飞行速度 · `fly` **[开关]** 飞行 · `climb_speed` 爬梯加速 · `no_fall_damage` **[开关]** 免摔落伤害
 
-### 🧰 功能（58）
+### 🧰 功能（49 + 11 个随身工具）
 
-`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 掉落幸运 · `double_loot` 双倍战利品 · `item_magnet` **[开关]** 物品磁铁 · `xp_magnet` **[开关]** 经验磁铁 · `auto_deposit` **[开关]** 自动入库 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `auto_fish` **[开关]** 自动钓鱼 · `instant_bite` **[开关]** 立即咬钩 · `breed_no_cooldown` **[开关]** 繁殖无冷却 · `instant_grow` **[开关]** 一键长大 · `crafting_bonus` 合成加成 · `auto_repair` **[开关]** 自动修理 · `repair_amount` 修理量 · `use_speed` 使用速度 · `bow_draw_speed` 拉弓加速 · `cooldown_reduction` 冷却缩减 · `projectile_tracking` **[开关]** 弹射物追踪 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `invisibility` **[开关]** 隐身 · `keep_inventory` **[开关]** 死亡不掉落 · `keep_xp` **[开关]** 死亡不掉经验 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `portable_crafting` **[开关]** 随身工作台 · `portable_furnace` **[开关]** 随身熔炉 · `portable_anvil` **[开关]** 随身铁砧 · `portable_ender_chest` **[开关]** 随身末影箱 · `portable_smithing` **[开关]** 随身锻造台 · `portable_enchanting` **[开关]** 进阶高级附魔台 · `enchant_limit` **[开关]** 附魔上限突破 · `portable_stonecutter` **[开关]** 随身切石机 · `portable_loom` **[开关]** 随身织布机 · `portable_cartography` **[开关]** 随身制图台 · `portable_grindstone` **[开关]** 随身磨石 · `weather_control` **[开关]** 天气控制 · `chunk_loader` **[开关]** 区块强加载 · `trade_discount` 村民交易折扣 · `trade_restock` **[开关]** 交易即刻补货 · `anvil_cost` 铁砧经验减免 · `pe_auto_learn` **[开关]** PE 自动学习 · `emc_learn_bonus` EMC 学习收益 · `emc_extract_discount` EMC 转化折扣 · `infinite_energy` **[开关]** 无限能源（FE/RF 等） · `sbw_infinite_health` **[开关]** 无限载具血量（卓越前线载具） · `goety_infinite_soul` **[开关]** 无限灵魂能量（诡厄巫法） · `create_infinite_stress` **[开关]** 无限应力（机械动力）
+> 11 个 `portable_*`「随身工具」属性（工作台 / 熔炉 / 铁砧 / 末影箱 / 锻造台 / 进阶附魔台 /
+> 切石机 / 织布机 / 制图台 / 磨石 / 酿造台）统一在**随身工具面板**里用**左键解锁 / 右键关闭**，
+> 因此不再显示在属性面板（把配置 `showHiddenStats` 设为 true 仍可看到）。
+
+`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 掉落幸运 · `double_loot` 双倍战利品 · `item_magnet` **[开关]** 物品磁铁 · `xp_magnet` **[开关]** 经验磁铁 · `auto_deposit` **[开关]** 自动入库 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `auto_fish` **[开关]** 自动钓鱼 · `instant_bite` **[开关]** 立即咬钩 · `breed_no_cooldown` **[开关]** 繁殖无冷却 · `instant_grow` **[开关]** 一键长大 · `crafting_bonus` 合成加成 · `auto_repair` **[开关]** 自动修理 · `repair_amount` 修理量 · `use_speed` 使用速度 · `bow_draw_speed` 拉弓加速 · `cooldown_reduction` 冷却缩减 · `projectile_tracking` **[开关]** 弹射物追踪 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `always_eat` **[开关]** 满饱食度进食 · `invisibility` **[开关]** 隐身 · `keep_inventory` **[开关]** 死亡不掉落 · `keep_xp` **[开关]** 死亡不掉经验 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `enchant_limit` **[开关]** 附魔上限突破 · `weather_control` **[开关]** 天气控制 · `chunk_loader` **[开关]** 区块强加载 · `trade_discount` 村民交易折扣 · `trade_restock` **[开关]** 交易即刻补货 · `anvil_cost` 铁砧经验减免 · `pe_auto_learn` **[开关]** PE 自动学习 · `emc_learn_bonus` EMC 学习收益 · `emc_extract_discount` EMC 转化折扣 · `infinite_energy` **[开关]** 无限能源（FE/RF 等） · `sbw_infinite_health` **[开关]** 无限载具血量（卓越前线载具） · `goety_infinite_soul` **[开关]** 无限灵魂能量（诡厄巫法） · `create_infinite_stress` **[开关]** 无限应力（机械动力）
 
 ### 🌐 外部属性（动态）
 
@@ -737,4 +779,19 @@ src/main/java/com/infinitestats/
 
 ## 📄 许可证
 
-本项目以 **MIT 许可证** 发布。详见仓库 `LICENSE`。
+本项目以 **GNU General Public License v3.0（GPLv3）** 发布。详见仓库 `LICENSE`。
+
+你可以自由使用、修改、分发本模组（包括商用），但**分发时必须同样以 GPLv3 开源并提供完整源码**。
+
+```
+Infinite Stats — Copyright (C) 2026 佚名既无名
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, version 3 of the License.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+```

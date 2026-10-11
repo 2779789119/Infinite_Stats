@@ -219,6 +219,7 @@ public class StatsScreen extends Screen {
         icon("night_vision", Items.GOLDEN_CARROT);
         icon("water_breathing", Items.PUFFERFISH);
         icon("no_hunger", Items.COOKED_BEEF);
+        icon("always_eat", Items.APPLE);
         icon("item_magnet", Items.HOPPER);
         icon("invisibility", Items.GLASS_BOTTLE);
         icon("vein_miner", Items.IRON_PICKAXE);
@@ -492,7 +493,9 @@ public class StatsScreen extends Screen {
             List<StatType> list = new ArrayList<>();
             for (StatType stat : StatType.ALL_STATS) {
                 if (stat.getCategory() == cat) {
-                    if (!stat.isHidden() || Config.SHOW_HIDDEN_STATS.get()) {
+                    // 随身工具属性不再列在面板里：解锁 / 关闭都在「随身工具」面板用左键、右键完成
+                    // （showHiddenStats = true 时仍会显示，便于排查）
+                    if ((!stat.isHidden() && !stat.isPortableTool()) || Config.SHOW_HIDDEN_STATS.get()) {
                         // 「功能开关」里被玩家关闭的属性：面板不显示，也不能加点
                         if (cachedStats != null && cachedStats.isStatDisabled(stat.getId())) {
                             continue;
@@ -820,7 +823,16 @@ public class StatsScreen extends Screen {
         addNav(labels, actions, "chunk_loader",
                 Component.translatable("gui.infinitestats.nav.chunk_loader"),
                 () -> { if (minecraft != null) minecraft.setScreen(new ChunkLoaderScreen()); });
+        // 连锁挖掘：匹配方式 / 上限 / 代价 / 名单集中在一页（未解锁或已关闭时入口不显示）
+        addNav(labels, actions, "vein_miner",
+                Component.translatable("gui.infinitestats.nav.vein_miner"),
+                () -> { if (minecraft != null) minecraft.setScreen(new VeinMinerSettingsScreen(this)); });
 
+        // 入口变多后按可用宽度收窄，避免挤到面板外
+        int maxNavW = GUI_WIDTH - 16;
+        if (labels.size() * btnW + (labels.size() - 1) * gap > maxNavW) {
+            btnW = Math.max(26, (maxNavW - (labels.size() - 1) * gap) / labels.size());
+        }
         int totalW = labels.size() * btnW + (labels.size() - 1) * gap;
         int startX = (GUI_WIDTH - totalW) / 2;
         for (int i = 0; i < labels.size(); i++) {

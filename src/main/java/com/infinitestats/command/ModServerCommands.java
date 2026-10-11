@@ -84,6 +84,8 @@ public final class ModServerCommands {
                                 .executes(ModServerCommands::openEnderChest))
                         .then(Commands.literal("smithing")
                                 .executes(ModServerCommands::openSmithing))
+                        .then(Commands.literal("brewing")
+                                .executes(ModServerCommands::openBrewing))
                         // 附魔上限突破的配套 OP 工具：/infstats enchant <附魔> <等级>
                         // 直接给主手物品写入任意等级（写入走 EnchantmentHelper，落库时由
                         // EnchantmentHelperMixin 写成 int，因此不受原版 short / 255 的截断限制）
@@ -573,6 +575,22 @@ public final class ModServerCommands {
         }
 
         PortableGuis.openSmithing(player);
+        return 1;
+    }
+
+    private static int openBrewing(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) return 0;
+
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+        if (stats == null || !stats.isToggleActive("portable_brewing")) {
+            source.sendFailure(featureDisabledReason(stats, "portable_brewing",
+                    "随身酿造台", "未激活『随身酿造台』属性，无法打开随身酿造台"));
+            return 0;
+        }
+
+        PortableGuis.openBrewing(player);
         return 1;
     }
 

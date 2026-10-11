@@ -19,11 +19,13 @@ import java.util.UUID;
  * <p>
  * 两处落点：
  * <ol>
- *   <li><b>{@code hasInfiniteBackupAmmo(Entity)}</b>：取消式接管模组<b>自带</b>的无限弹药判定 ——
- *       创造模式、创造模式弹药盒、能量/经验/饥饿等弹药策略、以及「附加来源」的检查最终都会问到它
- *       （已用 {@code javap} 核对签名：{@code public final boolean hasInfiniteBackupAmmo(Entity)}，
- *       带实体上下文，因此可以按玩家判断）。置 true 等于「这个人此刻处于创造模式持枪」，
- *       保证射击永远不被弹药卡住、换弹也不消耗任何真实弹药。</li>
+ *   <li><b>{@code countBackupAmmo(Entity)} + {@code consumeBackupAmmo(Entity, int)}</b>：
+ *       真正让「备弹无限」生效的一对 —— 前者报出无限备弹（所有弹药策略的口径），
+ *       后者把实扣那一步整个取消。</li>
+ *   <li><b>{@code hasInfiniteBackupAmmo(Entity)}</b>：置 true（创造模式 / 创造弹药盒 / 弹药策略的
+ *       「无限」语义）。<b>注意它只是界面与脚本语义</b> —— 反汇编核对过 {@code GunData} 自己从不调用它，
+ *       全模组只有 HUD（{@code AmmoBarOverlay}）与脚本代理（{@code GunDataProxy}）读它。
+ *       早先只挂这一条，所以 HUD 显示「∞」但弹药照样被扣、载具机炮还得手动装弹。</li>
  *   <li><b>{@code shoot(...)} 的几个入口</b>：开火收尾时补满弹匣 / 清热量。
  *       为什么选这里当主收口 —— 用 {@code javap} 反汇编核过：
  *       <ul>
@@ -66,6 +68,59 @@ public abstract class SbwGunDataMixin {
     private void infinitestats$infiniteAmmo(Entity entity, CallbackInfoReturnable<Boolean> cir) {
         if (CompatToggles.isActiveForShooter(entity, "infinite_ammo")) {
             cir.setReturnValue(true);
+        }
+    }
+
+    /** 「无限子弹」时报告给模组的备弹数：够它算就行，不必是 {@code Integer.MAX_VALUE}。 */
+    private static final int INFINITE_BACKUP_AMMO = 9999;
+
+    /**
+     * 无限子弹（备弹侧·**真正生效的那一份**）：把「还有多少备弹」直接报成无限。
+     * <p>
+     * 为什么不是挂在 {@code hasInfiniteBackupAmmo} 上就够了：反汇编核对过，
+     * <b>{@code GunData} 自己从不调用 {@code hasInfiniteBackupAmmo}</b> ——
+     * 全模组只有 HUD（{@code AmmoBarOverlay}）与脚本代理（{@code GunDataProxy}）读它，
+     * 也就是说那条只让界面显示「∞」，扣弹药这一步照样发生。
+     * <p>
+     * 真正问「还有多少备弹」的是这里 —— {@code countBackupAmmo(Entity)} 把
+     * 物品弹药 / 玩家背包弹药 / 能量 / 经验 / 饥饿 / 生命各类策略汇总成一个数，
+     * 射击前够不够（{@code hasEnoughAmmoToShoot}）、装填取多少（{@code reloadAmmo}）都看它。
+     * 所以从这里改返回值，等于「备弹无限」这件事对<b>所有</b>弹药类型成立 ——
+     * 载具机炮那种「吃 {@code small_shell_*} 物品、弹匣容量为 0」的武器也就不用再手动装弹了。
+     */
+    @Inject(
+            method = "countBackupAmmo(Lnet/minecraft/world/entity/Entity;)I",
+            at = @At("HEAD"),
+            cancellable = true,
+            require = 0,
+            remap = false
+    )
+    private void infinitestats$infiniteBackupAmmo(Entity entity, CallbackInfoReturnable<Integer> cir) {
+        if (CompatToggles.isActiveForShooter(entity, "infinite_ammo")) {
+            cir.setReturnValue(INFINITE_BACKUP_AMMO);
+        }
+    }
+
+    /**
+     * 无限子弹（消耗侧）：真的扣备弹这一步整个取消。
+     * <p>
+     * {@code consumeBackupAmmo(Entity, int)} 内部是 {@code AmmoConsumer.consume(...)} → 对应弹药策略
+     * （物品 / 背包 / 能量 / 经验 / 饥饿 / 生命），是唯一的实扣入口；取消它，弹药就一点不少，
+     * 也不会出现「必须先带弹药」的前置。装填（{@code reloadAmmo}）不受影响 —— 它先问
+     * {@link #infinitestats$infiniteBackupAmmo} 拿到无限备弹，再把弹匣填满。
+     * <p>
+     * 与弹匣补满的分工：这里保证「备弹不吃」，弹匣那几处保证「匣里恒满」，两边一起才是完整的无限子弹。
+     */
+    @Inject(
+            method = "consumeBackupAmmo(Lnet/minecraft/world/entity/Entity;I)V",
+            at = @At("HEAD"),
+            cancellable = true,
+            require = 0,
+            remap = false
+    )
+    private void infinitestats$skipBackupAmmoConsumption(Entity entity, int amount, CallbackInfo ci) {
+        if (CompatToggles.isActiveForShooter(entity, "infinite_ammo")) {
+            ci.cancel();
         }
     }
 

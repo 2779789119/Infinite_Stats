@@ -149,6 +149,12 @@ public final class ClientEventHandler {
             if (mc.screen != null) break;
             mc.setScreen(new WaypointScreen());
         }
+
+        // 打开随身工具面板
+        while (ClientSetup.OPEN_TOOLS_KEY.consumeClick()) {
+            if (mc.screen != null) break;
+            mc.setScreen(new PortableToolsScreen());
+        }
     }
 
     // ========== 客户端强制维持夜视（彻底绕过任何模组拦截） ==========

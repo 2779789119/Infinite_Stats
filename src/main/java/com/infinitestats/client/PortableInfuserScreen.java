@@ -7,12 +7,15 @@ import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.util.EnchantLimits;
 import com.infinitestats.util.EnchantText;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
@@ -260,23 +263,9 @@ public class PortableInfuserScreen extends AbstractContainerScreen<PortableInfus
         return text("info_none").getString();
     }
 
-    /** 该条是否被别的已选附魔挡住（原版互斥，例如锋利 / 亡灵杀手）。 */
-    private boolean blocked(Enchantment enchantment) {
-        return blockerOf(enchantment) != null;
-    }
-
-    /** 挡住它的那条附魔（没有则返回 null）。 */
-    private Enchantment blockerOf(Enchantment enchantment) {
-        // 自己已经选着的话，它本身就是冲突源，不能算「被挡」
-        if (selection.getOrDefault(enchantment, 0) > 0) return null;
-        for (Map.Entry<Enchantment, Integer> entry : selection.entrySet()) {
-            if (entry.getValue() > 0 && entry.getKey() != enchantment
-                    && !enchantment.isCompatibleWith(entry.getKey())) {
-                return entry.getKey();
-            }
-        }
-        return null;
-    }
+    // 注：这里**没有**互斥附魔的拦截 —— 进阶高级附魔台允许把原版互斥的附魔配在一起
+    //（锋利 + 亡灵杀手 + 节肢杀手…），所以清单里不存在「冲突」这种状态，
+    // 服务端 performEnchant 也刻意不做 isCompatibleWith 校验。详见 PortableInfuser#performEnchant。
 
     // ===== 发包 =====
 
@@ -340,7 +329,6 @@ public class PortableInfuserScreen extends AbstractContainerScreen<PortableInfus
      * 想再往上就继续点 {@code >}。
      */
     private void adjust(Enchantment enchantment, boolean increase, boolean extreme) {
-        if (blocked(enchantment)) return;
         int now = selection.getOrDefault(enchantment, 0);
         int max = capOf(enchantment);
         int next;
@@ -392,14 +380,13 @@ public class PortableInfuserScreen extends AbstractContainerScreen<PortableInfus
             if (index >= enchantments.size()) break;
             Enchantment enchantment = enchantments.get(index);
             int chosen = selection.getOrDefault(enchantment, 0);
-            boolean blocked = blocked(enchantment);
             int rowY = y0 + LIST_Y + row * ROW_H;
             if (chosen > 0) {
                 gfx.fill(x0 + LIST_X + 1, rowY, x0 + LIST_X + LIST_W - 1, rowY + ROW_H, ROW_PICKED);
             }
-            drawArrow(gfx, x0 + MINUS_X, rowY + 1, "<", mouseX, mouseY, !blocked && chosen > 0);
+            drawArrow(gfx, x0 + MINUS_X, rowY + 1, "<", mouseX, mouseY, chosen > 0);
             drawArrow(gfx, x0 + PLUS_X, rowY + 1, ">", mouseX, mouseY,
-                    !blocked && chosen < capOf(enchantment));
+                    chosen < capOf(enchantment));
         }
 
         drawScrollbar(gfx, x0, y0);
@@ -470,10 +457,10 @@ public class PortableInfuserScreen extends AbstractContainerScreen<PortableInfus
     private void drawRow(GuiGraphics gfx, int index, int visibleRow) {
         Enchantment enchantment = this.enchantments.get(index);
         int rowY = LIST_Y + visibleRow * ROW_H;
-        Enchantment blocker = blockerOf(enchantment);
         int target = selection.getOrDefault(enchantment, 0);
         int current = currentEnchantments().getOrDefault(enchantment, 0);
-        int nameColor = blocker != null ? TEXT_DIM : (enchantment.isCurse() ? TEXT_LACK : TEXT_NORMAL);
+        // 只区分诅咒（红）；互斥附魔是允许共存的，所以没有「冲突压暗」这一档了
+        int nameColor = enchantment.isCurse() ? TEXT_LACK : TEXT_NORMAL;
 
         gfx.drawString(font, trim(enchantment.getFullname(1).getString(), NAME_W),
                 NAME_X, rowY + 5, nameColor, false);
@@ -481,14 +468,11 @@ public class PortableInfuserScreen extends AbstractContainerScreen<PortableInfus
         // 等级：与物品当前等级不同就用高亮色标出来（一眼看出哪些改动会被提交）
         // 超过 10 级原版没有译文（会显示成 enchantment.level.11 这种键名），交给 EnchantText
         String level = target <= 0 ? "-" : EnchantText.levelSuffix(target);
-        int levelColor = blocker != null ? TEXT_DIM : (target == current ? TEXT_PRICE : TEXT_CHANGED);
-        gfx.drawString(font, level, LEVEL_CX - font.width(level) / 2, rowY + 5, levelColor, false);
+        gfx.drawString(font, level, LEVEL_CX - font.width(level) / 2, rowY + 5,
+                target == current ? TEXT_PRICE : TEXT_CHANGED, false);
 
-        // 该条自己的价（按目标等级）；被挡住的直接标「冲突」
-        if (blocker != null) {
-            String mark = text("conflict_mark").getString();
-            gfx.drawString(font, mark, PRICE_RIGHT - font.width(mark), rowY + 5, TEXT_LACK, false);
-        } else if (target > 0) {
+        // 该条自己的价（按目标等级）
+        if (target > 0) {
             String price = String.valueOf(PortableInfuser.costOf(enchantment, target));
             gfx.drawString(font, price, PRICE_RIGHT - font.width(price), rowY + 5, TEXT_PRICE, false);
         }
@@ -506,36 +490,62 @@ public class PortableInfuserScreen extends AbstractContainerScreen<PortableInfus
     @Override
     public void render(GuiGraphics gfx, int mouseX, int mouseY, float partialTick) {
         super.render(gfx, mouseX, mouseY, partialTick);
+        // 原版容器界面的「物品悬浮提示」必须由子类自己触发：1.20.1 的 AbstractContainerScreen#render
+        // 只画背景 / 槽位 / 标签，并不调用 renderTooltip —— 各原版界面都是在自己的 render 末尾显式调一次
+        // （ContainerScreen、EnchantmentScreen、ItemCombinerScreen… 全如此）。漏了这一步，
+        // 放进槽里的物品悬停时就不会像原版那样弹出提示框。
+        this.renderTooltip(gfx, mouseX, mouseY);
         renderRowTooltip(gfx, mouseX, mouseY);
     }
 
-    /** 悬停某一行时补全信息（行内空间有限，长名字与价格口径都在这里说清楚）。 */
+    /**
+     * 悬停某一行时给出的原版提示框：<b>附魔名 / 效果描述 / 价格 / 上限提示</b>。
+     * <p>
+     * 效果描述走 Enchantment Descriptions 的约定键 {@code enchantment.&lt;命名空间&gt;.&lt;路径&gt;.desc}
+     * （与物品编辑器同一套来源，见 {@link ItemEditorScreen#enchantDescription}）：
+     * 那个模组在本整合包里是装了的，所以描述直接就有；没装时这一节自然为空、不会留下空行。
+     * 描述里的 {@code §} 颜色代码由字体渲染器自行处理，这里原样透传即可。
+     */
     private void renderRowTooltip(GuiGraphics gfx, int mouseX, int mouseY) {
         if (!isOverList(mouseX, mouseY)) return;
         int index = (mouseY - topPos - LIST_Y) / ROW_H + scroll;
         if (index < 0 || index >= enchantments.size()) return;
 
         Enchantment enchantment = enchantments.get(index);
-        Enchantment blocker = blockerOf(enchantment);
         int target = selection.getOrDefault(enchantment, 0);
+
         List<Component> tooltip = new ArrayList<>();
         tooltip.add(enchantment.getFullname(Math.max(1, target)));
-        if (blocker != null) {
-            tooltip.add(text("conflict_tip", blocker.getFullname(1)));
-        } else {
-            tooltip.add(target <= 0
-                    ? text("row_none")
-                    : text("row_price", PortableInfuser.priceText(payment,
-                    PortableInfuser.costOf(enchantment, target))));
-            tooltip.add(unlimited()
-                    ? text("row_hint_unlimited")
-                    : text("row_hint", capOf(enchantment)));
+
+        String description = descriptionOf(enchantment);
+        if (description != null) {
+            for (String line : description.split("\n", -1)) {
+                if (!line.isBlank()) {
+                    tooltip.add(Component.literal(line.strip()).withStyle(ChatFormatting.GRAY));
+                }
+            }
+            tooltip.add(Component.empty()); // 描述与价格之间空一行，避免糊成一团
         }
+
+        tooltip.add(target <= 0
+                ? text("row_none")
+                : text("row_price", PortableInfuser.priceText(payment,
+                PortableInfuser.costOf(enchantment, target))));
+        tooltip.add(unlimited()
+                ? text("row_hint_unlimited")
+                : text("row_hint", capOf(enchantment)));
+
         // GuiGraphics 没有「Component 列表」重载，且长句要自己折行，所以走 FormattedCharSequence
         List<FormattedCharSequence> lines = new ArrayList<>();
         for (Component line : tooltip) {
             lines.addAll(font.split(line, 220));
         }
         gfx.renderTooltip(font, lines, mouseX, mouseY);
+    }
+
+    /** 该附魔的效果描述（Enchantment Descriptions 的约定键），取不到时返回 null。 */
+    private static String descriptionOf(Enchantment enchantment) {
+        ResourceLocation id = BuiltInRegistries.ENCHANTMENT.getKey(enchantment);
+        return id == null ? null : ItemEditorScreen.enchantDescription(id);
     }
 }

@@ -21,7 +21,11 @@ import java.lang.reflect.Method;
  *       都赶不上同一 tick 的读数，HUD 会按射速闪 max-1。</li>
  *   <li><b>补满已有的弹匣</b>：由本类每几 tick 把<b>手持</b>枪械的弹匣补到上限。Mixin 只保证
  *       「不少」，保证不了「本来就不满的枪也是满的」—— 捡到 / 换到一把半匣的枪、
- *       或其它模组改过数值之后，靠这一步把读数拉回满匣。</li>
+ *       或其它模组改过数值之后，靠这一步把读数拉满。</li>
+ *   <li><b>背包直读枪的「虚拟备弹」</b>：同一趟里判断，若这把枪是 {@code useInventoryAmmo}
+ *       （弹容显示「使用背包弹容」，如 M134 转管机枪），它没有弹匣、只认「背包里有没有这种弹」，
+ *       于是给它塞 {@code DummyAmmo}（TACZ 自己的虚拟备弹通道）—— 背包一发实弹都没有也能打，
+ *       而且不扣背包（见 {@link #fillDummyAmmo(Object, ItemStack)}）。</li>
  * </ol>
  * 判定「玩家是否解锁了这条属性」的入口 {@link #isInfiniteAmmoActive(LivingEntity)} 给 Mixin 用；
  * 它是纯 Capability 查询，不涉及任何反射，所以即使 TACZ 的类改名导致反射链失效，
@@ -38,6 +42,15 @@ public final class TaczCompat {
     /** TACZ 的枪械脚本 API（服务端侧），用来读「弹匣上限」。 */
     private static final String SCRIPT_API_CLASS = "com.tacz.guns.item.ModernKineticGunScriptAPI";
 
+    /**
+     * 背包直读枪的「虚拟备弹」目标量。
+     * <p>
+     * 与 TACZ 自带命令 {@code /tacz dummy <目标> <数量>} 用的是同一条通道
+     * （{@code IGun#setDummyAmmoAmount}，官方命令也只调它、不碰 {@code MaxDummyAmmo}）。
+     * 9999 足够任何射速打到下一次补齐。
+     */
+    private static final int DUMMY_AMMO = 9999;
+
     /** TACZ 是否已确认不可用（解析失败后不再重复尝试）。 */
     private static volatile boolean unavailable;
 
@@ -49,6 +62,8 @@ public final class TaczCompat {
     private static Method getCurrentAmmo;
     private static Method setCurrentAmmo;
     private static Method useInventoryAmmo;
+    private static Method getDummyAmmoAmount;
+    private static Method setDummyAmmoAmount;
     private static Method hasHeatData;
     private static Method getHeatAmount;
     private static Method setHeatAmount;
@@ -134,9 +149,14 @@ public final class TaczCompat {
     /** 把一把枪的弹匣补到上限；不是枪、已是满的、或数据读不出来时什么都不做。 */
     private static void fillMagazine(ItemStack stack) {
         if (stack == null || stack.isEmpty() || !gunClass.isInstance(stack.getItem())) return;
+        Object gun = stack.getItem();
         try {
-            // 背包直读（FeedType.INVENTORY）的枪没有弹匣概念，不写它的弹药计数
-            if ((Boolean) useInventoryAmmo.invoke(stack.getItem(), stack)) return;
+            if ((Boolean) useInventoryAmmo.invoke(gun, stack)) {
+                // 背包直读（FeedType.INVENTORY，如 M134 那种「使用背包弹容」）的枪没有弹匣概念，
+                // 它问的是「背包里有没有对应弹药」—— 走模组自己的「虚拟备弹」通道喂它，见 fillDummyAmmo
+                fillDummyAmmo(gun, stack);
+                return;
+            }
 
             // 弹匣上限要带上扩容弹匣等配件的影响，只能问 TACZ 自己
             Object scriptApi = scriptApiCtor.newInstance();
@@ -144,13 +164,31 @@ public final class TaczCompat {
             int max = (Integer) scriptApiGetMaxAmmo.invoke(scriptApi);
             if (max <= 0) return;
 
-            int current = (Integer) getCurrentAmmo.invoke(stack.getItem(), stack);
+            int current = (Integer) getCurrentAmmo.invoke(gun, stack);
             if (current >= max) return;                    // 已经是满的：不重复写 NBT，避免每 tick 标脏同步
 
-            setCurrentAmmo.invoke(stack.getItem(), stack, max);
+            setCurrentAmmo.invoke(gun, stack, max);
         } catch (Throwable ignored) {
             // 枪械数据缺失 / TACZ 版本 API 有出入：跳过这把枪，不影响其它功能
         }
+    }
+
+    /**
+     * 给<b>背包直读</b>的枪塞「虚拟备弹」（TACZ 自己的机制，NBT 键 {@code DummyAmmo}）。
+     * <p>
+     * 不加这一步的话，这种枪在背包里没有对应弹药时<b>直接打不响</b>：它不走弹匣，
+     * 只问「背包里有没有这种弹」。而 TACZ 的三个判定点 ——
+     * {@code ModernKineticGunScriptAPI#hasAmmoToConsume}（有没有弹可打）、
+     * {@code #consumeAmmoFromPlayer}（扣弹）、
+     * {@code AbstractGunItem#hasInventoryAmmo}（背包供弹检查，客户端也会问）——
+     * 都会在枪上带着虚拟备弹时改走虚拟池，于是「一发实弹都没有」也能一直打，且不扣背包。
+     * <p>
+     * 值与用法对齐 TACZ 自带命令 {@code /tacz dummy <目标> <数量>}：只调 {@code setDummyAmmoAmount}，
+     * 不碰 {@code MaxDummyAmmo}（官方命令也没碰）。
+     */
+    private static void fillDummyAmmo(Object gun, ItemStack stack) throws ReflectiveOperationException {
+        if ((Integer) getDummyAmmoAmount.invoke(gun, stack) >= DUMMY_AMMO) return;   // 够了就不写
+        setDummyAmmoAmount.invoke(gun, stack, DUMMY_AMMO);
     }
 
     /**
@@ -196,6 +234,8 @@ public final class TaczCompat {
                 getCurrentAmmo = gun.getMethod("getCurrentAmmoCount", ItemStack.class);
                 setCurrentAmmo = gun.getMethod("setCurrentAmmoCount", ItemStack.class, int.class);
                 useInventoryAmmo = gun.getMethod("useInventoryAmmo", ItemStack.class);
+                getDummyAmmoAmount = gun.getMethod("getDummyAmmoAmount", ItemStack.class);
+                setDummyAmmoAmount = gun.getMethod("setDummyAmmoAmount", ItemStack.class, int.class);
                 hasHeatData = gun.getMethod("hasHeatData", ItemStack.class);
                 getHeatAmount = gun.getMethod("getHeatAmount", ItemStack.class);
                 setHeatAmount = gun.getMethod("setHeatAmount", ItemStack.class, float.class);

@@ -701,6 +701,9 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         applyServerSync();
         super.render(g, mouseX, mouseY, partialTick);
+        // 原版容器界面的物品悬浮提示要子类自己触发（AbstractContainerScreen#render 不调用 renderTooltip）；
+        // 自己那套列表提示随后再画，落在它上面
+        this.renderTooltip(g, mouseX, mouseY);
         drawDragGhost(g, mouseX, mouseY);
         drawTooltips(g, mouseX, mouseY);
     }

@@ -16,12 +16,15 @@ import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.util.Mth;
@@ -40,6 +43,8 @@ import net.minecraft.world.item.ArrowItem;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.BrushItem;
 import net.minecraft.world.item.CrossbowItem;
+import net.minecraft.world.food.FoodProperties;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.tags.FluidTags;
@@ -50,6 +55,7 @@ import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.level.Level;
 import net.minecraftforge.common.TierSortingRegistry;
+import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
@@ -517,6 +523,97 @@ public final class StatEventHandler {
         player.startUsingItem(event.getHand());
         event.setCanceled(true);
         event.setCancellationResult(InteractionResult.CONSUME);
+    }
+
+    /**
+     * 「满饱食度进食」（{@code always_eat}）：饱食度已经满了也能继续吃普通食物。
+     * <p>
+     * 原版进食其实是 {@code Item#use} 开头的一段固定分支，与无限弓箭卡住的是同一处：
+     * <pre>
+     * Item.use()
+     *   ├─ food = itemstack.getFoodProperties(player)
+     *   ├─ if (player.canEat(food.canAlwaysEat())) { player.startUsingItem(hand); return consume; }
+     *   └─ return fail;                        ← 饱食度满 + 普通食物 卡在这里
+     * </pre>
+     * {@code RightClickItem} 正好在 {@code Item#use} <b>之前</b>触发且可取消，所以这里直接接替
+     * 原版那两行（手法与上面的 {@link #onRightClickItem} 一致）：自己调 {@code startUsingItem}
+     * 启动进食，再取消事件返回 {@code CONSUME}，告诉两端「这次交互已处理」。
+     * <p>
+     * <b>只在必须接管时才接管</b>，其余情况一律不取消事件、交回原版：
+     * <ul>
+     *   <li>玩家还饿着 —— 原版本来就允许进食，不需要我们插手；</li>
+     *   <li>食物 {@code canAlwaysEat() == true}（金苹果、附魔金苹果等）—— 原版满饱食度也能吃，
+     *       <b>本功能不改变它们任何行为</b>；</li>
+     *   <li>未解锁该属性，或食物被配置的两份名单排除。</li>
+     * </ul>
+     * 因此不会出现「本来能吃、加了本模组反而吃不了」的状态。
+     * <p>
+     * 两端都会跑（客户端要给出进食动作 / 手感，服务端才是权威），判定条件两端完全一致：
+     * 属性开关走同步过的能力，名单走两端都能读到的配置。
+     */
+    @SubscribeEvent
+    public static void onRightClickItemAlwaysEat(PlayerInteractEvent.RightClickItem event) {
+        Player player = event.getEntity();
+        if (player.getFoodData().needsFood()) return;      // 不饿：原版本来就管，不插手
+        if (player.isUsingItem()) return;                  // 正在吃 / 拉弓：让原版流程自己走完
+
+        ItemStack stack = event.getItemStack();
+        if (!stack.isEdible()) return;
+
+        FoodProperties food = stack.getFoodProperties(player);
+        if (food == null || food.canAlwaysEat()) return;   // 原版满饱食度也能吃，交回原版
+
+        if (!player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .map(stats -> stats.isToggleActive("always_eat"))
+                .orElse(false)) {
+            return;
+        }
+        if (!isAlwaysEatAllowed(stack)) return;            // 配置名单限制
+        if (!player.canEat(true)) return;                  // 创造 / 旁观等无敌状态，与原版口径一致
+
+        player.startUsingItem(event.getHand());
+        event.setCanceled(true);
+        event.setCancellationResult(InteractionResult.CONSUME);
+    }
+
+    /** 「满饱食度进食」名单里的 {@code #标签} 解析结果缓存（标签不可变，可长期复用）。 */
+    private static final Map<String, TagKey<Item>> ALWAYS_EAT_TAG_CACHE = new ConcurrentHashMap<>();
+
+    /**
+     * 该食物是否适用「满饱食度进食」。
+     * <p>
+     * 【例外名单】优先：命中就直接否掉，即使它也在【限制名单】里；
+     * 【限制名单】非空时只有命中它的食物才算数，留空则视为「所有食物都适用」。
+     * 名单条目既可以是物品 ID，也可以是 {@code #命名空间:标签}（与自动入库黑名单、连锁过滤名单同一套写法）。
+     */
+    private static boolean isAlwaysEatAllowed(ItemStack stack) {
+        ResourceLocation id = ForgeRegistries.ITEMS.getKey(stack.getItem());
+        String idStr = id == null ? "" : id.toString();
+
+        if (matchesItemList(stack, idStr, Config.ALWAYS_EAT_EXCLUDE_LIST.get())) return false;
+
+        List<? extends String> only = Config.ALWAYS_EAT_ONLY_LIST.get();
+        return only == null || only.isEmpty() || matchesItemList(stack, idStr, only);
+    }
+
+    /** 物品是否命中名单（物品 ID 精确匹配 / {@code #标签} 归属匹配）。 */
+    private static boolean matchesItemList(ItemStack stack, String idStr, List<? extends String> list) {
+        if (list == null || list.isEmpty()) return false;
+        for (String entry : list) {
+            if (entry == null) continue;
+            String value = entry.trim();
+            if (value.isEmpty()) continue;
+            if (value.startsWith("#")) {
+                TagKey<Item> tag = ALWAYS_EAT_TAG_CACHE.computeIfAbsent(value, key -> {
+                    ResourceLocation tagId = ResourceLocation.tryParse(key.substring(1));
+                    return tagId == null ? null : TagKey.create(Registries.ITEM, tagId);
+                });
+                if (tag != null && stack.is(tag)) return true;
+            } else if (value.equals(idStr)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1052,6 +1149,12 @@ public final class StatEventHandler {
             } catch (Throwable t) {
                 t.printStackTrace();
             }
+            // 随身酿造台：同理，关掉界面也继续酿（一轮 400 tick，进度存在玩家数据里）
+            try {
+                stats.getBrewingData().tick(player.level(), player);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
         });
     }
 
@@ -1085,13 +1188,15 @@ public final class StatEventHandler {
     public static void onBlockBreak(BlockEvent.BreakEvent event) {
         if (!(event.getPlayer() instanceof ServerPlayer player)) return;
         if (player.isCreative()) return;
+        // 更早的监听器已经拦下这次破坏（领地保护 / 保护类模组）→ 连锁也必须跟着停
+        if (event.isCanceled()) return;
 
         BlockPos pos = event.getPos();
         BlockState state = event.getState();
         ServerLevel level = (ServerLevel) event.getLevel();
 
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-            UtilityHandler.handleVeinMinerAndAutoSmelt(player, stats, pos, state, level);
+            UtilityHandler.handleVeinMinerAndAutoSmelt(player, stats, pos, state, level, event);
         });
     }
 

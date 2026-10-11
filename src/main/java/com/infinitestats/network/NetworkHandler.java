@@ -66,7 +66,8 @@ import java.util.function.Supplier;
  */
 public final class NetworkHandler {
 
-    private static final String PROTOCOL_VERSION = "19";
+    // 21：SyncStatsPacket 改为同时下发 buff / 自动入库的黑白两份名单
+    private static final String PROTOCOL_VERSION = "21";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -164,6 +165,17 @@ public final class NetworkHandler {
                 UpdateBuffFilterPacket::encode,
                 UpdateBuffFilterPacket::decode,
                 UpdateBuffFilterPacket::handle);
+
+        // 连锁挖掘设置：客户端提交（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, UpdateVeinMinerConfigPacket.class,
+                UpdateVeinMinerConfigPacket::encode,
+                UpdateVeinMinerConfigPacket::decode,
+                UpdateVeinMinerConfigPacket::handle);
+        // 连锁挖掘设置：服务端下发（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, VeinMinerConfigPacket.class,
+                VeinMinerConfigPacket::encode,
+                VeinMinerConfigPacket::decode,
+                VeinMinerConfigPacket::handle);
 
         // 物品编辑器数据包（客户端 → 服务器）
         CHANNEL.registerMessage(packetId++, EditItemPacket.class,
@@ -533,7 +545,9 @@ public final class NetworkHandler {
 
                 player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
                     for (StatType stat : StatType.ALL_STATS) {
-                        if (stat.getCategory().getName().equals(msg.categoryName)) {
+                        // 随身工具属性不在属性面板里列出，也就不能被「重置分类」连带清掉
+                        // （要退某个工具的点数，用随身工具面板右键）
+                        if (stat.getCategory().getName().equals(msg.categoryName) && !stat.isPortableTool()) {
                             stats.resetStat(stat);
                         }
                     }
@@ -628,7 +642,17 @@ public final class NetworkHandler {
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), 
                     new SyncStatsPacket(stats.createSnapshot()));
+            // 连锁设置跟着属性数据一起下发，登录 / 重生 / 改设置后客户端手上都是新的
+            CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                    new VeinMinerConfigPacket(stats.getVeinMinerConfig()));
         });
+    }
+
+    /** 单独下发连锁挖掘设置（设置提交后的回同步）。 */
+    public static void syncVeinMinerConfig(ServerPlayer player) {
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                        new VeinMinerConfigPacket(stats.getVeinMinerConfig())));
     }
 
     /**

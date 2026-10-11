@@ -246,3 +246,70 @@ tasks.register('prepareGameTestStructures', Copy) {
 tasks.matching { it.name == 'runGameTestServer' }.configureEach {
     dependsOn 'prepareGameTestStructures'
 }
+
+// ============================================================
+// 语言校验：Config.java 里的每个配置项都必须有 zh_cn / en_us 译文
+//   Cloth Config 界面上的分类标题与条目名分别取
+//     config.infinitestats.category.<分组>
+//     config.infinitestats.<分组>.<键>
+//   缺键时界面上会直接摆出键名（如 config.infinitestats.InfiniteEnergy.energyBlockRadius），
+//   所以这里让「缺翻译」变成构建失败，别再靠人肉记。单独跑：gradlew checkLang
+// ============================================================
+tasks.register('checkLang') {
+    group = 'verification'
+    description = 'Check every Config.java config key has a zh_cn / en_us translation'
+    def configJava = layout.projectDirectory.file('src/main/java/com/infinitestats/Config.java')
+    def langDir = layout.projectDirectory.dir('src/main/resources/assets/infinitestats/lang')
+    inputs.file(configJava)
+    inputs.files(fileTree(langDir) { include '*.json' })
+
+    doLast {
+        def text = configJava.asFile.getText('UTF-8')
+        def groups = new ArrayDeque()
+        def entries = []
+        text.eachLine { line ->
+            def push = line =~ /builder\.push\("([^"]+)"\)/
+            if (push.find()) {
+                groups.push(push.group(1))
+                return
+            }
+            if (line.contains('builder.pop()')) {
+                if (!groups.isEmpty()) {
+                    groups.pop()
+                }
+                return
+            }
+            def defined = line =~ /\.(defineInRange|defineList|defineEnum|define)\("([^"]+)"/
+            if (defined.find()) {
+                entries << [groups.isEmpty() ? 'ROOT' : groups.peek(), defined.group(2)]
+            }
+        }
+
+        def missing = []
+        ['zh_cn', 'en_us'].each { lang ->
+            def json = new groovy.json.JsonSlurper().parse(new File(langDir.asFile, "${lang}.json"))
+            entries.collect { it[0] }.unique().each { group ->
+                // 注意：这里必须用 String 拼接，不能写成 "…${group}"——
+                // GString 的 equals 与 String 不同，Map.containsKey(GString) 会永远匹配不到
+                def key = 'config.infinitestats.category.' + group
+                if (!json.containsKey(key)) {
+                    missing << (lang + ': ' + key)
+                }
+            }
+            entries.each { e ->
+                def key = 'config.infinitestats.' + e[0] + '.' + e[1]
+                if (!json.containsKey(key)) {
+                    missing << (lang + ': ' + key)
+                }
+            }
+        }
+
+        if (!missing.isEmpty()) {
+            throw new GradleException("Missing translation(s) for config keys (${missing.size()}):\n  "
+                    + missing.unique().join("\n  "))
+        }
+        logger.lifecycle("checkLang: ${entries.size()} config keys OK (zh_cn / en_us)")
+    }
+}
+
+tasks.named('check').configure { dependsOn tasks.named('checkLang') }

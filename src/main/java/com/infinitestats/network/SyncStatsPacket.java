@@ -29,12 +29,14 @@ public final class SyncStatsPacket {
     private long reviveInvulnUntilTick;
     private Map<String, Long> allocatedPoints;
     private boolean buffUseBlacklist;
-    private Set<String> buffFilterList;
+    private Set<String> buffBlacklist;
+    private Set<String> buffWhitelist;
     private Map<String, Waypoint> waypoints;
     private Set<String> favorites;
     private Map<String, List<String>> networkPriorities;
     private boolean autoDepositUseWhitelist;
-    private Set<String> autoDepositFilterList;
+    private Set<String> autoDepositBlacklist;
+    private Set<String> autoDepositWhitelist;
     private Set<String> disabledStats;
 
     /**
@@ -48,12 +50,14 @@ public final class SyncStatsPacket {
         this.reviveInvulnUntilTick = snapshot.reviveInvulnUntilTick;
         this.allocatedPoints = snapshot.allocatedPoints;
         this.buffUseBlacklist = snapshot.buffUseBlacklist;
-        this.buffFilterList = snapshot.buffFilterList;
+        this.buffBlacklist = snapshot.buffBlacklist;
+        this.buffWhitelist = snapshot.buffWhitelist;
         this.waypoints = snapshot.waypoints;
         this.favorites = snapshot.favorites;
         this.networkPriorities = snapshot.networkPriorities;
         this.autoDepositUseWhitelist = snapshot.autoDepositUseWhitelist;
-        this.autoDepositFilterList = snapshot.autoDepositFilterList;
+        this.autoDepositBlacklist = snapshot.autoDepositBlacklist;
+        this.autoDepositWhitelist = snapshot.autoDepositWhitelist;
         this.disabledStats = snapshot.disabledStats;
     }
 
@@ -77,13 +81,14 @@ public final class SyncStatsPacket {
             allocatedPoints.put(statId, points);
         }
 
-        // 读取 buff 过滤列表
+        // 读取 buff 过滤名单（黑 / 白各自一份）
         this.buffUseBlacklist = buf.readBoolean();
-        int filterCount = buf.readVarInt();
-        this.buffFilterList = new HashSet<>();
-        for (int i = 0; i < filterCount; i++) {
-            buffFilterList.add(buf.readUtf());
-        }
+        this.buffBlacklist = new HashSet<>();
+        int buffBlackCount = buf.readVarInt();
+        for (int i = 0; i < buffBlackCount; i++) buffBlacklist.add(buf.readUtf());
+        this.buffWhitelist = new HashSet<>();
+        int buffWhiteCount = buf.readVarInt();
+        for (int i = 0; i < buffWhiteCount; i++) buffWhitelist.add(buf.readUtf());
 
         // 读取传送点
         int wpCount = buf.readVarInt();
@@ -113,11 +118,14 @@ public final class SyncStatsPacket {
             networkPriorities.put(scope, keys);
         }
 
-        // 读取自动入库过滤（白 / 黑名单）
+        // 读取自动入库过滤名单（黑 / 白各自一份）
         this.autoDepositUseWhitelist = buf.readBoolean();
-        int depositFilterCount = buf.readVarInt();
-        this.autoDepositFilterList = new HashSet<>();
-        for (int i = 0; i < depositFilterCount; i++) autoDepositFilterList.add(buf.readUtf());
+        this.autoDepositBlacklist = new HashSet<>();
+        int depositBlackCount = buf.readVarInt();
+        for (int i = 0; i < depositBlackCount; i++) autoDepositBlacklist.add(buf.readUtf());
+        this.autoDepositWhitelist = new HashSet<>();
+        int depositWhiteCount = buf.readVarInt();
+        for (int i = 0; i < depositWhiteCount; i++) autoDepositWhitelist.add(buf.readUtf());
 
         // 读取「功能开关」中已关闭的属性
         int disabledCount = buf.readVarInt();
@@ -144,12 +152,14 @@ public final class SyncStatsPacket {
             buf.writeVarLong(entry.getValue());
         }
 
-        // 写入 buff 过滤列表
+        // 写入 buff 过滤名单（黑 / 白各自一份）
         buf.writeBoolean(msg.buffUseBlacklist);
-        buf.writeVarInt(msg.buffFilterList.size());
-        for (String effectId : msg.buffFilterList) {
-            buf.writeUtf(effectId);
-        }
+        Set<String> buffBlack = msg.buffBlacklist != null ? msg.buffBlacklist : Set.of();
+        buf.writeVarInt(buffBlack.size());
+        for (String effectId : buffBlack) buf.writeUtf(effectId);
+        Set<String> buffWhite = msg.buffWhitelist != null ? msg.buffWhitelist : Set.of();
+        buf.writeVarInt(buffWhite.size());
+        for (String effectId : buffWhite) buf.writeUtf(effectId);
 
         // 写入传送点
         buf.writeVarInt(msg.waypoints.size());
@@ -177,11 +187,14 @@ public final class SyncStatsPacket {
             for (String key : keys) buf.writeUtf(key);
         }
 
-        // 写入自动入库过滤（白 / 黑名单）
+        // 写入自动入库过滤名单（黑 / 白各自一份）
         buf.writeBoolean(msg.autoDepositUseWhitelist);
-        Set<String> depositFilter = msg.autoDepositFilterList != null ? msg.autoDepositFilterList : Set.of();
-        buf.writeVarInt(depositFilter.size());
-        for (String id : depositFilter) buf.writeUtf(id);
+        Set<String> depositBlack = msg.autoDepositBlacklist != null ? msg.autoDepositBlacklist : Set.of();
+        buf.writeVarInt(depositBlack.size());
+        for (String id : depositBlack) buf.writeUtf(id);
+        Set<String> depositWhite = msg.autoDepositWhitelist != null ? msg.autoDepositWhitelist : Set.of();
+        buf.writeVarInt(depositWhite.size());
+        for (String id : depositWhite) buf.writeUtf(id);
 
         // 写入「功能开关」中已关闭的属性
         Set<String> disabled = msg.disabledStats != null ? msg.disabledStats : Set.of();
@@ -213,13 +226,15 @@ public final class SyncStatsPacket {
                         -1,
                         msg.allocatedPoints,
                         msg.buffUseBlacklist,
-                        msg.buffFilterList,
+                        msg.buffBlacklist,
+                        msg.buffWhitelist,
                         msg.waypoints,
                         msg.reviveInvulnUntilTick,
                         msg.favorites,
                         msg.networkPriorities,
                         msg.autoDepositUseWhitelist,
-                        msg.autoDepositFilterList,
+                        msg.autoDepositBlacklist,
+                        msg.autoDepositWhitelist,
                         msg.disabledStats
                 );
                 stats.restoreFromSnapshot(snapshot);
@@ -238,13 +253,15 @@ public final class SyncStatsPacket {
                 -1,
                 allocatedPoints,
                 buffUseBlacklist,
-                buffFilterList,
+                buffBlacklist,
+                buffWhitelist,
                 waypoints,
                 reviveInvulnUntilTick,
                 favorites,
                 networkPriorities,
                 autoDepositUseWhitelist,
-                autoDepositFilterList,
+                autoDepositBlacklist,
+                autoDepositWhitelist,
                 disabledStats
         );
     }
