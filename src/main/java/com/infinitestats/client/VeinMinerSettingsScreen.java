@@ -27,7 +27,7 @@ import java.util.function.IntSupplier;
  * 改动即时提交（{@link UpdateVeinMinerConfigPacket}）：服务端 `sanitize()` 后落库并回推，
  * 本地同时先改一份，界面不用等服务端回包。视觉沿用 {@link EditorUi} 规范。
  */
-public class VeinMinerSettingsScreen extends Screen {
+public class VeinMinerSettingsScreen extends PanelScreen {
 
     // ======================== 布局 ========================
 
@@ -57,7 +57,15 @@ public class VeinMinerSettingsScreen extends Screen {
     private final Screen parent;
     private final VeinMinerConfig cfg = new VeinMinerConfig();
 
-    private int leftPos, topPos;
+    @Override
+    protected int panelW() {
+        return GUI_W;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_H;
+    }
 
     private Button matchBtn;
     private Button diagonalBtn;
@@ -85,8 +93,6 @@ public class VeinMinerSettingsScreen extends Screen {
     @Override
     protected void init() {
         super.init();
-        leftPos = Math.max(0, (width - GUI_W) / 2);
-        topPos = Math.max(0, (height - GUI_H) / 2);
 
         loadFromPlayer();
         buildWidgets();
@@ -344,8 +350,7 @@ public class VeinMinerSettingsScreen extends Screen {
     // ======================== 绘制 ========================
 
     @Override
-    public void render(GuiGraphics g, int mx, int my, float pt) {
-        renderBackground(g);
+    protected void renderPanel(GuiGraphics g, int mx, int my, float pt) {
         EditorUi.panel(g, leftPos, topPos, GUI_W, GUI_H);
         EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
 
@@ -367,8 +372,6 @@ public class VeinMinerSettingsScreen extends Screen {
         drawValue(g, 2, radiusValueX, radiusLabel());
         drawValue(g, 9, hungerValueX, trim(cfg.getExhaustionPerBlock()));
         drawValue(g, 10, xpValueX, trim(cfg.getXpPerBlock()));
-
-        super.render(g, mx, my, pt);
     }
 
     private String rowLabel(int row) {

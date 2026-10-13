@@ -20,7 +20,29 @@ public final class ClientSettings {
 
     // ========== GUI 面板 ==========
 
+    /** 缩放下限（再小字就看不清了）。 */
+    public static final float MIN_UI_SCALE = 0.5f;
+    /** 缩放上限（放太大一样会超出屏幕，留给大屏玩家）。 */
+    public static final float MAX_UI_SCALE = 2.0f;
+    /** 手动缩放的默认值。 */
+    public static final float DEFAULT_UI_SCALE = 1.0f;
+
+    /**
+     * 手动 UI 缩放（{@link #MIN_UI_SCALE}~{@link #MAX_UI_SCALE}）。
+     * <p>
+     * {@link #autoFit} 打开时这个值不生效，只是「下次切回手动」的起点。
+     * 面板里 Ctrl+滚轮 会以当前实际缩放为起点改这个值并自动切到手动。
+     */
     public static float guiScale = 0.5f;
+
+    /**
+     * 自动适配（默认开）：每个面板按自己的尺寸和当前窗口算出「刚好塞得下」的缩放（≤1）。
+     * <p>
+     * 关掉后用 {@link #guiScale} 手动控制。面板角落的百分比角标可点击切换，
+     * Ctrl+滚轮 调手动、Ctrl+0 回到自动。
+     */
+    public static boolean autoFit = true;
+
     public static int guiOffsetX = 0;
     public static int guiOffsetY = 0;
 
@@ -49,6 +71,7 @@ public final class ClientSettings {
             if (data == null) return;
 
             if (data.guiScale > 0) guiScale = data.guiScale;
+            autoFit = data.autoFit;
             guiOffsetX = data.guiOffsetX;
             guiOffsetY = data.guiOffsetY;
             if (data.hudScale > 0) hudScale = data.hudScale;
@@ -64,6 +87,7 @@ public final class ClientSettings {
         Path path = getConfigPath();
         Data data = new Data();
         data.guiScale = guiScale;
+        data.autoFit = autoFit;
         data.guiOffsetX = guiOffsetX;
         data.guiOffsetY = guiOffsetY;
         data.hudScale = hudScale;
@@ -85,6 +109,7 @@ public final class ClientSettings {
      */
     private static class Data {
         float guiScale = 0.5f;
+        boolean autoFit = true;
         int guiOffsetX = 0;
         int guiOffsetY = 0;
         float hudScale = 1.0f;

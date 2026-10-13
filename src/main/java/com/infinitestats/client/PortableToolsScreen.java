@@ -28,7 +28,7 @@ import java.util.List;
  * （服务端仍会再校验一次开关，改造过的客户端无法绕过）。解锁 / 关闭都复用属性面板同一个
  * {@link NetworkHandler.ModifyStatPacket}，点数校验与结算全在服务端。
  */
-public final class PortableToolsScreen extends Screen {
+public final class PortableToolsScreen extends PanelScreen {
 
     private static final int GUI_WIDTH = 440;
     private static final int GUI_HEIGHT = 376;
@@ -56,8 +56,16 @@ public final class PortableToolsScreen extends Screen {
             "portable_brewing");
 
 
-    private int leftPos;
-    private int topPos;
+    @Override
+    protected int panelW() {
+        return GUI_WIDTH;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_HEIGHT;
+    }
+
     private PlayerStats stats;
     /** 与 {@link #TOOL_IDS} 一一对应的按钮，右键关闭时按位置命中。 */
     private final List<Button> toolButtons = new ArrayList<>();
@@ -70,8 +78,6 @@ public final class PortableToolsScreen extends Screen {
     protected void init() {
         super.init();
         toolButtons.clear();
-        leftPos = (width - GUI_WIDTH) / 2;
-        topPos = (height - GUI_HEIGHT) / 2;
         stats = getClientStats();
 
         int margin = 16;
@@ -122,7 +128,7 @@ public final class PortableToolsScreen extends Screen {
     }
 
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+    protected boolean onPanelClick(int mouseX, int mouseY, int button) {
         // 右键 = 关闭该工具（退还点数）；未解锁的按钮右键无操作，直接吞掉
         if (button == 1) {
             for (int i = 0; i < toolButtons.size(); i++) {
@@ -132,7 +138,7 @@ public final class PortableToolsScreen extends Screen {
                 }
             }
         }
-        return super.mouseClicked(mouseX, mouseY, button);
+        return false;
     }
 
     /**
@@ -226,9 +232,7 @@ public final class PortableToolsScreen extends Screen {
     }
 
     @Override
-    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderBackground(graphics);
-
+    protected void renderPanel(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         graphics.fill(leftPos - 2, topPos - 2, leftPos + GUI_WIDTH + 2, topPos + GUI_HEIGHT + 2, BORDER_COLOR);
         graphics.fill(leftPos, topPos, leftPos + GUI_WIDTH, topPos + GUI_HEIGHT, BG_PANEL);
 
@@ -238,8 +242,6 @@ public final class PortableToolsScreen extends Screen {
                 leftPos + GUI_WIDTH / 2, topPos + 28, TEXT_SUBTITLE);
         graphics.drawCenteredString(font, Component.translatable("gui.infinitestats.tools.hint"),
                 leftPos + GUI_WIDTH / 2, topPos + GUI_HEIGHT - 44, TEXT_HINT);
-
-        super.render(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override

@@ -32,7 +32,7 @@ import java.util.*;
  * 点击音效、自动保存设置、法力条优化。
  * 所有 GUI 元素统一跟随缩放，右键拖动，Ctrl+滚轮缩放，中键重置。
  */
-public class StatsScreen extends Screen {
+public class StatsScreen extends PanelScreen {
 
     // ======================== 布局常量（面板坐标系，未缩放） ========================
 
@@ -50,11 +50,6 @@ public class StatsScreen extends Screen {
     private static final int ICON_SIZE = 16;
     private static final int TOGGLE_W = 28;
     private static final int TOGGLE_H = 14;
-
-    // 缩放与拖动
-    private static final float MIN_SCALE = 0.5f;
-    private static final float MAX_SCALE = 3.0f;
-    private static final float SCALE_STEP = 0.05f;
 
     // ======================== 颜色常量 ========================
 
@@ -89,7 +84,15 @@ public class StatsScreen extends Screen {
 
     // ======================== 状态 ========================
 
-    private int leftPos, topPos;
+    @Override
+    protected int panelW() {
+        return GUI_WIDTH;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_HEIGHT;
+    }
     private int contentTop, contentHeight;
     private StatCategory selectedCategory = StatCategory.ATTACK;
     private PlayerStats cachedStats;
@@ -106,12 +109,6 @@ public class StatsScreen extends Screen {
     /** 当前鼠标悬停的按钮索引（卡片内），用于 tooltip */
     private int hoveredCardIndex = -1;
     private int hoveredBtnType = 0; // 0=none, 1=minus, 2=plus, 3=toggle
-
-    // 缩放与拖动
-    private int dragOffsetX, dragOffsetY;
-    private boolean isDragging;
-    private int dragStartMouseX, dragStartMouseY;
-    private int dragStartPanelX, dragStartPanelY;
 
     private final List<Button> dynamicButtons = new ArrayList<>();
     private final Map<StatCategory, List<StatType>> categoryStats = new EnumMap<>(StatCategory.class);
@@ -268,10 +265,14 @@ public class StatsScreen extends Screen {
         icon("portable_grindstone", Items.GRINDSTONE);
         icon("weather_control", Items.LIGHTNING_ROD);
         icon("chunk_loader", Items.BEACON);
+        icon("entity_panel", Items.SPYGLASS);
         icon("infinite_energy", Items.REDSTONE_BLOCK);
         icon("sbw_infinite_health", Items.MINECART);
         icon("goety_infinite_soul", Items.SOUL_LANTERN);
         icon("create_infinite_stress", Items.PISTON);
+        icon("no_thirst", Items.WATER_BUCKET);
+        icon("no_temperature", Items.CAMPFIRE);
+        icon("infinite_mana", Items.AMETHYST_SHARD);
     }
 
     private static void icon(String statId, net.minecraft.world.item.Item item) {
@@ -298,8 +299,6 @@ public class StatsScreen extends Screen {
     @Override
     protected void init() {
         super.init();
-        dragOffsetX = ClientSettings.guiOffsetX;
-        dragOffsetY = ClientSettings.guiOffsetY;
         recalcPanelPosition();
         cachedStats = getPlayerStats();
         buildCategoryMap();
@@ -353,11 +352,11 @@ public class StatsScreen extends Screen {
     private static final int SEARCH_BAR_H = 16;
     private static final int STAR_BTN_SIZE = 12;
 
+    /**
+     * 面板内容布局：位置与缩放现在由 {@link PanelScreen} 统一负责
+     * （拖动 = 右键拖、缩放 = Ctrl+滚轮 / 右下角角标），这里只重算内部排版。
+     */
     private void recalcPanelPosition() {
-        int scaledW = (int) (GUI_WIDTH * ClientSettings.guiScale);
-        int scaledH = (int) (GUI_HEIGHT * ClientSettings.guiScale);
-        leftPos = (width - scaledW) / 2 + dragOffsetX;
-        topPos = (height - scaledH) / 2 + dragOffsetY;
         contentTop = HEADER_H + TAB_H + SEARCH_BAR_H + 4;
         contentHeight = MAX_VISIBLE * (CARD_H + CARD_GAP) - CARD_GAP;
         repositionSearch();
@@ -1041,35 +1040,22 @@ public class StatsScreen extends Screen {
     // ======================== 渲染主循环 ========================
 
     @Override
-    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderBackground(graphics);
-
-        int panelMouseX = screenToPanelX(mouseX);
-        int panelMouseY = screenToPanelY(mouseY);
-
-        // 更新悬停状态
-        updateHoverState(panelMouseX, panelMouseY);
-
-        PoseStack pose = graphics.pose();
-        pose.pushPose();
-        pose.translate(leftPos, topPos, 0);
-        pose.scale(ClientSettings.guiScale, ClientSettings.guiScale, 1.0f);
+    protected void renderPanel(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 基类已经把屏幕坐标换算成面板坐标，并负责平移 / 缩放
+        updateHoverState(mouseX, mouseY);
 
         renderPanel(graphics, 0, 0);
         renderHeader(graphics, 0, 0);
-        renderStatCards(graphics, 0, 0, panelMouseX, panelMouseY);
-        renderScrollbar(graphics, 0, 0, panelMouseX, panelMouseY);
+        renderStatCards(graphics, 0, 0, mouseX, mouseY);
+        renderScrollbar(graphics, 0, 0, mouseX, mouseY);
         renderFooter(graphics, 0, 0);
         renderDividers(graphics, 0, 0);
+    }
 
-        for (var renderable : this.renderables) {
-            renderable.render(graphics, panelMouseX, panelMouseY, partialTick);
-        }
-
-        pose.popPose();
-
-        renderScaleIndicator(graphics, mouseX, mouseY);
-        renderTooltipOverlay(graphics, panelMouseX, panelMouseY, mouseX, mouseY);
+    /** 浮窗画在控件之上（基类负责缩放）。 */
+    @Override
+    protected void renderPanelOverlay(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        renderTooltipOverlay(graphics, mouseX, mouseY, mouseX, mouseY);
     }
 
     /**
@@ -1170,25 +1156,15 @@ public class StatsScreen extends Screen {
         }
     }
 
-    private int screenToPanelX(int screenX) {
-        return (int) ((screenX - leftPos) / ClientSettings.guiScale);
+    /** 鼠标坐标：基类已换算成面板坐标，这里直接透传。 */
+    private int screenToPanelX(int mouseX) {
+        return mouseX;
     }
 
-    private int screenToPanelY(int screenY) {
-        return (int) ((screenY - topPos) / ClientSettings.guiScale);
+    private int screenToPanelY(int mouseY) {
+        return mouseY;
     }
 
-    private void renderScaleIndicator(GuiGraphics g, int mouseX, int mouseY) {
-        String text = String.format("%.0f%%", ClientSettings.guiScale * 100);
-        int tx = leftPos + (int) (GUI_WIDTH * ClientSettings.guiScale) - font.width(text) - 6;
-        int ty = topPos + (int) (GUI_HEIGHT * ClientSettings.guiScale) + 4;
-        boolean hover = mouseX >= tx - 2 && mouseX <= tx + font.width(text) + 2
-                && mouseY >= ty - 2 && mouseY <= ty + font.lineHeight + 2;
-
-        g.fill(tx - 2, ty - 2, tx + font.width(text) + 2, ty + font.lineHeight + 2,
-                hover ? 0x80353550 : 0x40151525);
-        g.drawString(font, text, tx, ty, hover ? TEXT_PRIMARY : TEXT_HINT);
-    }
 
     // ======================== 面板绘制（面板坐标系） ========================
 
@@ -1572,54 +1548,18 @@ public class StatsScreen extends Screen {
     // ======================== 鼠标输入 ========================
 
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        boolean onPanel = mouseX >= leftPos && mouseX < leftPos + GUI_WIDTH * ClientSettings.guiScale
-                && mouseY >= topPos && mouseY < topPos + GUI_HEIGHT * ClientSettings.guiScale;
-
-        // 中键 — 重置缩放和位置
-        if (button == 2) {
-            ClientSettings.guiScale = 0.5f;
-            dragOffsetX = 0;
-            dragOffsetY = 0;
-            ClientSettings.guiOffsetX = 0;
-            ClientSettings.guiOffsetY = 0;
-            recalcPanelPosition();
-            rebuildAllWidgets();
-            return true;
-        }
-
-        // 右键 — 拖动面板
-        if (button == 1) {
-            if (onPanel) {
-                isDragging = true;
-                dragStartMouseX = (int) mouseX;
-                dragStartMouseY = (int) mouseY;
-                dragStartPanelX = dragOffsetX;
-                dragStartPanelY = dragOffsetY;
-                return true;
-            }
-        }
+    protected boolean onPanelClick(int mouseX, int mouseY, int button) {
+        boolean onPanel = mouseX >= 0 && mouseX < GUI_WIDTH
+                && mouseY >= 0 && mouseY < GUI_HEIGHT;
 
         if (onPanel) {
-            int px = screenToPanelX((int) mouseX);
-            int py = screenToPanelY((int) mouseY);
+            int px = screenToPanelX(mouseX);
+            int py = screenToPanelY(mouseY);
 
-            // 滚动条拖拽
+            // 滚动条拖拽：按下即定位 + 开始拖拽（无状态换算，拖到边界再拖回来也不会卡住）
             if (button == 0 && maxScroll > 0 && isMouseOnScrollbar(px, py)) {
                 scrollbarDragging = true;
-                scrollbarDragStartY = py;
-                // 点击轨道时先把滚动位置对齐到点击处（居中到滑块）
-                int sh = contentHeight;
-                int sliderH = Math.max(20, (int) ((float) MAX_VISIBLE / (maxScroll + MAX_VISIBLE) * sh));
-                int dragRange = sh - sliderH;
-                if (dragRange > 0) {
-                    int sliderY0 = py - sliderH / 2;
-                    float progress = (float) (sliderY0 - contentTop) / dragRange;
-                    scrollOffset = Mth.clamp((int) (progress * maxScroll + 0.5f), 0, maxScroll);
-                    scrollbarDragStartOffset = scrollOffset;
-                } else {
-                    scrollbarDragStartOffset = 0;
-                }
+                scrollOffset = EditorUi.scrollFromMouseY(py, contentTop, contentHeight, maxScroll, MAX_VISIBLE);
                 rebuildAllWidgets();
                 return true;
             }
@@ -1631,82 +1571,42 @@ public class StatsScreen extends Screen {
 
             // 检测收藏星标点击
             if (button == 0 && handleStarClick(px, py)) return true;
-
-            return super.mouseClicked(px, py, button);
         }
 
-        return super.mouseClicked(mouseX, mouseY, button);
+        return false;
     }
 
     @Override
-    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+    protected boolean onPanelDrag(int mouseX, int mouseY, int button, int dragX, int dragY) {
         if (scrollbarDragging && maxScroll > 0) {
-            int py = screenToPanelY((int) mouseY);
-            int sh = contentHeight;
-            int sliderH = Math.max(20, (int) ((float) MAX_VISIBLE / (maxScroll + MAX_VISIBLE) * sh));
-            int dragRange = sh - sliderH;
-            if (dragRange > 0) {
-                // 鼠标位移量（像素）→ 滚动位移量，再加上点击时的基准偏移
-                float delta = (float)(py - scrollbarDragStartY) / dragRange;
-                float progress = delta + (float) scrollbarDragStartOffset / maxScroll;
-                scrollOffset = Mth.clamp((int) (progress * maxScroll + 0.5), 0, maxScroll);
-                rebuildAllWidgets();
-            }
-            return true;
-        }
-
-        if (isDragging) {
-            dragOffsetX = dragStartPanelX + (int) mouseX - dragStartMouseX;
-            dragOffsetY = dragStartPanelY + (int) mouseY - dragStartMouseY;
-            ClientSettings.guiOffsetX = dragOffsetX;
-            ClientSettings.guiOffsetY = dragOffsetY;
-            recalcPanelPosition();
+            int py = screenToPanelY(mouseY);
+            scrollOffset = EditorUi.scrollFromMouseY(py, contentTop, contentHeight, maxScroll, MAX_VISIBLE);
             rebuildAllWidgets();
             return true;
         }
 
-        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+        return false;
     }
 
     @Override
-    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+    protected boolean onPanelRelease(int mouseX, int mouseY, int button) {
         if (scrollbarDragging) {
             scrollbarDragging = false;
             return true;
         }
-        if (isDragging && button == 1) {
-            isDragging = false;
-            return true;
-        }
-        return super.mouseReleased(mouseX, mouseY, button);
+        return false;
     }
 
     @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
-        boolean onPanel = mouseX >= leftPos && mouseX < leftPos + GUI_WIDTH * ClientSettings.guiScale
-                && mouseY >= topPos && mouseY < topPos + GUI_HEIGHT * ClientSettings.guiScale;
-
-        if (onPanel) {
-            // Ctrl + 滚轮 → 缩放
-            if (Screen.hasControlDown()) {
-                float newScale = Mth.clamp(ClientSettings.guiScale + (delta > 0 ? SCALE_STEP : -SCALE_STEP),
-                        MIN_SCALE, MAX_SCALE);
-                if (newScale != ClientSettings.guiScale) {
-                    ClientSettings.guiScale = newScale;
-                    recalcPanelPosition();
-                    rebuildAllWidgets();
-                }
-                return true;
-            }
-
-            // 普通滚轮 → 滚动属性列表
-            if (maxScroll > 0) {
-                doScroll(delta > 0 ? -1 : 1);
-                return true;
-            }
+    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
+        // Ctrl+滚轮 的缩放由 PanelScreen 统一处理，这里只管列表滚动
+        boolean onPanel = mouseX >= 0 && mouseX < GUI_WIDTH
+                && mouseY >= 0 && mouseY < GUI_HEIGHT;
+        if (onPanel && maxScroll > 0) {
+            doScroll(delta > 0 ? -1 : 1);
+            return true;
         }
-
-        return super.mouseScrolled(mouseX, mouseY, delta);
+        return false;
     }
 
     // ======================== 键盘输入 ========================
@@ -1776,16 +1676,6 @@ public class StatsScreen extends Screen {
             return true;
         }
 
-        if (keyCode == GLFW.GLFW_KEY_0 && hasControlDown()) {
-            ClientSettings.guiScale = 0.5f;
-            dragOffsetX = 0;
-            dragOffsetY = 0;
-            ClientSettings.guiOffsetX = 0;
-            ClientSettings.guiOffsetY = 0;
-            recalcPanelPosition();
-            rebuildAllWidgets();
-            return true;
-        }
 
         if (keyCode == GLFW.GLFW_KEY_UP || keyCode == GLFW.GLFW_KEY_W) {
             doScroll(-1);

@@ -15,6 +15,7 @@ import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
+import com.infinitestats.util.EntityPanelWand;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
@@ -336,6 +337,53 @@ public final class StatEventHandler {
 
         event.setCancellationResult(InteractionResult.sidedSuccess(animal.level().isClientSide));
         event.setCanceled(true);
+    }
+
+    // ========== 生物面板（entity_panel） ==========
+
+    /**
+     * 手持「生物观察杖」右键生物 → 请求服务端下发一次「打开这个生物的面板」。
+     * <p>
+     * 只在服务端处理：面板由服务端下发（客户端自己不做本地预测），
+     * 这样「属性是否激活」「手里的是不是观察杖」都以服务端为准，改客户端也开不出来。
+     * 木棍在原版对生物本来没有任何交互，所以这里直接吃掉这次右键；目标不是生物（方块挂饰之类）则不插手。
+     */
+    @SubscribeEvent
+    public static void onEntityInteractWithWand(PlayerInteractEvent.EntityInteract event) {
+        if (handleWandInteract(event.getEntity(), event.getTarget(), event.getItemStack())) {
+            event.setCancellationResult(InteractionResult.SUCCESS);
+            event.setCanceled(true);
+        }
+    }
+
+    /**
+     * 有的生物（盔甲架一类）右键走的是「带命中点」的 {@code interactAt}，
+     * Forge 为它单独发 {@link PlayerInteractEvent.EntityInteractSpecific}，
+     * 而且这条分支一旦返回「已处理」就不会再走上面那条 —— 所以两边都要接。
+     * 两条事件不会同时命中同一个生物，不存在一次右键开出两次面板的问题。
+     */
+    @SubscribeEvent
+    public static void onEntityInteractSpecificWithWand(PlayerInteractEvent.EntityInteractSpecific event) {
+        if (handleWandInteract(event.getEntity(), event.getTarget(), event.getItemStack())) {
+            event.setCancellationResult(InteractionResult.SUCCESS);
+            event.setCanceled(true);
+        }
+    }
+
+    /** 两条件用同一条判定，返回 true 表示这次右键已经被「生物面板」接管。 */
+    private static boolean handleWandInteract(Player player, Entity target, ItemStack stack) {
+        if (player == null || player.level().isClientSide) return false;
+        if (!(player instanceof ServerPlayer serverPlayer)) return false;
+        if (!(target instanceof LivingEntity living)) return false;
+        if (!EntityPanelWand.isWand(stack)) return false;
+        if (!serverPlayer.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .map(stats -> stats.isToggleActive(EntityPanelWand.STAT_ID))
+                .orElse(false)) {
+            return false;
+        }
+
+        NetworkHandler.sendOpenEntityPanel(serverPlayer, living);
+        return true;
     }
 
     // ========== 跳跃事件 ==========
@@ -1101,7 +1149,7 @@ public final class StatEventHandler {
      * 检查某个药水效果是否来自本模组的 Utility 系统
      * 如果对应的 toggle 已激活，说明该效果由我们自己施加，不应被 debuff_immunity 拦截
      */
-    private static boolean isOwnUtilityEffect(PlayerStats stats, String effectId) {
+    public static boolean isOwnUtilityEffect(PlayerStats stats, String effectId) {
         return switch (effectId) {
             case "minecraft:night_vision" -> stats.isToggleActive("night_vision");
             case "minecraft:invisibility" -> stats.isToggleActive("invisibility");
@@ -1152,6 +1200,13 @@ public final class StatEventHandler {
             // 随身酿造台：同理，关掉界面也继续酿（一轮 400 tick，进度存在玩家数据里）
             try {
                 stats.getBrewingData().tick(player.level(), player);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+            // 生物面板：每秒对齐一次观察杖（缺则补发、属性关闭后收回），
+            // 所以刚解锁 / 死亡掉落 / 木棍被烧掉都能在一秒内自愈
+            try {
+                if (tickCount % 20 == 0) EntityPanelWand.sync(player, stats);
             } catch (Throwable t) {
                 t.printStackTrace();
             }
@@ -1305,6 +1360,8 @@ public final class StatEventHandler {
             }
             event.getEntity().getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(newStats -> {
                 newStats.copyFrom(oldStats);
+                // 保护快照：换维度必搬；死亡重生看玩家的「重生继承保护」开关
+                newStats.inheritProtection(oldStats, event.isWasDeath());
                 // 死亡不掉落：把死亡时暂存的背包原样归还给重生后的玩家
                 if (newStats.hasPendingKeptInventory()) {
                     restoreKeptInventory(event.getEntity(), newStats.takePendingKeptInventory());

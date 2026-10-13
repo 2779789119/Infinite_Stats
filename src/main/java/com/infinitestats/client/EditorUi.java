@@ -102,6 +102,32 @@ final class EditorUi {
         g.fill(x, sliderY, x + SCROLL_W, sliderY + sliderH, hover ? BG_SB_HOVER : BG_SB);
     }
 
+    /** 滑块高度：绘制 / 命中判定 / 拖拽共用同一套算法，保证三者一致。 */
+    static int scrollThumbH(int trackH, int maxScroll, int visible) {
+        return Math.min(trackH, Math.max(16, (int) ((float) visible / (maxScroll + visible) * trackH)));
+    }
+
+    /**
+     * 按鼠标 Y 换算滚动位置：滑块<b>中心跟随鼠标</b>。
+     * <p>
+     * 刻意做成无状态的纯函数：老实现用「抓取偏移」累积（滑块顶到夹取边界后偏移量就失真），
+     * 拖到底再拖回来时滑块会卡住甚至跳回原处 —— 玩家看到的就是「回弹」。
+     */
+    static int scrollFromMouseY(int mouseY, int trackY, int trackH, int maxScroll, int visible) {
+        if (maxScroll <= 0 || trackH <= 0) return 0;
+        int thumbH = scrollThumbH(trackH, maxScroll, visible);
+        int range = trackH - thumbH;
+        if (range <= 0) return 0;
+        float progress = (mouseY - trackY - thumbH / 2f) / range;
+        return Math.max(0, Math.min(maxScroll, Math.round(progress * maxScroll)));
+    }
+
+    /** 鼠标是否落在滚动条轨道上（左右各放宽 3px，方便点中）。 */
+    static boolean onScrollbar(int mouseX, int mouseY, int trackX, int trackY, int trackH) {
+        return mouseX >= trackX - 3 && mouseX < trackX + SCROLL_W + 3
+                && mouseY >= trackY - 2 && mouseY < trackY + trackH + 2;
+    }
+
     /** 分段进度条（耐久 / 权重等），返回填充色。 */
     static int bar(GuiGraphics g, int x, int y, int w, int h, float ratio) {
         g.fill(x, y, x + w, y + h, BG_BAR_TRACK);

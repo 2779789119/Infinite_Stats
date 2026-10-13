@@ -135,6 +135,34 @@ public class UtilityHandler implements StatEffectHandler {
             }
         }
 
+        // 生存需求联动：口渴（Thirst Was Taken）与体温（Cold Sweat）。
+        // 都是「每 tick 兜底补回」——消耗散落在对方模组的各处分支里，逐个拦截既脆又容易漏。
+        // 没解锁 / 没装对应模组时在 compat 内第一步短路，零开销。
+        if (stats.isToggleActive("no_thirst")) {
+            try {
+                com.infinitestats.compat.ThirstCompat.onTick(player);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }
+        if (stats.isToggleActive("no_temperature")) {
+            try {
+                com.infinitestats.compat.ColdSweatCompat.onTick(player);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }
+
+        // 无限魔力：Iron's 法术书（玩家法力）/ Ars Nouveau（魔源）/ Botania（携带魔力 + 附近魔力池）。
+        // 三条各自懒解析、装哪个补哪个；没解锁时这一步直接跳过。
+        if (stats.isToggleActive("infinite_mana")) {
+            try {
+                com.infinitestats.compat.ManaCompat.onTick(player, tickCount);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }
+
         // 无限能源（通用 FE）：每 tick 兜底 —— 背包 / 饰品 / 骑乘实体的 FE 能量源
         // （RF / Mekanism / 热力 / EIO / 沉浸工程等最终都走 Forge Energy）保持满电；
         // 玩家自己放置的能量方块按配置间隔扫描补满（见 EnergyCompat）。
@@ -247,7 +275,10 @@ public class UtilityHandler implements StatEffectHandler {
                     MobEffectInstance.INFINITE_DURATION, 0, false, false, true), player);
             stats.setProviding("night_vision", true);
         } else if (weProvided) {
-            player.removeEffect(MobEffects.NIGHT_VISION);
+            // 白名单保护中：连本模组自己的收尾清理也要让位（保护项只能由玩家取消保护或自然结束）
+            if (!DefenseHandler.isProtected(stats, MobEffects.NIGHT_VISION)) {
+                player.removeEffect(MobEffects.NIGHT_VISION);
+            }
             stats.setProviding("night_vision", false);
         }
     }
@@ -259,7 +290,9 @@ public class UtilityHandler implements StatEffectHandler {
         boolean waterBreathing = stats.isToggleActive("water_breathing");
         if (waterBreathing) {
             player.setAirSupply(player.getMaxAirSupply());
-            player.removeEffect(MobEffects.WATER_BREATHING);
+            if (!DefenseHandler.isProtected(stats, MobEffects.WATER_BREATHING)) {
+                player.removeEffect(MobEffects.WATER_BREATHING);
+            }
         }
     }
 
@@ -309,7 +342,7 @@ public class UtilityHandler implements StatEffectHandler {
                     && currentEffect.isInfiniteDuration()
                     && currentEffect.getAmplifier() == 0;
 
-            if (isOurEffect) {
+            if (isOurEffect && !DefenseHandler.isProtected(stats, MobEffects.INVISIBILITY)) {
                 player.removeEffect(MobEffects.INVISIBILITY);
             }
             // 只有在确实没有隐身效果（来自任何模组）时才关闭 setInvisible 标志
@@ -705,7 +738,9 @@ public class UtilityHandler implements StatEffectHandler {
                     MobEffectInstance.INFINITE_DURATION, luckLevel - 1, false, false, true));
             stats.setProviding("loot_luck", true);
         } else if (weProvided) {
-            player.removeEffect(MobEffects.LUCK);
+            if (!DefenseHandler.isProtected(stats, MobEffects.LUCK)) {
+                player.removeEffect(MobEffects.LUCK);
+            }
             stats.setProviding("loot_luck", false);
         }
     }

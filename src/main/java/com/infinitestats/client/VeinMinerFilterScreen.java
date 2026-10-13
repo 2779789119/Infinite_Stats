@@ -40,7 +40,7 @@ import java.util.Set;
  * 只列出「有对应物品形态」的方块：图标与译名都靠物品，纯技术方块（没有 BlockItem）列出来也没法辨认。
  * 语义与自动入库一致：名单为空时不做限制（避免清空后连锁整体失效）。
  */
-public class VeinMinerFilterScreen extends Screen {
+public class VeinMinerFilterScreen extends PanelScreen {
 
     // ======================== 布局常量 ========================
 
@@ -74,6 +74,7 @@ public class VeinMinerFilterScreen extends Screen {
 
     private String searchText = "";
     private int scroll, maxScroll;
+    private boolean scrollbarDragging;
     private Candidate hovered;
     private final List<int[]> rowRects = new ArrayList<>();
 
@@ -84,7 +85,15 @@ public class VeinMinerFilterScreen extends Screen {
     private String statusMsg = "";
     private long statusUntil;
 
-    private int leftPos, topPos;
+    @Override
+    protected int panelW() {
+        return GUI_W;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_H;
+    }
 
     private final Screen parent;
 
@@ -125,8 +134,6 @@ public class VeinMinerFilterScreen extends Screen {
     @Override
     protected void init() {
         super.init();
-        leftPos = Math.max(0, (width - GUI_W) / 2);
-        topPos = Math.max(0, (height - GUI_H) / 2);
 
         loadFromPlayer();
         applyFilter();
@@ -307,8 +314,7 @@ public class VeinMinerFilterScreen extends Screen {
     // ======================== 绘制 ========================
 
     @Override
-    public void render(GuiGraphics g, int mx, int my, float pt) {
-        renderBackground(g);
+    protected void renderPanel(GuiGraphics g, int mx, int my, float pt) {
         EditorUi.panel(g, leftPos, topPos, GUI_W, GUI_H);
         EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
 
@@ -364,9 +370,10 @@ public class VeinMinerFilterScreen extends Screen {
                 ly, LIST_H - 2, scroll, maxScroll, VISIBLE_ROWS);
 
         EditorUi.dividerH(g, leftPos + 4, ly + LIST_H - 2, GUI_W - 8);
+    }
 
-        super.render(g, mx, my, pt);
-
+    @Override
+    protected void renderPanelOverlay(GuiGraphics g, int mx, int my, float pt) {
         if (System.currentTimeMillis() < statusUntil) {
             g.drawCenteredString(font, statusMsg, leftPos + GUI_W / 2, topPos + GUI_H - 10, EditorUi.GOLD);
         }
@@ -375,8 +382,14 @@ public class VeinMinerFilterScreen extends Screen {
     // ======================== 输入 ========================
 
     @Override
-    public boolean mouseClicked(double mx, double my, int button) {
+    protected boolean onPanelClick(int mx, int my, int button) {
         if (button == 0) {
+            // 滚动条：按下即定位 + 开始拖拽
+            if (maxScroll > 0 && EditorUi.onScrollbar(mx, my, scrollbarX(), LIST_Y, LIST_H - 2)) {
+                scrollbarDragging = true;
+                scroll = EditorUi.scrollFromMouseY(my, LIST_Y, LIST_H - 2, maxScroll, VISIBLE_ROWS);
+                return true;
+            }
             for (int[] r : rowRects) {
                 int listX = leftPos + EditorUi.GAP;
                 int listW = GUI_W - EditorUi.GAP * 2 - EditorUi.SCROLL_W - 2;
@@ -387,16 +400,39 @@ public class VeinMinerFilterScreen extends Screen {
                 }
             }
         }
-        return super.mouseClicked(mx, my, button);
+        return false;
     }
 
     @Override
-    public boolean mouseScrolled(double mx, double my, double delta) {
+    protected boolean onPanelDrag(int mx, int my, int button, int dx, int dy) {
+        if (scrollbarDragging && maxScroll > 0) {
+            scroll = EditorUi.scrollFromMouseY(my, LIST_Y, LIST_H - 2, maxScroll, VISIBLE_ROWS);
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected boolean onPanelRelease(int mx, int my, int button) {
+        if (scrollbarDragging) {
+            scrollbarDragging = false;
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected boolean onPanelScroll(int mx, int my, double delta) {
         if (maxScroll > 0) {
             scroll = clamp(scroll + (delta > 0 ? -1 : 1), 0, maxScroll);
             return true;
         }
-        return super.mouseScrolled(mx, my, delta);
+        return false;
+    }
+
+    /** 滚动条轨道的 x（与 {@link EditorUi#scrollbar} 的绘制位置一致）。 */
+    private int scrollbarX() {
+        return GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
     }
 
     @Override

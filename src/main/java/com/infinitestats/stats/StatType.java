@@ -931,6 +931,14 @@ public final class StatType {
                 .description("开启后可用属性面板「强加载」按钮输入区块坐标强加载/卸载区块（每维度有数量上限）")
                 .build(),
 
+            create("entity_panel").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后获得一根『生物观察杖』（带标记的木棍）：手持它右键任意生物即可打开该生物的面板，"
+                        + "查看它的全部属性（生命上限 / 护甲 / 攻击力 / 移动速度……连其它模组添加的属性也在内）；"
+                        + "关闭该属性时木棍会被收回")
+                .build(),
+
             create("infinite_energy").category(StatCategory.UTILITY)
                 .toggle()
                 .maxLevel(3)
@@ -961,6 +969,30 @@ public final class StatType {
                 .description("投入3点解锁：机械动力（Create）—— 你自己放置的动力网络不再因为应力（SU）不足"
                         + "而超载停机，机器照常运转、应力表指针回到低位；整张网络只要有你放置的方块即生效，"
                         + "别人基地与公共机器不受影响（需要安装机械动力，未安装时该属性无效果）")
+                .build(),
+
+            create("no_thirst").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：口渴值恒满 —— 「口渴」（Thirst Was Taken）的口渴条 / 解渴度一直是满的、"
+                        + "消耗值归零，跑步挖矿回血都不会把水耗干，也不会因为脱水扣血"
+                        + "（需要安装口渴模组，未安装时该属性无效果）")
+                .build(),
+
+            create("no_temperature").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：体温恒定在舒适区 —— 「冷汗」（Cold Sweat）的体温不再随严寒 / 酷暑 / "
+                        + "下矿 / 下界 / 火焰雪地偏离，不会因为太冷太热掉血、减速、视线模糊或发抖"
+                        + "（需要安装冷汗模组，未安装时该属性无效果）")
+                .build(),
+
+            create("infinite_mana").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(3)
+                .description("投入3点解锁：魔力恒满 —— 同时覆盖三个模组，装哪个哪个生效："
+                        + "Iron's 法术与魔法书（玩家法力）、Ars Nouveau（魔源）、"
+                        + "Botania 植物魔法（魔力石板 / 魔力戒指等携带魔力，外加你自己放下的魔力池）")
                 .build(),
 
             create("trade_discount").category(StatCategory.UTILITY)

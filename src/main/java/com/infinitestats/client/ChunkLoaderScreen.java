@@ -21,7 +21,7 @@ import java.util.List;
  * <p>
  * 每维度数量上限由配置 {@code ChunkLoader.maxForcedChunks} 决定，超限时服务端会拒绝并提示。
  */
-public final class ChunkLoaderScreen extends Screen {
+public final class ChunkLoaderScreen extends PanelScreen {
 
     private static final int GUI_WIDTH = 320;
     private static final int GUI_HEIGHT = 252;
@@ -35,8 +35,15 @@ public final class ChunkLoaderScreen extends Screen {
     private static final int ROWS_PER_PAGE = 5;
     private static final int ROW_H = 16;
 
-    private int leftPos;
-    private int topPos;
+    @Override
+    protected int panelW() {
+        return GUI_WIDTH;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_HEIGHT;
+    }
     private EditBox xField;
     private EditBox zField;
     private Button prevPageBtn;
@@ -54,8 +61,6 @@ public final class ChunkLoaderScreen extends Screen {
     @Override
     protected void init() {
         super.init();
-        leftPos = (width - GUI_WIDTH) / 2;
-        topPos = (height - GUI_HEIGHT) / 2;
 
         // 坐标输入（方块坐标，允许负号）
         xField = new EditBox(font, leftPos + 66, topPos + 34, 74, 16,
@@ -213,9 +218,7 @@ public final class ChunkLoaderScreen extends Screen {
     }
 
     @Override
-    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderBackground(graphics);
-
+    protected void renderPanel(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         graphics.fill(leftPos - 2, topPos - 2, leftPos + GUI_WIDTH + 2, topPos + GUI_HEIGHT + 2, BORDER_COLOR);
         graphics.fill(leftPos, topPos, leftPos + GUI_WIDTH, topPos + GUI_HEIGHT, BG_PANEL);
 
@@ -262,8 +265,6 @@ public final class ChunkLoaderScreen extends Screen {
 
         graphics.drawString(font, Component.translatable("gui.infinitestats.chunk.hint"),
                 leftPos + 16, topPos + GUI_HEIGHT - 40, TEXT_HINT);
-
-        super.render(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override

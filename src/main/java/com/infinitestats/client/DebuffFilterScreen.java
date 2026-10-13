@@ -2,6 +2,7 @@ package com.infinitestats.client;
 
 import com.infinitestats.compat.PinyinSearchBridge;
 import com.infinitestats.network.NetworkHandler;
+import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -15,6 +16,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectCategory;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraftforge.registries.ForgeRegistries;
 import org.lwjgl.glfw.GLFW;
 
@@ -25,19 +27,22 @@ import java.util.*;
  * <p>
  * 玩家勾选需要过滤的效果，支持两种模式：
  * <ul>
- *   <li><b>黑名单</b>（默认）：勾选的效果被拦截，其余放行；</li>
- *   <li><b>白名单</b>：勾选的效果绝对不拦截，其余不处理。</li>
+ *   <li><b>黑名单</b>（默认）：勾选的效果被拦截（需要「效果过滤」开关开启），其余放行；</li>
+ *   <li><b>白名单（保护）</b>：勾选的效果在<b>自然结束前不会被任何外力清除</b>
+ *       （其它模组、牛奶桶、指令、本模组自己的清效果逻辑都算外力），且不依赖「效果过滤」开关。</li>
  * </ul>
  * 本次重写要点：
  * <ul>
  *   <li>按原版 {@link MobEffectCategory} 把效果分为<b>增益 / 中性 / 负面</b>三类，
  *       用「左侧色条 + 名称着色 + 类别标签」三重标识；</li>
  *   <li>新增<b>类别筛选</b>（全部 / 增益 / 中性 / 负面），配合搜索可快速定位；</li>
+ *   <li>名单条目支持 <b>效果 ID / {@code somemod:*} 整模组通配 / {@code #效果标签}</b>
+ *       三种写法，通配与标签会在列表里显示「覆盖了多少个效果」，拼错时一眼可见；</li>
  *   <li>修复旧版搜索框与标题栏同高互相压盖的问题，布局改用 {@link EditorUi} 统一规范；</li>
  *   <li>新增「全选」（作用于当前筛选结果）与底栏统计；移除与风格不符的自绘按钮类。</li>
  * </ul>
  */
-public class DebuffFilterScreen extends Screen {
+public class DebuffFilterScreen extends PanelScreen {
 
     // ======================== 三分类配色 ========================
 
@@ -82,8 +87,12 @@ public class DebuffFilterScreen extends Screen {
             CAT_BTN_W * 4 + CAT_BTN_GAP * 3;                                // 169
 
     private static final int MODE_BTN_W = 96;
-    private static final int CUSTOM_LABEL_W = 54;
+    private static final int INHERIT_BTN_W = 116;
+    private static final int CUSTOM_LABEL_W = 72;
     private static final int CUSTOM_ADD_W = 66;
+
+    /** 行内状态列宽度（等级 + 剩余时间，如「III 12:34」）。 */
+    private static final int STATUS_W = 64;
 
     // ======================== 类别筛选 ========================
 
@@ -118,10 +127,40 @@ public class DebuffFilterScreen extends Screen {
         }
     }
 
-    /** 统一的列表条目。category 为 null 表示未注册 / 自定义效果。 */
-    private record FilterEntry(String name, String id, boolean isCustom, MobEffectCategory category) {
+    /**
+     * 名单条目形态：具体效果 / 未注册的自定义 ID / {@code ns:*} 通配 / {@code #标签} / 全选 {@code *}。
+     * 后四种统称「非具体效果」条目，列表里用不同图标与类别标签区分。
+     */
+    private enum EntryKind {
+        EFFECT("cat_custom"),
+        CUSTOM("cat_custom"),
+        WILDCARD("cat_wildcard"),
+        TAG("cat_tag"),
+        ALL("cat_wildcard");
+
+        final String labelSuffix;
+
+        EntryKind(String labelSuffix) {
+            this.labelSuffix = labelSuffix;
+        }
+    }
+
+    /**
+     * 统一的列表条目。category 为 null 表示未注册 / 通配 / 标签等非具体效果条目。
+     *
+     * @param effect 具体效果对应的注册对象（用于查询「现在身上有没有 / 等级 / 剩余时间」）；
+     *               通配 / 标签 / 未注册条目为 {@code null}
+     * @param hits   非具体效果条目覆盖到的已注册效果数量；具体效果条目为 {@code -1}（无意义）
+     */
+    private record FilterEntry(String name, String id, MobEffect effect, MobEffectCategory category,
+            EntryKind kind, int hits) {
+
+        boolean isCustom() {
+            return kind != EntryKind.EFFECT;
+        }
 
         int color() {
+            if (kind != EntryKind.EFFECT) return COLOR_UNKNOWN;
             if (category == null) return COLOR_UNKNOWN;
             return switch (category) {
                 case BENEFICIAL -> COLOR_BENEFICIAL;
@@ -131,7 +170,9 @@ public class DebuffFilterScreen extends Screen {
         }
 
         String categoryKey() {
-            if (category == null) return "screen.infinitestats.debuff_filter.cat_custom";
+            if (kind != EntryKind.EFFECT) {
+                return "screen.infinitestats.debuff_filter." + kind.labelSuffix;
+            }
             return switch (category) {
                 case BENEFICIAL -> "screen.infinitestats.debuff_filter.cat_beneficial";
                 case HARMFUL -> "screen.infinitestats.debuff_filter.cat_harmful";
@@ -148,10 +189,13 @@ public class DebuffFilterScreen extends Screen {
     private EditBox searchBox;
     private EditBox customInputBox;
     private Button modeButton;
+    private Button inheritButton;
 
     private String searchText = "";
     private CatFilter categoryFilter = CatFilter.ALL;
     private boolean useBlacklist = true;
+    /** 保护模式：死亡重生是否继承保护（见 {@link PlayerStats#inheritProtection}）。 */
+    private boolean useInherit = false;
 
     private final Set<String> filteredEffects = new HashSet<>();
     private final Set<String> customIds = new HashSet<>();
@@ -180,8 +224,6 @@ public class DebuffFilterScreen extends Screen {
     @Override
     protected void init() {
         super.init();
-        leftPos = Math.max(0, (width - GUI_W) / 2);
-        topPos = Math.max(0, (height - GUI_H) / 2);
 
         loadFromPlayer();
         buildAllEffects();
@@ -201,6 +243,13 @@ public class DebuffFilterScreen extends Screen {
                 .bounds(leftPos + GUI_W - EditorUi.GAP - MODE_BTN_W, topPos + 4, MODE_BTN_W, 16)
                 .build();
         addRenderableWidget(modeButton);
+
+        // 保护模式的「重生继承」开关：放在模式按钮左边（标题很短，不会撞上）
+        inheritButton = Button.builder(inheritLabel(), b -> toggleInherit())
+                .bounds(leftPos + GUI_W - EditorUi.GAP - MODE_BTN_W - 4 - INHERIT_BTN_W, topPos + 4,
+                        INHERIT_BTN_W, 16)
+                .build();
+        addRenderableWidget(inheritButton);
 
         customInputBox = new EditBox(font, leftPos + EditorUi.GAP + CUSTOM_LABEL_W,
                 topPos + CUSTOM_Y, GUI_W - CUSTOM_LABEL_W - EditorUi.GAP * 2 - CUSTOM_ADD_W - 4,
@@ -234,6 +283,30 @@ public class DebuffFilterScreen extends Screen {
         return GUI_W - EditorUi.GAP * 2 - CAT_TOTAL_W - 4;
     }
 
+    /** 面板逻辑尺寸：由 {@link PanelScreen} 按窗口算出实际缩放与位置。 */
+    @Override
+    protected int panelW() {
+        return GUI_W;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_H;
+    }
+
+    /**
+     * 「效果过滤」总开关是否开启。
+     * <p>
+     * 黑名单拦截依赖它；白名单（保护）不依赖 —— 所以只有黑名单模式下才提示。
+     */
+    private boolean masterSwitchOn() {
+        var player = Minecraft.getInstance().player;
+        if (player == null) return false;
+        return player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .map(s -> s.isToggleActive("debuff_immunity"))
+                .orElse(false);
+    }
+
     /** 从客户端缓存的属性数据读取当前过滤状态。 */
     private void loadFromPlayer() {
         var player = Minecraft.getInstance().player;
@@ -242,12 +315,85 @@ public class DebuffFilterScreen extends Screen {
             useBlacklist = stats.isBuffUseBlacklist();
             filteredEffects.clear();
             filteredEffects.addAll(stats.getBuffFilterList());
-            customIds.clear();
-            for (String id : filteredEffects) {
-                ResourceLocation rl = ResourceLocation.tryParse(id);
-                if (rl == null || ForgeRegistries.MOB_EFFECTS.getValue(rl) == null) customIds.add(id);
-            }
+            useInherit = stats.isProtectAcrossDeath();
+            rebuildCustomIds();
         });
+    }
+
+    /**
+     * 挑出「不是某个已注册效果 ID」的条目（未注册 ID / {@code ns:*} 通配 / {@code #标签} / {@code *}）。
+     * 这些条目没有对应的注册效果，列表里要单独画，否则会凭空消失。
+     */
+    private void rebuildCustomIds() {
+        customIds.clear();
+        for (String id : filteredEffects) {
+            ResourceLocation rl = ResourceLocation.tryParse(id);
+            if (rl == null || ForgeRegistries.MOB_EFFECTS.getValue(rl) == null) customIds.add(id);
+        }
+    }
+
+    /**
+     * 规范化输入框内容。
+     * <p>
+     * 支持：{@code poison} / {@code minecraft:poison}（单个效果）、{@code somemod:*}（整个模组）、
+     * {@code *}（所有效果）、{@code #forge:effect_tag} / {@code #poison}（效果标签）。
+     *
+     * @return 规范化后的名单条目；无法解析时返回 {@code null}
+     */
+    static String normalizeEntry(String raw) {
+        String input = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        if (input.isEmpty()) return null;
+        if (input.equals("*")) return input;
+
+        if (input.startsWith("#")) {
+            String tag = input.substring(1);
+            if (tag.isEmpty()) return null;
+            if (!tag.contains(":")) tag = "minecraft:" + tag;
+            ResourceLocation rl = ResourceLocation.tryParse(tag);
+            return rl == null ? null : "#" + rl;
+        }
+
+        // 命名空间通配：somemod:*（用探针 ID 校验命名空间合法性）
+        if (input.endsWith(":*")) {
+            String namespace = input.substring(0, input.length() - 2);
+            ResourceLocation probe = ResourceLocation.tryParse(namespace + ":x");
+            if (probe == null || !probe.getNamespace().equals(namespace)) return null;
+            return namespace + ":*";
+        }
+
+        if (!input.contains(":")) input = "minecraft:" + input;
+        ResourceLocation rl = ResourceLocation.tryParse(input);
+        return rl == null ? null : rl.toString();
+    }
+
+    /** 判定条目形态（列表图标 / 类别标签 / 浮窗说明用）。 */
+    static EntryKind kindOf(String entry) {
+        if (entry.equals("*")) return EntryKind.ALL;
+        if (entry.startsWith("#")) return EntryKind.TAG;
+        if (entry.endsWith(":*")) return EntryKind.WILDCARD;
+        return EntryKind.CUSTOM;
+    }
+
+    /** 该条目当前匹配到多少个已注册效果（0 = 写错了 / 标签不存在，玩家一眼能看出来）。 */
+    private int matchCount(String entry) {
+        int count = 0;
+        for (MobEffect effect : allEffects) {
+            ResourceLocation rl = ForgeRegistries.MOB_EFFECTS.getKey(effect);
+            if (rl != null && PlayerStats.matchesFilterEntry(entry, rl.toString())) count++;
+        }
+        return count;
+    }
+
+    /** 条目在列表里的显示名：具体效果用效果名，通配 / 标签 / 自定义用说明性文字。 */
+    private String displayName(String entry, EntryKind kind) {
+        return switch (kind) {
+            case WILDCARD -> Component.translatable("screen.infinitestats.debuff_filter.entry_wildcard",
+                    entry.substring(0, entry.length() - 2)).getString();
+            case TAG -> Component.translatable("screen.infinitestats.debuff_filter.entry_tag",
+                    entry.substring(1)).getString();
+            case ALL -> Component.translatable("screen.infinitestats.debuff_filter.entry_all").getString();
+            default -> "⚙ " + entry;
+        };
     }
 
     private void buildAllEffects() {
@@ -304,18 +450,16 @@ public class DebuffFilterScreen extends Screen {
                     continue;
                 }
             }
-            displayedEntries.add(new FilterEntry(name, id, false, category));
+            displayedEntries.add(new FilterEntry(name, id, effect, category, EntryKind.EFFECT, -1));
         }
 
-        for (String customId : customIds) {
+        // 非具体效果条目（自定义 ID / 通配 / 标签）：只在「全部」下出现 —— 它们本身没有类别
+        for (String entry : customIds) {
             if (!categoryFilter.accept(null)) continue;
-            if (!q.isEmpty() && !PinyinSearchBridge.matches(customId.toLowerCase(Locale.ROOT), q)) continue;
-            boolean listed = false;
-            for (MobEffect e : allEffects) {
-                ResourceLocation key = ForgeRegistries.MOB_EFFECTS.getKey(e);
-                if (key != null && key.toString().equals(customId)) { listed = true; break; }
-            }
-            if (!listed) displayedEntries.add(new FilterEntry(customId, customId, true, null));
+            if (!q.isEmpty() && !PinyinSearchBridge.matches(entry.toLowerCase(Locale.ROOT), q)) continue;
+            EntryKind kind = kindOf(entry);
+            displayedEntries.add(new FilterEntry(
+                    displayName(entry, kind), entry, null, null, kind, matchCount(entry)));
         }
 
         maxScroll = Math.max(0, displayedEntries.size() - VISIBLE_ROWS);
@@ -341,11 +485,7 @@ public class DebuffFilterScreen extends Screen {
                 stats.setBuffUseBlacklist(useBlacklist);
                 filteredEffects.clear();
                 filteredEffects.addAll(stats.getBuffFilterList());
-                customIds.clear();
-                for (String id : filteredEffects) {
-                    ResourceLocation rl = ResourceLocation.tryParse(id);
-                    if (rl == null || ForgeRegistries.MOB_EFFECTS.getValue(rl) == null) customIds.add(id);
-                }
+                rebuildCustomIds();
             });
         }
         applyFilters();
@@ -356,6 +496,21 @@ public class DebuffFilterScreen extends Screen {
                 Component.translatable(useBlacklist
                         ? "screen.infinitestats.debuff_filter.mode_blacklist"
                         : "screen.infinitestats.debuff_filter.mode_whitelist"));
+    }
+
+    /** 「重生继承保护」开关：只影响白名单（保护）模式，黑名单模式下开着也不产生行为。 */
+    private void toggleInherit() {
+        useInherit = !useInherit;
+        if (inheritButton != null) inheritButton.setMessage(inheritLabel());
+        playClick();
+        sendFilterUpdate();
+    }
+
+    private Component inheritLabel() {
+        return Component.translatable("screen.infinitestats.debuff_filter.inherit_label",
+                Component.translatable(useInherit
+                        ? "screen.infinitestats.debuff_filter.inherit_on"
+                        : "screen.infinitestats.debuff_filter.inherit_off"));
     }
 
     private void toggleEffect(FilterEntry entry) {
@@ -385,32 +540,70 @@ public class DebuffFilterScreen extends Screen {
     }
 
     private void addCustomId() {
-        String input = customInputBox.getValue().trim().toLowerCase(Locale.ROOT);
-        if (input.isEmpty()) return;
-        if (!input.contains(":")) input = "minecraft:" + input;
-
-        ResourceLocation rl = ResourceLocation.tryParse(input);
-        if (rl == null) {
+        String entry = normalizeEntry(customInputBox.getValue());
+        if (entry == null) {
             setStatus(Component.translatable("screen.infinitestats.debuff_filter.invalid_id").getString());
             return;
         }
-        filteredEffects.add(input);
-        if (ForgeRegistries.MOB_EFFECTS.getValue(rl) == null) customIds.add(input);
+        filteredEffects.add(entry);
+        rebuildCustomIds();
 
         customInputBox.setValue("");
         applyFilters();
         playClick();
         sendFilterUpdate();
+
+        // 立刻回报命中数量：通配 / 标签拼错时表现为「命中 0 个」，不用自己一个个数
+        int hits = matchCount(entry);
+        setStatus(hits == 0
+                ? Component.translatable("screen.infinitestats.debuff_filter.entry_added_none", entry).getString()
+                : Component.translatable("screen.infinitestats.debuff_filter.entry_added", entry, hits).getString());
+    }
+
+    // ======================== 行内实时状态 ========================
+
+    /** 该条目对应的效果此刻是否在身上；不在 / 非具体效果条目返回 {@code null}。 */
+    private static MobEffectInstance liveEffect(FilterEntry entry) {
+        if (entry.effect() == null) return null;
+        var player = Minecraft.getInstance().player;
+        return player == null ? null : player.getEffect(entry.effect());
+    }
+
+    /**
+     * 状态文本：等级（II / III…）+ 剩余时间。
+     * <p>
+     * 保护模式下「剩余到什么时候」才是关键信息 —— 保护只到自然结束为止。
+     */
+    static String formatStatus(MobEffectInstance inst) {
+        StringBuilder sb = new StringBuilder();
+        if (inst.getAmplifier() > 0) {
+            // 复用原版的药水等级词条（potion.potency.N → II / III…），没有词条就退回数字
+            String key = "potion.potency." + inst.getAmplifier();
+            String roman = Language.getInstance().getOrDefault(key, "");
+            sb.append(roman == null || roman.isEmpty() ? String.valueOf(inst.getAmplifier() + 1) : roman)
+                    .append(' ');
+        }
+        sb.append(formatDuration(inst.getDuration()));
+        return sb.toString();
+    }
+
+    /** 剩余时长：mm:ss；无限时长显示 ∞。 */
+    static String formatDuration(int ticks) {
+        if (ticks == MobEffectInstance.INFINITE_DURATION) return "∞";
+        int seconds = Math.max(0, ticks / 20);
+        return String.format("%d:%02d", seconds / 60, seconds % 60);
     }
 
     private void sendFilterUpdate() {
-        NetworkHandler.CHANNEL.sendToServer(
-                new NetworkHandler.UpdateBuffFilterPacket(useBlacklist, new HashSet<>(filteredEffects)));
+        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.UpdateBuffFilterPacket(
+                useBlacklist, new HashSet<>(filteredEffects), useInherit));
 
         var player = Minecraft.getInstance().player;
         if (player != null) {
-            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
-                    stats.setBuffFilterList(new HashSet<>(filteredEffects), useBlacklist));
+            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                stats.setBuffFilterList(new HashSet<>(filteredEffects), useBlacklist);
+                stats.setProtectAcrossDeath(useInherit);
+            });
         }
     }
 
@@ -430,9 +623,7 @@ public class DebuffFilterScreen extends Screen {
     // ======================== 绘制 ========================
 
     @Override
-    public void render(GuiGraphics g, int mx, int my, float pt) {
-        renderBackground(g);
-
+    protected void renderPanel(GuiGraphics g, int mx, int my, float pt) {
         EditorUi.panel(g, leftPos, topPos, GUI_W, GUI_H);
         EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
 
@@ -451,14 +642,57 @@ public class DebuffFilterScreen extends Screen {
                 filteredEffects.size()).getString();
         g.drawString(font, stat, leftPos + 156, topPos + FOOTER_Y + 6,
                 useBlacklist ? COLOR_HARMFUL : COLOR_BENEFICIAL);
+    }
 
-        super.render(g, mx, my, pt);
-
+    /** 浮窗与状态提示要画在控件之上，单独一层。 */
+    @Override
+    protected void renderPanelOverlay(GuiGraphics g, int mx, int my, float pt) {
+        drawModeTooltip(g, mx, my);
+        drawInheritTooltip(g, mx, my);
         drawTooltip(g, mx, my);
 
         if (System.currentTimeMillis() < statusUntil) {
             g.drawCenteredString(font, statusMsg, leftPos + GUI_W / 2, topPos + GUI_H - 8, EditorUi.DANGER);
+        } else if (useBlacklist && !masterSwitchOn()) {
+            // 黑名单拦截要「效果过滤」开关；白名单（保护）不需要，所以只在黑名单模式提示，
+            // 避免玩家辛苦勾了一堆名单却什么也没发生。
+            g.drawCenteredString(font,
+                    Component.translatable("screen.infinitestats.debuff_filter.warn_toggle_off").getString(),
+                    leftPos + GUI_W / 2, topPos + GUI_H - 8, EditorUi.DANGER);
         }
+    }
+
+    /** 悬停「重生继承」按钮：说明它只作用于保护模式，以及开 / 关分别意味着什么。 */
+    private void drawInheritTooltip(GuiGraphics g, int mx, int my) {
+        int bx = leftPos + GUI_W - EditorUi.GAP - MODE_BTN_W - 4 - INHERIT_BTN_W;
+        int by = topPos + 4;
+        if (mx < bx || mx >= bx + INHERIT_BTN_W || my < by || my >= by + 16) return;
+
+        List<String> lines = new ArrayList<>();
+        lines.add("§f§l" + inheritLabel().getString());
+        for (String line : EditorUi.wrap(font,
+                Component.translatable("screen.infinitestats.debuff_filter.hint_inherit").getString(), 190)) {
+            lines.add("§7" + line);
+        }
+        lines.add("§8" + Component.translatable("screen.infinitestats.debuff_filter.tooltip_click").getString());
+        EditorUi.tooltip(g, mx, my, lines, useInherit ? COLOR_BENEFICIAL : EditorUi.SECONDARY);
+    }
+
+    /** 悬停「模式」按钮时说明当前模式的语义（两者差别很大，只靠按钮上的两个字看不出来）。 */
+    private void drawModeTooltip(GuiGraphics g, int mx, int my) {
+        int bx = leftPos + GUI_W - EditorUi.GAP - MODE_BTN_W;
+        int by = topPos + 4;
+        if (mx < bx || mx >= bx + MODE_BTN_W || my < by || my >= by + 16) return;
+
+        List<String> lines = new ArrayList<>();
+        lines.add("§f§l" + Component.translatable(useBlacklist
+                ? "screen.infinitestats.debuff_filter.mode_blacklist"
+                : "screen.infinitestats.debuff_filter.mode_whitelist").getString());
+        lines.add(Component.translatable(useBlacklist
+                ? "screen.infinitestats.debuff_filter.hint_blacklist"
+                : "screen.infinitestats.debuff_filter.hint_whitelist").getString());
+        lines.add("§8" + Component.translatable("screen.infinitestats.debuff_filter.tooltip_mode_switch").getString());
+        EditorUi.tooltip(g, mx, my, lines, useBlacklist ? COLOR_HARMFUL : COLOR_BENEFICIAL);
     }
 
     private void drawCategoryButtons(GuiGraphics g, int mx, int my) {
@@ -527,8 +761,18 @@ public class DebuffFilterScreen extends Screen {
             String idText = EditorUi.ellipsize(font, entry.id(), 140);
             int idX = x + w - font.width(idText) - 6;
 
-            String name = entry.isCustom() ? "⚙ " + entry.name() : entry.name();
-            int nameMax = Math.max(20, idX - (x + 18) - 6);
+            // 状态列（等级 + 剩余时间）固定占一段宽度，让 ID / 名称的对齐不随是否生效而抖动
+            int statusRight = idX - 8;
+            int statusLeft = statusRight - STATUS_W;
+            MobEffectInstance live = liveEffect(entry);
+            if (live != null) {
+                String status = formatStatus(live);
+                g.drawString(font, status, statusRight - font.width(status), ty, entry.color());
+            }
+
+            // 图标已在 displayName() 里拼好（⚙ 自定义 / 通配 / 标签各有各的写法），这里直接用
+            String name = entry.name();
+            int nameMax = Math.max(20, statusLeft - (x + 18) - 6);
             g.drawString(font, EditorUi.ellipsize(font, name, nameMax), x + 18, ty, entry.color());
             g.drawString(font, idText, idX, ty, EditorUi.SECONDARY);
 
@@ -554,6 +798,21 @@ public class DebuffFilterScreen extends Screen {
         lines.add("§f§l" + entry.name());
         lines.add("§7类别: " + chatColor(entry.color())
                 + Component.translatable(entry.categoryKey()).getString());
+
+        // 通配 / 标签条目：直接告诉玩家覆盖了多少个效果，拼错时一眼可见
+        if (entry.isCustom()) {
+            lines.add(entry.hits() > 0
+                    ? "§7" + Component.translatable("screen.infinitestats.debuff_filter.tooltip_hits",
+                            entry.hits()).getString()
+                    : Component.translatable("screen.infinitestats.debuff_filter.tooltip_hits_none").getString());
+        } else {
+            // 具体效果：行内空间有限，这里给出完整口径（等级 + 剩余到什么时候）
+            MobEffectInstance live = liveEffect(entry);
+            if (live != null) {
+                lines.add(Component.translatable("screen.infinitestats.debuff_filter.tooltip_active",
+                        formatStatus(live)).getString());
+            }
+        }
 
         // 效果说明（可由其他模组 / 资源包通过 effect.<ns>.<path>.desc 覆盖）
         String desc = effectDescription(ResourceLocation.tryParse(entry.id()));
@@ -592,7 +851,7 @@ public class DebuffFilterScreen extends Screen {
     // ======================== 鼠标输入 ========================
 
     @Override
-    public boolean mouseClicked(double mx, double my, int button) {
+    protected boolean onPanelClick(int mx, int my, int button) {
         if (button == 0) {
             // 类别筛选
             for (int[] r : catBtnRects) {
@@ -611,68 +870,47 @@ public class DebuffFilterScreen extends Screen {
                 return true;
             }
 
-            // 滚动条
-            if (maxScroll > 0 && isOnScrollbar((int) mx, (int) my)) {
+            // 滚动条：按下即把滑块对到鼠标处，之后拖动由 onPanelDrag 接管
+            if (maxScroll > 0 && EditorUi.onScrollbar(mx, my, scrollbarX(), LIST_Y, LIST_H - 2)) {
                 scrollbarDragging = true;
-                scrollbarDragStartY = (int) my;
-                scrollbarDragStartOffset = scrollOffset;
+                scrollOffset = EditorUi.scrollFromMouseY(my, LIST_Y, LIST_H - 2, maxScroll, VISIBLE_ROWS);
                 return true;
             }
         }
-        return super.mouseClicked(mx, my, button);
+        return false;
     }
 
     @Override
-    public boolean mouseDragged(double mx, double my, int button, double dx, double dy) {
+    protected boolean onPanelDrag(int mx, int my, int button, int dx, int dy) {
         if (scrollbarDragging && maxScroll > 0) {
-            int[] slider = sliderRect();
-            int trackY = topPos + LIST_Y;
-            int trackH = LIST_H - 2;
-            int range = trackH - slider[3];
-            if (range > 0) {
-                int newY = (int) (my - (slider[1] - scrollbarDragStartY) - trackY);
-                float progress = (float) newY / range;
-                scrollOffset = clamp((int) (progress * maxScroll + 0.5f), 0, maxScroll);
-            }
+            // 无状态换算：滑块中心始终跟着鼠标，拖到边界再拖回来也不会卡住
+            scrollOffset = EditorUi.scrollFromMouseY(my, LIST_Y, LIST_H - 2, maxScroll, VISIBLE_ROWS);
             return true;
         }
-        return super.mouseDragged(mx, my, button, dx, dy);
+        return false;
     }
 
     @Override
-    public boolean mouseReleased(double mx, double my, int button) {
+    protected boolean onPanelRelease(int mx, int my, int button) {
         if (scrollbarDragging) {
             scrollbarDragging = false;
             return true;
         }
-        return super.mouseReleased(mx, my, button);
+        return false;
     }
 
     @Override
-    public boolean mouseScrolled(double mx, double my, double delta) {
+    protected boolean onPanelScroll(int mx, int my, double delta) {
         if (maxScroll > 0) {
             scrollOffset = clamp(scrollOffset + (delta > 0 ? -1 : 1), 0, maxScroll);
             return true;
         }
-        return super.mouseScrolled(mx, my, delta);
+        return false;
     }
 
-    /** 与 {@link EditorUi#scrollbar} 使用同一套几何计算，保证拖动与绘制一致。 */
-    private int[] sliderRect() {
-        int sx = leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
-        int sy = topPos + LIST_Y;
-        int h = LIST_H - 2;
-        int sliderH = Math.min(h, Math.max(16,
-                (int) ((float) VISIBLE_ROWS / (maxScroll + VISIBLE_ROWS) * h)));
-        int sliderY = maxScroll > 0 ? sy + (h - sliderH) * scrollOffset / maxScroll : sy;
-        return new int[]{sx, sliderY, EditorUi.SCROLL_W, sliderH};
-    }
-
-    private boolean isOnScrollbar(int mx, int my) {
-        int[] slider = sliderRect();
-        int trackX = leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
-        return mx >= trackX - 2 && mx < trackX + EditorUi.SCROLL_W + 2
-                && my >= topPos + LIST_Y && my < topPos + LIST_Y + LIST_H - 2;
+    /** 滚动条轨道的 x（与 {@link EditorUi#scrollbar} 的绘制位置一致）。 */
+    private int scrollbarX() {
+        return GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
     }
 
     // ======================== 键盘输入 ========================

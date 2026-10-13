@@ -29,7 +29,7 @@ import java.util.List;
  * <p>
  * 切换作用于**主世界**：玩家在下界 / 末地时切的仍是主世界天气，所以这个入口在任何维度都有意义。
  */
-public class WeatherScreen extends Screen {
+public class WeatherScreen extends PanelScreen {
 
     private static final int GUI_W = 300;
     private static final int GUI_H = 212;
@@ -49,8 +49,7 @@ public class WeatherScreen extends Screen {
     private static final int BTN_H = 30;
     private static final int BTN_GAP = 8;
 
-    private int leftPos;
-    private int topPos;
+
     private boolean toggleActive;
     private long lastSoundTick;
 
@@ -73,10 +72,18 @@ public class WeatherScreen extends Screen {
     }
 
     @Override
+    protected int panelW() {
+        return GUI_W;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_H;
+    }
+
+    @Override
     protected void init() {
         super.init();
-        leftPos = (width - GUI_W) / 2;
-        topPos = (height - GUI_H) / 2;
 
         toggleActive = isToggleActive();
         entryButtons.clear();
@@ -146,9 +153,7 @@ public class WeatherScreen extends Screen {
     }
 
     @Override
-    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderBackground(graphics);
-
+    protected void renderPanel(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         graphics.fill(leftPos - 2, topPos - 2, leftPos + GUI_W + 2, topPos + GUI_H + 2, 0x403B82F6);
         graphics.fill(leftPos - 1, topPos - 1, leftPos + GUI_W + 1, topPos + GUI_H + 1, 0xFF1E293B);
         graphics.fill(leftPos, topPos, leftPos + GUI_W, topPos + GUI_H, BG_PANEL);
@@ -165,8 +170,13 @@ public class WeatherScreen extends Screen {
         graphics.drawCenteredString(font, currentText.getString(), leftPos + GUI_W / 2, topPos + 44,
                 TEXT_CURRENT);
 
-        // 档位按钮（先画按钮再补图标，图标不会挡住按钮文字）
-        super.render(graphics, mouseX, mouseY, partialTick);
+    }
+
+    /** 图标与高亮要盖在按钮之上，底栏说明同理，统一放在控件层。 */
+    @Override
+    protected void renderPanelOverlay(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 档位按钮（按钮由基类绘制，这里只补图标，图标不会挡住按钮文字）
+        String current = currentWeather();
         for (int i = 0; i < entryButtons.size(); i++) {
             Button btn = entryButtons.get(i);
             graphics.renderItem(icon(ENTRY_IDS[i]), btn.getX() + 6, btn.getY() + 7);

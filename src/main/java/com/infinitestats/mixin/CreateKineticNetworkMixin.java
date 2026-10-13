@@ -68,7 +68,7 @@ public abstract class CreateKineticNetworkMixin {
         }
 
         if (CreateStressCompat.isEmpowered(level, positions)) {
-            cir.setReturnValue(CreateStressCompat.INFINITE_CAPACITY);
+            cir.setReturnValue(CreateStressCompat.infiniteCapacity());
         }
     }
 

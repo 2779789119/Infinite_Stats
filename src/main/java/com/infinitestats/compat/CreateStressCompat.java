@@ -1,5 +1,6 @@
 package com.infinitestats.compat;
 
+import com.infinitestats.Config;
 import com.infinitestats.util.BlockOwnershipStore;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
@@ -51,14 +52,30 @@ public final class CreateStressCompat {
     /** 「无限应力」的属性 id。 */
     public static final String STAT_ID = "create_infinite_stress";
 
+    /** 「无限应力」改写产能的默认值（10<sup>9</sup> SU），也用作配置尚未加载时的兜底。 */
+    public static final float DEFAULT_INFINITE_CAPACITY = 1_000_000_000f;
+
     /**
-     * 改写后的「无限产能」。
+     * 当前「无限应力」要改写成的产能（SU）—— 取自配置
+     * {@code CreateStress.infiniteStressCapacity}，默认 {@link #DEFAULT_INFINITE_CAPACITY}。
      * <p>
-     * 用 10<sup>9</sup> 这个<b>够大但仍有限</b>的数，而不是 {@code Float.MAX_VALUE}：真实网络里的
+     * 之所以用「够大但仍有限」的数（默认 10<sup>9</sup>）而不是 {@code Float.MAX_VALUE}：真实网络里的
      * 耗能总量不过几十万 SU，10 亿已经永远够用；而 {@code Float.MAX_VALUE} 参与乘法 / 打印 /
      * 第三方附属的数值处理时容易出意外（溢出成 Infinity、界面显示成 3.4E38 之类）。
+     * <p>
+     * 服务端管理员可以用配置把这条线拉低（给「无限应力」设一个上限，超出的大网络依旧会超载）或拉高。
+     * 配置未加载（例如类加载早于配置初始化）时退回默认值，绝不抛异常 —— 本方法在动力网络的
+     * 热路径上被调用。
      */
-    public static final float INFINITE_CAPACITY = 1_000_000_000f;
+    public static float infiniteCapacity() {
+        try {
+            Long value = Config.INFINITE_STRESS_CAPACITY.get();
+            if (value != null && value > 0L) return value.floatValue();
+        } catch (Throwable ignored) {
+            // 配置尚未加载：退回默认值
+        }
+        return DEFAULT_INFINITE_CAPACITY;
+    }
 
     /** 在线解锁者集合的缓存时长（tick）。加点的瞬间不必立刻生效，1 秒足够。 */
     private static final int UNLOCKED_CACHE_TICKS = 20;
@@ -131,7 +148,7 @@ public final class CreateStressCompat {
      * 记下某动力网络「没被改写时」的产能真值。
      * <p>
      * 由 {@code CreateKineticNetworkMixin} 在改写返回值之前调用：改完这一笔，网络上所有成员的
-     * {@code capacity} 字段都会写成 10 亿，而存档必须落<b>真值</b>，否则会把「无限产能」永久写进
+     * {@code capacity} 字段都会写成配置的容量值，而存档必须落<b>真值</b>，否则会把「无限产能」永久写进
      * 存档（属性关掉后机器仍然不过载、卸载本模组后依旧如此）。存档时的取用见 {@link #realCapacityOf}。
      */
     public static void rememberRealCapacity(Object network, float capacity) {

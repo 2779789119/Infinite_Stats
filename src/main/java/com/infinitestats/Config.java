@@ -173,6 +173,30 @@ public final class Config {
     /** 「满饱食度进食」的【例外名单】（物品 ID，{@code #} 开头表示物品标签）。优先级高于限制名单。 */
     public static ForgeConfigSpec.ConfigValue<List<? extends String>> ALWAYS_EAT_EXCLUDE_LIST;
 
+    // ========== 无限应力（机械动力）设置 ==========
+
+    /**
+     * 「无限应力」把玩家自己放置的动力网络产能改写成的数值（单位 SU —— 机械动力的应力单位）。
+     * <p>
+     * 该值只要大于网络的真实耗能，机器就不会因应力不足而超载停机；默认 10 亿，而真实网络耗能
+     * 通常只有几十万 SU，所以默认值等于「永远够用」。调小它相当于给自己的无限应力设一个上限，
+     * 调大则更接近真正的无限。
+     */
+    public static ForgeConfigSpec.LongValue INFINITE_STRESS_CAPACITY;
+
+    // ========== 生物面板设置 ==========
+
+    /**
+     * 「生物面板」是否允许**从面板上直接改生物** —— 包括开关（AI / 静音 / 无敌 / 无重力等）
+     * 与属性数值（把它的生命上限、攻击力、移动速度改成任意值）。
+     * <p>
+     * true（默认）= 解锁 {@code entity_panel} 属性、手持观察杖右键生物的玩家都能改；
+     * false = 面板变成只读，属性与开关都只能看不能点。多人服若不想让玩家乱动别人的生物
+     * （把别人的宠物变木头、把 BOSS 的生命上限调成 1 之类），把这里关掉即可；
+     * 想彻底不给开面板，则用 {@code /infstats feature entity_panel off} 关掉整个功能。
+     */
+    public static ForgeConfigSpec.BooleanValue ALLOW_ENTITY_EDITING;
+
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
 
@@ -434,6 +458,32 @@ public final class Config {
                          "写法同上（物品 ID 或 # 标签）；优先级高于上面的限制名单 ——",
                          "同时出现在两份名单里时按【例外】处理。")
                 .defineList("alwaysEatExcludeList", List.<String>of(), o -> o instanceof String);
+        builder.pop();
+
+        // 无限应力：机械动力动力网络的产能改写值
+        builder.push("CreateStress");
+        INFINITE_STRESS_CAPACITY = builder
+                .comment("「无限应力」把玩家自己放置的动力网络产能改写成的数值（单位 SU，机械动力的应力单位）。",
+                         "只要它大于网络的真实耗能，机器就不会因应力不足而超载停机 —— 真实网络耗能通常",
+                         "只有几十万 SU，默认 1000000000（10 亿）就等于「永远够用」。调小它相当于给无限应力",
+                         "设一个上限（例如 500000：小机器照样不超载，超出这个数的大网络仍会超载），",
+                         "调大则更接近真正的无限。",
+                         "刻意不用浮点最大值：数值过大在乘法 / 打印 / 第三方附属的处理里容易溢出成 Infinity。",
+                         "需要安装机械动力（Create）才有实际作用。")
+                .defineInRange("infiniteStressCapacity", 1_000_000_000L, 1_000L, 1_000_000_000_000L);
+        builder.pop();
+
+        // 生物面板设置
+        builder.push("EntityPanel");
+        ALLOW_ENTITY_EDITING = builder
+                .comment("「生物面板」是否允许从面板上直接改生物（开关：AI / 静音 / 隐身 / 发光 / 无敌 / 无重力 / 幼年；",
+                         "以及属性数值：把它的生命上限 / 攻击力 / 移动速度改成任意值 —— 改的是基础值，",
+                         "会被夹进该属性自身的取值范围）。",
+                         "true（默认）= 解锁「生物面板」属性、手持生物观察杖右键生物的玩家都能改；",
+                         "false = 面板只读：属性照常显示，输入框与开关都不响应。",
+                         "服务端还会另行校验：属性已激活 + 手里拿着观察杖 + 目标在 8 格内。",
+                         "多人服若不想让玩家乱动别人的生物（把别人的宠物变木头、给 BOSS 上无敌），把这里关掉即可。")
+                .define("allowEntityEditing", true);
         builder.pop();
 
         SPEC = builder.build();

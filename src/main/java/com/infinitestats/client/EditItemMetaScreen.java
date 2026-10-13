@@ -26,7 +26,7 @@ import java.util.List;
  *   <li>Lore 上限 {@value #MAX_LORE_LINES} 行，超出时给出提示而不是把控件挤出面板。</li>
  * </ul>
  */
-public class EditItemMetaScreen extends Screen {
+public class EditItemMetaScreen extends PanelScreen {
 
     // ======================== 布局常量 ========================
 
@@ -49,7 +49,18 @@ public class EditItemMetaScreen extends Screen {
     // ======================== 状态 ========================
 
     private final ItemEditorScreen parent;
-    private int leftPos, topPos, guiH;
+    /** 面板高度：随 Lore 行数变化，在 init 里算好后由 {@link #panelH()} 交给基类。 */
+    private int guiH;
+
+    @Override
+    protected int panelW() {
+        return GUI_W;
+    }
+
+    @Override
+    protected int panelH() {
+        return guiH;
+    }
 
     private EditBox nameBox;
     private final List<EditBox> loreBoxes = new ArrayList<>();
@@ -125,8 +136,6 @@ public class EditItemMetaScreen extends Screen {
         int statsY = LORE_BOX_Y + LORE_ROW_H * Math.max(1, loreLines.size()) + 10;
         int footerY = statsY + BOX_H + 10;
         guiH = footerY + FOOTER_H + FOOTER_GAP;
-        leftPos = Math.max(0, (width - GUI_W) / 2);
-        topPos = Math.max(0, (height - guiH) / 2);
         loreDelRects.clear();
         buildWidgets(statsY, footerY);
     }
@@ -219,8 +228,7 @@ public class EditItemMetaScreen extends Screen {
     // ======================== 绘制 ========================
 
     @Override
-    public void render(GuiGraphics g, int mx, int my, float pt) {
-        renderBackground(g);
+    protected void renderPanel(GuiGraphics g, int mx, int my, float pt) {
         EditorUi.panel(g, leftPos, topPos, GUI_W, guiH);
         EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
         drawItemBar(g);
@@ -257,8 +265,10 @@ public class EditItemMetaScreen extends Screen {
         g.drawString(font, Component.translatable("screen.infinitestats.item_editor.count").getString(),
                 x + half + 20, topPos + statsY + 5, EditorUi.GOLD);
 
-        super.render(g, mx, my, pt);
+    }
 
+    @Override
+    protected void renderPanelOverlay(GuiGraphics g, int mx, int my, float pt) {
         if (System.currentTimeMillis() < statusUntil) {
             g.drawCenteredString(font, statusMsg, leftPos + GUI_W / 2, topPos + guiH - 10, EditorUi.DANGER);
         }
@@ -304,7 +314,7 @@ public class EditItemMetaScreen extends Screen {
     // ======================== 输入 ========================
 
     @Override
-    public boolean mouseClicked(double mx, double my, int button) {
+    protected boolean onPanelClick(int mx, int my, int button) {
         if (button == 0) {
             for (int[] r : loreDelRects) {
                 if (mx >= r[0] && mx < r[0] + DEL_SIZE && my >= r[1] && my < r[1] + DEL_SIZE) {
@@ -313,7 +323,7 @@ public class EditItemMetaScreen extends Screen {
                 }
             }
         }
-        return super.mouseClicked(mx, my, button);
+        return false;
     }
 
     @Override

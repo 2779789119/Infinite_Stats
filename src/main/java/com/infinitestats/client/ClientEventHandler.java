@@ -184,8 +184,12 @@ public final class ClientEventHandler {
                 map.put(MobEffects.NIGHT_VISION, new MobEffectInstance(
                         MobEffects.NIGHT_VISION,
                         MobEffectInstance.INFINITE_DURATION, 0, false, false, true));
-                // 移除黑暗效果，防止其压制夜视视觉
-                map.remove(MobEffects.DARKNESS);
+                // 移除黑暗效果，防止其压制夜视视觉。
+                // 例外：玩家在「效果过滤」里把黑暗列为保护时让位 —— 保护的意义就是不被外力清除，
+                // 否则服务端每 tick 补回、这里每 tick 删掉，界面显示「保护中」却毫无效果。
+                if (!stats.isProtectedEffect("minecraft:darkness")) {
+                    map.remove(MobEffects.DARKNESS);
+                }
             } else {
                 // 关闭时只移除我们写入的无限夜视，避免误删其他模组的有限夜视
                 MobEffectInstance cur = player.getEffect(MobEffects.NIGHT_VISION);

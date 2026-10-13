@@ -12,13 +12,14 @@ import net.minecraft.network.chat.Component;
 /**
  * 传送点重命名对话框
  */
-public class WaypointRenameScreen extends Screen {
+public class WaypointRenameScreen extends PanelScreen {
+
+    private static final int GUI_W = 240;
+    private static final int GUI_H = 100;
 
     private final Screen parent;
     private final String oldName;
     private EditBox nameField;
-    private int leftPos, topPos;
-
     public WaypointRenameScreen(Screen parent, String oldName) {
         super(Component.translatable("gui.infinitestats.wp_rename_title"));
         this.parent = parent;
@@ -26,22 +27,35 @@ public class WaypointRenameScreen extends Screen {
     }
 
     @Override
+    protected int panelW() {
+        return GUI_W;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_H;
+    }
+
+    /** 控件在 renderPanel 里自绘（保持原有画法），基类不再重复绘制。 */
+    @Override
+    protected boolean baseRendersWidgets() {
+        return false;
+    }
+
+    @Override
     protected void init() {
         super.init();
-        int w = 240, h = 100;
-        leftPos = (width - w) / 2;
-        topPos = (height - h) / 2;
 
-        nameField = new EditBox(font, leftPos + 20, topPos + 36, w - 40, 18, Component.literal(oldName));
+        nameField = new EditBox(font, leftPos + 20, topPos + 36, GUI_W - 40, 18, Component.literal(oldName));
         nameField.setMaxLength(32);
         nameField.setValue(oldName);
         nameField.setFocused(true);
         addRenderableWidget(nameField);
 
         Button confirm = Button.builder(Component.translatable("button.infinitestats.wp_confirm"),
-                b -> confirm()).bounds(leftPos + 20, topPos + 64, (w - 50) / 2, 20).build();
+                b -> confirm()).bounds(leftPos + 20, topPos + 64, (GUI_W - 50) / 2, 20).build();
         Button cancel = Button.builder(Component.translatable("button.infinitestats.wp_cancel"),
-                b -> close()).bounds(leftPos + 30 + (w - 50) / 2, topPos + 64, (w - 50) / 2, 20).build();
+                b -> close()).bounds(leftPos + 30 + (GUI_W - 50) / 2, topPos + 64, (GUI_W - 50) / 2, 20).build();
         addRenderableWidget(confirm);
         addRenderableWidget(cancel);
     }
@@ -62,14 +76,12 @@ public class WaypointRenameScreen extends Screen {
     }
 
     @Override
-    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderBackground(graphics);
-        int w = 240, h = 100;
-        graphics.fill(leftPos - 2, topPos - 2, leftPos + w + 2, topPos + h + 2, 0x403B82F6);
-        graphics.fill(leftPos - 1, topPos - 1, leftPos + w + 1, topPos + h + 1, 0xFF1E293B);
-        graphics.fill(leftPos, topPos, leftPos + w, topPos + h, 0xE81A1A2E);
+    protected void renderPanel(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        graphics.fill(leftPos - 2, topPos - 2, leftPos + GUI_W + 2, topPos + GUI_H + 2, 0x403B82F6);
+        graphics.fill(leftPos - 1, topPos - 1, leftPos + GUI_W + 1, topPos + GUI_H + 1, 0xFF1E293B);
+        graphics.fill(leftPos, topPos, leftPos + GUI_W, topPos + GUI_H, 0xE81A1A2E);
         graphics.drawCenteredString(font, Component.translatable("gui.infinitestats.wp_rename_title").getString(),
-                leftPos + w / 2, topPos + 12, 0xFFFFD166);
+                leftPos + GUI_W / 2, topPos + 12, 0xFFFFD166);
         graphics.drawString(font, Component.translatable("gui.infinitestats.wp_rename_old", oldName).getString(),
                 leftPos + 20, topPos + 22, 0xFF94A3B8);
 

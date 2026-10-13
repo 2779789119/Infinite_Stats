@@ -49,7 +49,7 @@ import java.util.List;
  *   <li>Shift + 左键 —— 尽可能取满背包（用尽 EMC）</li>
  * </ul>
  */
-public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
+public class EmcScreen extends PanelScreen implements MenuAccess<EmcMenu> {
 
     private static final ResourceLocation SLOT_TEX = new ResourceLocation("textures/gui/container/generic_54.png");
     private static final ResourceLocation FURNACE_TEX = new ResourceLocation("textures/gui/container/furnace.png");
@@ -101,12 +101,28 @@ public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
         return this.menu;
     }
 
+    @Override
+    protected int panelW() {
+        return CANVAS_W;
+    }
+
+    @Override
+    protected int panelH() {
+        return CANVAS_H;
+    }
+
+    /**
+     * 画布左上角在「面板坐标系」里的位置。
+     * <p>
+     * 恒为 0：面板局部坐标即画布坐标，实际屏幕位置（含缩放）由 {@link PanelScreen} 统一负责，
+     * 因此下面所有 {@code left() + X} 的写法都不需要改。
+     */
     private int left() {
-        return (this.width - CANVAS_W) / 2;
+        return 0;
     }
 
     private int top() {
-        return (this.height - CANVAS_H) / 2;
+        return 0;
     }
 
     private static boolean hovered(double mx, double my, int x, int y, int w, int h) {
@@ -158,8 +174,7 @@ public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
     // ==================== 渲染 ====================
 
     @Override
-    public void render(GuiGraphics g, int mx, int my, float pt) {
-        renderBackground(g);
+    protected void renderPanel(GuiGraphics g, int mx, int my, float pt) {
         int l = left(), t = top();
 
         drawPanel(g, l, t, CANVAS_W, CANVAS_H);
@@ -198,9 +213,11 @@ public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
             g.blit(FURNACE_TEX, l + LEARN_X + 1, t + LEARN_Y + 1, 16, 16, 176.0F, 0.0F, 14, 14, 256, 256);
         }
 
-        // 交互组件（搜索框 / 槽位）
-        super.render(g, mx, my, pt);
+    }
 
+    /** 浮窗与光标层：必须画在控件之上。 */
+    @Override
+    protected void renderPanelOverlay(GuiGraphics g, int mx, int my, float pt) {
         // tooltip
         ItemStack hoveredLearned = learnedAt((int) mx, (int) my);
         if (!hoveredLearned.isEmpty()) {
@@ -413,7 +430,7 @@ public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
     }
 
     @Override
-    public boolean mouseClicked(double mx, double my, int button) {
+    protected boolean onPanelClick(int mx, int my, int button) {
         int l = left(), t = top();
 
         // 翻页
@@ -454,17 +471,17 @@ public class EmcScreen extends Screen implements MenuAccess<EmcMenu> {
             return true;
         }
 
-        return super.mouseClicked(mx, my, button);
+        return false;
     }
 
     @Override
-    public boolean mouseScrolled(double mx, double my, double delta) {
+    protected boolean onPanelScroll(int mx, int my, double delta) {
         if (hovered(mx, my, left() + GRID_X, top() + GRID_Y, GRID_COLS * CELL, GRID_ROWS * CELL)) {
             if (delta < 0) page = Math.min(pages - 1, page + 1);
             else if (delta > 0) page = Math.max(0, page - 1);
             return true;
         }
-        return super.mouseScrolled(mx, my, delta);
+        return false;
     }
 
     @Override

@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
  * 功能：搜索过滤、分类标签（全部/已完成/未完成）、
  * 一键授予/撤销成就，服务器端即时生效。
  */
-public class AchievementManagerScreen extends Screen {
+public class AchievementManagerScreen extends PanelScreen {
 
     @Override
     public boolean isPauseScreen() {
@@ -63,7 +63,25 @@ public class AchievementManagerScreen extends Screen {
 
     // ======================== 状态 ========================
 
-    private int leftPos, topPos;
+    @Override
+    protected int panelW() {
+        return GUI_WIDTH;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_HEIGHT;
+    }
+
+    // ======================== 列表 / 滚动条几何（绘制、命中、拖拽共用） ========================
+
+    /** 列表区顶（面板坐标）：标题栏 24 + 标签 14 + 间距。 */
+    private static final int LIST_TOP = 76;
+    private static final int LIST_HEIGHT = GUI_HEIGHT - 76 - 24;
+    private static final int VISIBLE_ROWS = LIST_HEIGHT / ROW_HEIGHT;
+    private static final int SCROLL_X = GUI_WIDTH - EditorUi.SCROLL_W - 1;
+
+    private boolean scrollbarDragging;
     private List<AchievementInfo> allAchievements = new ArrayList<>();
     private List<AchievementInfo> filteredAchievements = new ArrayList<>();
     private int scrollOffset;
@@ -87,11 +105,9 @@ public class AchievementManagerScreen extends Screen {
     @Override
     protected void init() {
         super.init();
-        leftPos = (width - GUI_WIDTH) / 2;
-        topPos = (height - GUI_HEIGHT) / 2;
 
-        // 搜索框
-        searchField = new EditBox(font, leftPos + 8, topPos + 30, GUI_WIDTH - 16, SEARCH_H,
+        // 搜索框：放在标签行（28~42）下面，别和标签叠在一起
+        searchField = new EditBox(font, leftPos + 8, topPos + 46, GUI_WIDTH - 16, SEARCH_H,
                 Component.translatable("screen.infinitestats.achievements.search"));
         searchField.setMaxLength(100);
         searchField.setValue(searchText);
@@ -179,18 +195,14 @@ public class AchievementManagerScreen extends Screen {
     }
 
     private void updateMaxScroll() {
-        int listHeight = GUI_HEIGHT - 76 - 24;
-        int visibleRows = listHeight / ROW_HEIGHT;
-        maxScroll = Math.max(0, filteredAchievements.size() - visibleRows);
+        maxScroll = Math.max(0, filteredAchievements.size() - VISIBLE_ROWS);
         if (scrollOffset > maxScroll) scrollOffset = maxScroll;
     }
 
     // ======================== 渲染 ========================
 
     @Override
-    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderBackground(graphics);
-
+    protected void renderPanel(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         // 面板背景
         graphics.fill(leftPos, topPos, leftPos + GUI_WIDTH, topPos + GUI_HEIGHT, BG_PANEL);
 
@@ -230,7 +242,6 @@ public class AchievementManagerScreen extends Screen {
                     leftPos + GUI_WIDTH / 2, topPos + GUI_HEIGHT / 2, TEXT_SECONDARY);
         }
 
-        super.render(graphics, mouseX, mouseY, partialTick);
     }
 
     private void renderFilterTabs(GuiGraphics graphics, int mouseX, int mouseY) {
@@ -254,13 +265,13 @@ public class AchievementManagerScreen extends Screen {
     }
 
     private void renderAchievementList(GuiGraphics graphics, int mouseX, int mouseY) {
-        int listTop = topPos + 76;
-        int listHeight = GUI_HEIGHT - 76 - 24;
+        int listTop = LIST_TOP;
+        int listHeight = LIST_HEIGHT;
         int visibleRows = Math.min(filteredAchievements.size() - scrollOffset,
                 Math.max(0, listHeight / ROW_HEIGHT));
 
-        // 裁剪区域
-        graphics.enableScissor(leftPos, listTop, leftPos + GUI_WIDTH, listTop + listHeight);
+        // 裁剪区域：用基类的屏幕空间实现，避免面板缩放被算进 enableScissor 后把列表下半截剪掉
+        beginPanelScissor(graphics, leftPos, listTop, leftPos + GUI_WIDTH, listTop + listHeight);
 
         hoveredRow = -1;
 
@@ -287,10 +298,12 @@ public class AchievementManagerScreen extends Screen {
                 graphics.renderItem(icon, leftPos + 10, y + (ROW_HEIGHT - 16) / 2);
             }
 
-            // 名称
+            // 名称：模组 / 数据包没给标题时是空串，直接画就成了「空白行」，这里回退到 ID 的可读形式
             int nameX = leftPos + 32;
             int nameY = y + 3;
-            graphics.drawString(font, info.displayName, nameX, nameY, TEXT_PRIMARY);
+            String name = info.displayName == null || info.displayName.isEmpty()
+                    ? fallbackName(info.id) : info.displayName;
+            graphics.drawString(font, name, nameX, nameY, TEXT_PRIMARY);
 
             // 描述
             String desc = info.description;
@@ -311,12 +324,21 @@ public class AchievementManagerScreen extends Screen {
             renderToggleButton(graphics, info, y, mouseX, mouseY);
         }
 
-        graphics.disableScissor();
+        endPanelScissor(graphics);
 
-        // 滚动条
+        // 滚动条（几何与拖拽共用 EditorUi 的一套：滑块中心跟手）
         if (maxScroll > 0) {
-            renderScrollbar(graphics, listTop, listHeight);
+            EditorUi.scrollbar(graphics, mouseX, mouseY, SCROLL_X, listTop, listHeight,
+                    scrollOffset, maxScroll, VISIBLE_ROWS);
         }
+    }
+
+    /** 标题为空时的兜底显示名：取 ID 的 path 段，下划线换成空格。 */
+    private static String fallbackName(String id) {
+        if (id == null || id.isEmpty()) return "?";
+        int colon = id.indexOf(':');
+        String path = colon >= 0 ? id.substring(colon + 1) : id;
+        return path.replace('_', ' ');
     }
 
     private void renderToggleButton(GuiGraphics graphics, AchievementInfo info,
@@ -340,21 +362,10 @@ public class AchievementManagerScreen extends Screen {
         graphics.drawCenteredString(font, label, btnX + 22, btnY + 3, 0xFFFFFFFF);
     }
 
-    private void renderScrollbar(GuiGraphics graphics, int listTop, int listHeight) {
-        int scrollX = leftPos + GUI_WIDTH - 4;
-        int trackHeight = listHeight;
-        graphics.fill(scrollX, listTop, scrollX + 4, listTop + trackHeight, BG_SCROLLBAR_TRACK);
-
-        int barHeight = Math.max(16, (int) (trackHeight * trackHeight / (float) ((filteredAchievements.size()) * ROW_HEIGHT)));
-        int barY = listTop + (int) ((trackHeight - barHeight) * ((float) scrollOffset / maxScroll));
-
-        graphics.fill(scrollX, barY, scrollX + 4, barY + barHeight, BG_SCROLLBAR);
-    }
-
     // ======================== 鼠标 ========================
 
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+    protected boolean onPanelClick(int mouseX, int mouseY, int button) {
         if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
             // 标签切换
             int tabW = 60;
@@ -389,30 +400,44 @@ public class AchievementManagerScreen extends Screen {
                 }
             }
 
-            // 滚动条
-            if (maxScroll > 0) {
-                int scrollX = leftPos + GUI_WIDTH - 4;
-                if (mouseX >= scrollX && mouseX <= scrollX + 4
-                        && mouseY >= listTop && mouseY <= listTop + listHeight) {
-                    // 跳转到对应位置
-                    float ratio = (float) (mouseY - listTop) / listHeight;
-                    scrollOffset = Math.min(maxScroll, Math.max(0,
-                            (int) (ratio * (filteredAchievements.size()))));
-                    return true;
-                }
+            // 滚动条：按下即定位 + 开始拖拽
+            if (maxScroll > 0 && EditorUi.onScrollbar(mouseX, mouseY, SCROLL_X, LIST_TOP, LIST_HEIGHT)) {
+                scrollbarDragging = true;
+                scrollOffset = EditorUi.scrollFromMouseY(mouseY, LIST_TOP, LIST_HEIGHT,
+                        maxScroll, VISIBLE_ROWS);
+                return true;
             }
         }
 
-        return super.mouseClicked(mouseX, mouseY, button);
+        return false;
     }
 
     @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double scrollDelta) {
+    protected boolean onPanelDrag(int mouseX, int mouseY, int button, int dx, int dy) {
+        if (scrollbarDragging && maxScroll > 0) {
+            scrollOffset = EditorUi.scrollFromMouseY(mouseY, LIST_TOP, LIST_HEIGHT,
+                    maxScroll, VISIBLE_ROWS);
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected boolean onPanelRelease(int mouseX, int mouseY, int button) {
+        if (scrollbarDragging) {
+            scrollbarDragging = false;
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected boolean onPanelScroll(int mouseX, int mouseY, double scrollDelta) {
         if (scrollDelta != 0) {
             scrollOffset = Mth.clamp(scrollOffset - (int) Math.signum(scrollDelta), 0, maxScroll);
             return true;
         }
-        return super.mouseScrolled(mouseX, mouseY, scrollDelta);
+        return false;
     }
 
     // ======================== 键盘 ========================

@@ -7,8 +7,12 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.saveddata.SavedData;
 
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -50,6 +54,17 @@ public final class BlockOwnershipStore extends SavedData {
     /** {@code BlockPos.asLong()} -> 放置者 UUID。 */
     private final Map<Long, UUID> owners = new HashMap<>();
 
+    /**
+     * 反向索引（<b>纯内存，不写存档</b>）：放置者 → 他放置的坐标集合。懒构建，之后随 record / remove 同步维护。
+     * <p>
+     * 给「某玩家自己放置的全部方块」这类查询用（例如「无限魔力」要补满<b>他放下的</b>魔力池，
+     * 而不是只补他站着的附近）。直接遍历 {@link #owners} 也能做，但那是整个维度里所有玩家放过的
+     * 方块（含箱子 / 机器 / 别的联动）；按 owner 反查能一次缩到「他一个人的那一小撮」，
+     * 于是可以放开到「不限距离」（只要区块已加载）。
+     */
+    private final Map<UUID, Set<Long>> byOwner = new HashMap<>();
+    private boolean indexBuilt;
+
     /** 取当前维度的归属表（首次访问时从存档读入 / 新建）。 */
     public static BlockOwnershipStore get(ServerLevel level) {
         return level.getDataStorage().computeIfAbsent(
@@ -87,13 +102,23 @@ public final class BlockOwnershipStore extends SavedData {
 
     /** 记录某坐标由某玩家放置；内容真的变了才标脏，避免无谓写盘。 */
     public void record(BlockPos pos, UUID owner) {
-        UUID old = owners.put(pos.asLong(), owner);
-        if (!owner.equals(old)) setDirty();
+        long packed = pos.asLong();
+        UUID old = owners.put(packed, owner);
+        if (owner.equals(old)) return;
+        if (indexBuilt) {
+            if (old != null) removeFromIndex(old, packed);
+            byOwner.computeIfAbsent(owner, key -> new HashSet<>()).add(packed);
+        }
+        setDirty();
     }
 
     /** 移除某坐标的归属（方块被破坏 / 被替换成非方块实体方块）。 */
     public void remove(BlockPos pos) {
-        if (owners.remove(pos.asLong()) != null) setDirty();
+        long packed = pos.asLong();
+        UUID old = owners.remove(packed);
+        if (old == null) return;
+        if (indexBuilt) removeFromIndex(old, packed);
+        setDirty();
     }
 
     /** 该坐标的放置者；没人放过（或已被移除）时返回 {@code null}。 */
@@ -104,5 +129,34 @@ public final class BlockOwnershipStore extends SavedData {
     /** 该坐标是否由指定玩家放置。 */
     public boolean isOwnedBy(BlockPos pos, UUID player) {
         return player.equals(owners.get(pos.asLong()));
+    }
+
+    /**
+     * 某玩家在本维度放置的方块坐标（元素是 {@link BlockPos#asLong()} 的打包值）。
+     * <p>
+     * 返回的是<b>内部集合的只读视图</b>，调用方遍历时不要修改它；坐标为打包值，
+     * 用 {@link BlockPos#of(long)} 还原成 {@link BlockPos} 再取方块实体。
+     */
+    public Collection<Long> ownedPositions(UUID owner) {
+        ensureIndex();
+        Set<Long> positions = byOwner.get(owner);
+        return positions == null ? List.of() : positions;
+    }
+
+    /** 首次查询时构建反向索引（之后靠 record / remove 增量维护）。 */
+    private void ensureIndex() {
+        if (indexBuilt) return;
+        indexBuilt = true;
+        byOwner.clear();
+        for (Map.Entry<Long, UUID> entry : owners.entrySet()) {
+            byOwner.computeIfAbsent(entry.getValue(), key -> new HashSet<>()).add(entry.getKey());
+        }
+    }
+
+    private void removeFromIndex(UUID owner, long packed) {
+        Set<Long> positions = byOwner.get(owner);
+        if (positions == null) return;
+        positions.remove(packed);
+        if (positions.isEmpty()) byOwner.remove(owner);
     }
 }

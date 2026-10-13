@@ -1,6 +1,7 @@
 package com.infinitestats.client;
 
 import com.infinitestats.network.NetworkHandler;
+import com.infinitestats.network.WaystoneEntry;
 import com.infinitestats.network.WaypointActionPacket;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.Waypoint;
@@ -23,7 +24,7 @@ import java.util.*;
  * 通过此面板可以：保存当前位置、查看/传送/重命名/删除传送点。
  * 所有操作都需要『定点传送』属性已激活（与普通命令一致）。
  */
-public class WaypointScreen extends Screen {
+public class WaypointScreen extends PanelScreen {
 
     private static final int GUI_W = 420;
     private static final int GUI_H = 300;
@@ -40,8 +41,24 @@ public class WaypointScreen extends Screen {
     private static final int TEXT_ACTIVE = 0xFF4ADE80;
     private static final int TEXT_NEGATIVE = 0xFFF87171;
 
-    private int leftPos, topPos;
     private int listTop, listLeft, rowW, listH;
+    private boolean scrollbarDragging;
+
+    @Override
+    protected int panelW() {
+        return GUI_W;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_H;
+    }
+
+    /** 控件由本类在 renderPanel 末尾自绘（保持原有绘制顺序），基类不再重复绘制。 */
+    @Override
+    protected boolean baseRendersWidgets() {
+        return false;
+    }
 
     private EditBox nameField;
     private final List<Button> rowButtons = new ArrayList<>();
@@ -49,6 +66,10 @@ public class WaypointScreen extends Screen {
     private int maxScroll;
 
     private Map<String, Waypoint> currentWaypoints = new HashMap<>();
+    /** 服务端下发的「已激活传送石碑」（读自 {@link NetworkHandler#pendingWaystones}）。 */
+    private List<WaystoneEntry> currentWaystones = new ArrayList<>();
+    /** 已读到的石碑列表版本号（与 {@link NetworkHandler#waystoneListVersion} 比对）。 */
+    private long waystoneVersion = -1;
     private boolean toggleActive;
     private String lastSignature = "";
     private long lastSoundTick;
@@ -60,8 +81,6 @@ public class WaypointScreen extends Screen {
     @Override
     protected void init() {
         super.init();
-        leftPos = (width - GUI_W) / 2;
-        topPos = (height - GUI_H) / 2;
         listTop = topPos + 92;
         listLeft = leftPos + 10;
         rowW = GUI_W - 20 - SCROLLBAR_W - 4;
@@ -78,6 +97,9 @@ public class WaypointScreen extends Screen {
                 b -> saveCurrent()).bounds(leftPos + 220, topPos + 62, 120, 20).build();
         addRenderableWidget(saveBtn);
 
+        // 顺带要一次「已激活传送石碑」列表（没装传送石碑时服务端回空表）
+        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.WaystoneListRequestPacket());
+
         refreshData();
         rebuildRows();
     }
@@ -86,7 +108,7 @@ public class WaypointScreen extends Screen {
     public void tick() {
         super.tick();
         refreshData();
-        // 数据变化（保存/删除/重命名/服务器同步）时重建行
+        // 数据变化（保存/删除/重命名/服务器同步/石碑列表更新）时重建行
         String sig = buildSignature();
         if (!sig.equals(lastSignature)) {
             lastSignature = sig;
@@ -104,8 +126,27 @@ public class WaypointScreen extends Screen {
                 toggleActive = stats.isToggleActive("fixed_point_teleport");
             });
         }
-        maxScroll = Math.max(0, currentWaypoints.size() - MAX_VISIBLE);
+
+        // 石碑列表：只在服务端推了新版本时重读（列表本体放在 NetworkHandler 的静态字段里）
+        if (waystoneVersion != NetworkHandler.waystoneListVersion) {
+            waystoneVersion = NetworkHandler.waystoneListVersion;
+            currentWaystones = new ArrayList<>(NetworkHandler.pendingWaystones);
+        }
+
+        maxScroll = Math.max(0, rowCount() - MAX_VISIBLE);
         scrollOffset = Mth.clamp(scrollOffset, 0, maxScroll);
+    }
+
+    /** 列表总行数：自己的路径点在前，已激活的传送石碑排在后面。 */
+    private int rowCount() {
+        return currentWaypoints.size() + currentWaystones.size();
+    }
+
+    /** 石碑按名称排序后的副本（绘制与重建行都用它，保证两次的顺序一致）。 */
+    private List<WaystoneEntry> sortedWaystones() {
+        List<WaystoneEntry> list = new ArrayList<>(currentWaystones);
+        list.sort((a, b) -> String.CASE_INSENSITIVE_ORDER.compare(a.name, b.name));
+        return list;
     }
 
     private String buildSignature() {
@@ -117,6 +158,12 @@ public class WaypointScreen extends Screen {
             sb.append(n).append('|').append(w.dimension).append('|')
                     .append((int) w.x).append(',').append((int) w.y).append(',').append((int) w.z).append(';');
         }
+        // 石碑也进签名：服务端重推列表（新激活 / 改名 / 删除）时要能触发重建行
+        sb.append('#');
+        for (WaystoneEntry e : sortedWaystones()) {
+            sb.append(e.name).append('|').append(e.dimension).append('|')
+                    .append((int) e.x).append(',').append((int) e.y).append(',').append((int) e.z).append(';');
+        }
         return sb.toString() + (toggleActive ? "1" : "0");
     }
 
@@ -127,36 +174,57 @@ public class WaypointScreen extends Screen {
         rowButtons.clear();
 
         List<String> names = sortedNames();
+        List<WaystoneEntry> waystones = sortedWaystones();
+        int ownSize = names.size();
+
         for (int i = 0; i < MAX_VISIBLE; i++) {
             int idx = i + scrollOffset;
-            if (idx >= names.size()) break;
-            String name = names.get(idx);
+            if (idx >= ownSize + waystones.size()) break;
 
             int rowY = listTop + i * ROW_H;
             int delX = listLeft + rowW - 48;
             int renameX = delX - 6 - 48;
             int tpX = renameX - 6 - 56;
 
-            Button tpBtn = Button.builder(Component.translatable("button.infinitestats.wp_teleport"),
-                    b -> sendAction(WaypointActionPacket.Action.TELEPORT, name))
-                    .bounds(tpX, rowY + 2, 56, ROW_H - 4).build();
-            Button renameBtn = Button.builder(Component.translatable("button.infinitestats.wp_rename"),
-                    b -> openRename(name)).bounds(renameX, rowY + 2, 48, ROW_H - 4).build();
-            Button delBtn = Button.builder(Component.translatable("button.infinitestats.wp_delete"),
-                    b -> sendAction(WaypointActionPacket.Action.DELETE, name))
-                    .bounds(delX, rowY + 2, 48, ROW_H - 4).build();
+            if (idx < ownSize) {
+                // 自己的路径点：传送 / 重命名 / 删除
+                String name = names.get(idx);
+                Button tpBtn = Button.builder(Component.translatable("button.infinitestats.wp_teleport"),
+                        b -> sendAction(WaypointActionPacket.Action.TELEPORT, name))
+                        .bounds(tpX, rowY + 2, 56, ROW_H - 4).build();
+                Button renameBtn = Button.builder(Component.translatable("button.infinitestats.wp_rename"),
+                        b -> openRename(name)).bounds(renameX, rowY + 2, 48, ROW_H - 4).build();
+                Button delBtn = Button.builder(Component.translatable("button.infinitestats.wp_delete"),
+                        b -> sendAction(WaypointActionPacket.Action.DELETE, name))
+                        .bounds(delX, rowY + 2, 48, ROW_H - 4).build();
 
-            delBtn.active = toggleActive;
-            renameBtn.active = toggleActive;
-            tpBtn.active = toggleActive;
+                delBtn.active = toggleActive;
+                renameBtn.active = toggleActive;
+                tpBtn.active = toggleActive;
 
-            addRenderableWidget(tpBtn);
-            addRenderableWidget(renameBtn);
-            addRenderableWidget(delBtn);
-            rowButtons.add(tpBtn);
-            rowButtons.add(renameBtn);
-            rowButtons.add(delBtn);
+                addRenderableWidget(tpBtn);
+                addRenderableWidget(renameBtn);
+                addRenderableWidget(delBtn);
+                rowButtons.add(tpBtn);
+                rowButtons.add(renameBtn);
+                rowButtons.add(delBtn);
+            } else {
+                // 传送石碑：只有「传送」（免费无冷却）；改名 / 删除在传送石碑自己的界面里做
+                WaystoneEntry entry = waystones.get(idx - ownSize);
+                Button tpBtn = Button.builder(Component.translatable("button.infinitestats.wp_teleport"),
+                        b -> teleportToWaystone(entry))
+                        .bounds(tpX, rowY + 2, 56, ROW_H - 4).build();
+                tpBtn.active = toggleActive;
+                addRenderableWidget(tpBtn);
+                rowButtons.add(tpBtn);
+            }
         }
+    }
+
+    /** 请求传送到某块已激活的传送石碑（免费无冷却；服务端会先核对这块石碑是否真的已激活）。 */
+    private void teleportToWaystone(WaystoneEntry entry) {
+        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.WaystoneTeleportPacket(entry.uid));
+        playClickSound();
     }
 
     private List<String> sortedNames() {
@@ -207,9 +275,7 @@ public class WaypointScreen extends Screen {
     }
 
     @Override
-    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderBackground(graphics);
-
+    protected void renderPanel(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         // 面板
         graphics.fill(leftPos - 2, topPos - 2, leftPos + GUI_W + 2, topPos + GUI_H + 2, 0x403B82F6);
         graphics.fill(leftPos - 1, topPos - 1, leftPos + GUI_W + 1, topPos + GUI_H + 1, 0xFF1E293B);
@@ -245,29 +311,45 @@ public class WaypointScreen extends Screen {
         // 列表区域背景
         graphics.fill(listLeft - 2, listTop - 2, listLeft + rowW + 2, listTop + listH + 2, 0x30151525);
 
-        // 绘制行
+        // 绘制行（自己的路径点在前，已激活的传送石碑在后）
         List<String> names = sortedNames();
+        List<WaystoneEntry> waystones = sortedWaystones();
+        int ownSize = names.size();
         for (int i = 0; i < MAX_VISIBLE; i++) {
             int idx = i + scrollOffset;
-            if (idx >= names.size()) break;
-            String name = names.get(idx);
-            Waypoint wp = currentWaypoints.get(name);
-            int rowY = listTop + i * ROW_H;
+            if (idx >= ownSize + waystones.size()) break;
 
+            int rowY = listTop + i * ROW_H;
             boolean hovered = mouseX >= listLeft && mouseX < listLeft + rowW
                     && mouseY >= rowY && mouseY < rowY + ROW_H;
             graphics.fill(listLeft, rowY, listLeft + rowW, rowY + ROW_H - 1, hovered ? BG_ROW_HOVER : BG_ROW);
 
-            // 名称
-            String shownName = font.width(name) > 110 ? truncate(name, 110) : name;
-            graphics.drawString(font, shownName, listLeft + 6, rowY + (ROW_H - font.lineHeight) / 2 + 1, TEXT_PRIMARY);
-
-            // 维度 + 坐标
-            String coords = wp.dimension.substring(wp.dimension.indexOf(':') + 1) + "  "
-                    + String.format("%.0f, %.0f, %.0f", wp.x, wp.y, wp.z);
             int coordsColor = toggleActive ? TEXT_SECONDARY : TEXT_NEGATIVE;
-            graphics.drawString(font, truncate(coords, 130), listLeft + 120,
-                    rowY + (ROW_H - font.lineHeight) / 2 + 1, coordsColor);
+            int textY = rowY + (ROW_H - font.lineHeight) / 2 + 1;
+
+            if (idx < ownSize) {
+                String name = names.get(idx);
+                Waypoint wp = currentWaypoints.get(name);
+
+                String shownName = font.width(name) > 110 ? truncate(name, 110) : name;
+                graphics.drawString(font, shownName, listLeft + 6, textY, TEXT_PRIMARY);
+
+                String coords = wp.dimension.substring(wp.dimension.indexOf(':') + 1) + "  "
+                        + String.format("%.0f, %.0f, %.0f", wp.x, wp.y, wp.z);
+                graphics.drawString(font, truncate(coords, 130), listLeft + 120, textY, coordsColor);
+            } else {
+                // 石碑行用金色名字，与自己的点区分开
+                WaystoneEntry entry = waystones.get(idx - ownSize);
+
+                String shownName = font.width(entry.name) > 110 ? truncate(entry.name, 110) : entry.name;
+                graphics.drawString(font, shownName, listLeft + 6, textY, TEXT_GOLD);
+
+                String dim = entry.dimension.contains(":")
+                        ? entry.dimension.substring(entry.dimension.indexOf(':') + 1)
+                        : entry.dimension;
+                String coords = dim + "  " + String.format("%.0f, %.0f, %.0f", entry.x, entry.y, entry.z);
+                graphics.drawString(font, truncate(coords, 130), listLeft + 120, textY, coordsColor);
+            }
         }
 
         // 滚动条
@@ -286,14 +368,47 @@ public class WaypointScreen extends Screen {
 
     private void renderScrollbar(GuiGraphics g, int mouseX, int mouseY) {
         if (maxScroll <= 0) return;
-        int sx = listLeft + rowW + 2;
-        int sy = listTop;
-        int sh = listH;
-        g.fill(sx, sy, sx + SCROLLBAR_W, sy + sh, 0x30151520);
-        int sliderH = Math.max(20, (int) ((float) MAX_VISIBLE / (maxScroll + MAX_VISIBLE) * sh));
-        int sliderY = sy + (sh - sliderH) * scrollOffset / maxScroll;
-        boolean hovering = mouseX >= sx && mouseX < sx + SCROLLBAR_W && mouseY >= sliderY && mouseY < sliderY + sliderH;
-        g.fill(sx, sliderY, sx + SCROLLBAR_W, sliderY + sliderH, hovering ? 0xB08888A0 : 0x80555570);
+        // 与拖拽共用 EditorUi 的几何算法：滑块中心跟手，点不中/回弹都不会再出现
+        EditorUi.scrollbar(g, mouseX, mouseY, scrollbarX(), listTop, listH,
+                scrollOffset, maxScroll, MAX_VISIBLE);
+    }
+
+    /** 滚动条轨道的 x（与列表右边留 2px）。 */
+    private int scrollbarX() {
+        return listLeft + rowW + 2;
+    }
+
+    // ======================== 滚动条拖拽 ========================
+
+    @Override
+    protected boolean onPanelClick(int mouseX, int mouseY, int button) {
+        if (button == 0 && maxScroll > 0
+                && EditorUi.onScrollbar(mouseX, mouseY, scrollbarX(), listTop, listH)) {
+            scrollbarDragging = true;
+            scrollOffset = EditorUi.scrollFromMouseY(mouseY, listTop, listH, maxScroll, MAX_VISIBLE);
+            rebuildRows();
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected boolean onPanelDrag(int mouseX, int mouseY, int button, int dragX, int dragY) {
+        if (scrollbarDragging && maxScroll > 0) {
+            scrollOffset = EditorUi.scrollFromMouseY(mouseY, listTop, listH, maxScroll, MAX_VISIBLE);
+            rebuildRows();
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected boolean onPanelRelease(int mouseX, int mouseY, int button) {
+        if (scrollbarDragging) {
+            scrollbarDragging = false;
+            return true;
+        }
+        return false;
     }
 
     private String truncate(String text, int maxWidth) {
@@ -312,15 +427,15 @@ public class WaypointScreen extends Screen {
     }
 
     @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
-        if (maxScroll <= 0) return super.mouseScrolled(mouseX, mouseY, delta);
+    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
+        if (maxScroll <= 0) return false;
         int newOffset = Mth.clamp(scrollOffset + (delta > 0 ? -1 : 1), 0, maxScroll);
         if (newOffset != scrollOffset) {
             scrollOffset = newOffset;
             rebuildRows();
             return true;
         }
-        return super.mouseScrolled(mouseX, mouseY, delta);
+        return false;
     }
 
     @Override

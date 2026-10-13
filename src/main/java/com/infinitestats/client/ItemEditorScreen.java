@@ -42,7 +42,7 @@ import java.util.*;
  * </ul>
  * 提交时只发送实际编辑过的列表，保留内置属性、原始 UUID 与扩展 NBT。
  */
-public class ItemEditorScreen extends Screen {
+public class ItemEditorScreen extends PanelScreen {
 
     // ======================== 对外常量（子界面共用） ========================
 
@@ -91,7 +91,15 @@ public class ItemEditorScreen extends Screen {
 
     // ======================== 状态 ========================
 
-    private int leftPos, topPos;
+    @Override
+    protected int panelW() {
+        return GUI_W;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_H;
+    }
 
     private final List<EnchantEntry> enchants = new ArrayList<>();
     private final List<AttrEntry> attrs = new ArrayList<>();
@@ -165,8 +173,6 @@ public class ItemEditorScreen extends Screen {
     @Override
     protected void init() {
         super.init();
-        leftPos = Math.max(0, (width - GUI_W) / 2);
-        topPos = Math.max(0, (height - GUI_H) / 2);
         rebuildViews();
 
         addColumnWidgets(0, colX(0));
@@ -336,9 +342,7 @@ public class ItemEditorScreen extends Screen {
     // ======================== 绘制 ========================
 
     @Override
-    public void render(GuiGraphics g, int mx, int my, float pt) {
-        renderBackground(g);
-
+    protected void renderPanel(GuiGraphics g, int mx, int my, float pt) {
         EditorUi.panel(g, leftPos, topPos, GUI_W, GUI_H);
         EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
         drawItemBar(g);
@@ -355,8 +359,10 @@ public class ItemEditorScreen extends Screen {
         drawColumn(g, mx, my, 0);
         drawColumn(g, mx, my, 1);
 
-        super.render(g, mx, my, pt);
+    }
 
+    @Override
+    protected void renderPanelOverlay(GuiGraphics g, int mx, int my, float pt) {
         if (hoveredEnchant != null) {
             renderEnchantDescription(g, mx, my, hoveredEnchant);
         } else if (hoveredAttr != null) {
@@ -502,9 +508,18 @@ public class ItemEditorScreen extends Screen {
     // ======================== 输入 ========================
 
     @Override
-    public boolean mouseClicked(double mx, double my, int button) {
+    protected boolean onPanelClick(int mx, int my, int button) {
         if (button == 0) {
-            if (handleDelClick((int) mx, (int) my)) return true;
+            // 滚动条要先拦：否则会被当成「按住了某一行」，紧接着的拖动会变成行排序
+            int sbCol = colAt(mx);
+            if (sbCol >= 0 && maxScrollOf(sbCol) > 0
+                    && EditorUi.onScrollbar(mx, my, scrollbarX(sbCol), LIST_Y, LIST_H - 2)) {
+                scrollbarCol = sbCol;
+                setScrollOf(sbCol, EditorUi.scrollFromMouseY(my, LIST_Y, LIST_H - 2,
+                        maxScrollOf(sbCol), VISIBLE_ROWS));
+                return true;
+            }
+            if (handleDelClick(mx, my)) return true;
 
             int col = colAt(mx);
             int row = rowIndexAt(my);
@@ -513,18 +528,23 @@ public class ItemEditorScreen extends Screen {
                 if (viewIdx < viewOf(col).size()) {
                     pressCol = col;
                     pressRow = viewIdx;
-                    pressX = (int) mx;
-                    pressY = (int) my;
+                    pressX = mx;
+                    pressY = my;
                     dragging = false;
                     return true;
                 }
             }
         }
-        return super.mouseClicked(mx, my, button);
+        return false;
     }
 
     @Override
-    public boolean mouseDragged(double mx, double my, int button, double dx, double dy) {
+    protected boolean onPanelDrag(int mx, int my, int button, int dx, int dy) {
+        if (scrollbarCol >= 0) {
+            setScrollOf(scrollbarCol, EditorUi.scrollFromMouseY(my, LIST_Y, LIST_H - 2,
+                    maxScrollOf(scrollbarCol), VISIBLE_ROWS));
+            return true;
+        }
         if (button == 0 && pressCol >= 0) {
             if (!dragging && (Math.abs(mx - pressX) > DRAG_THRESHOLD
                     || Math.abs(my - pressY) > DRAG_THRESHOLD)) {
@@ -542,11 +562,15 @@ public class ItemEditorScreen extends Screen {
                 return true;
             }
         }
-        return super.mouseDragged(mx, my, button, dx, dy);
+        return false;
     }
 
     @Override
-    public boolean mouseReleased(double mx, double my, int button) {
+    protected boolean onPanelRelease(int mx, int my, int button) {
+        if (scrollbarCol >= 0) {
+            scrollbarCol = -1;
+            return true;
+        }
         if (button == 0 && pressCol >= 0) {
             if (dragging) {
                 if (dragTo >= 0 && dragTo != dragFrom) moveInList(dragCol, dragFrom, dragTo);
@@ -556,13 +580,13 @@ public class ItemEditorScreen extends Screen {
             resetPress();
             return true;
         }
-        return super.mouseReleased(mx, my, button);
+        return false;
     }
 
     @Override
-    public boolean mouseScrolled(double mx, double my, double delta) {
+    protected boolean onPanelScroll(int mx, int my, double delta) {
         int col = colAt(mx);
-        if (col < 0) return super.mouseScrolled(mx, my, delta);
+        if (col < 0) return false;
         setScrollOf(col, scrollOf(col) + (delta > 0 ? -1 : 1));
         return true;
     }
@@ -582,6 +606,20 @@ public class ItemEditorScreen extends Screen {
             if (mx >= x && mx < x + COL_W) return col;
         }
         return -1;
+    }
+
+    // ======================== 滚动条拖拽（每列一条） ========================
+
+    /** 正在被拖拽的列；-1 = 没在拖。 */
+    private int scrollbarCol = -1;
+
+    private int maxScrollOf(int col) {
+        return col == 0 ? enchantMaxScroll : attrMaxScroll;
+    }
+
+    /** 该列滚动条的 x（与 {@link EditorUi#scrollbar} 的绘制位置一致）。 */
+    private int scrollbarX(int col) {
+        return colX(col) + COL_W - EditorUi.SCROLL_W;
     }
 
     /** 列表区域内的行号（0 起，未加滚动偏移）；不在列表区域返回 -1。 */

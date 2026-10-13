@@ -21,7 +21,7 @@ import java.util.List;
  * 列表由服务器动态下发，因此兼容暮色森林 / Alex's Caves / 以太 等模组维度。
  * 需要『跨维度传送』属性已激活（与普通命令一致）。
  */
-public class CrossDimScreen extends Screen {
+public class CrossDimScreen extends PanelScreen {
 
     private static final int GUI_W = 300;
     private static final int GUI_H = 240;
@@ -39,7 +39,7 @@ public class CrossDimScreen extends Screen {
     private static final List<String> SERVER_DIMENSIONS = new ArrayList<>(List.of(
             "minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"));
 
-    private int leftPos, topPos;
+
     private boolean toggleActive;
     private String currentDim = "";
     private long lastSoundTick;
@@ -76,10 +76,24 @@ public class CrossDimScreen extends Screen {
     }
 
     @Override
+    protected int panelW() {
+        return GUI_W;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_H;
+    }
+
+    /** 列表按钮需要在裁剪区内自绘（见 renderPanel），控件不再由基类重复绘制。 */
+    @Override
+    protected boolean baseRendersWidgets() {
+        return false;
+    }
+
+    @Override
     protected void init() {
         super.init();
-        leftPos = (width - GUI_W) / 2;
-        topPos = (height - GUI_H) / 2;
 
         Player player = Minecraft.getInstance().player;
         toggleActive = false;
@@ -147,19 +161,17 @@ public class CrossDimScreen extends Screen {
     }
 
     @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
+    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
         if (maxScroll > 0) {
             scrollOffset += (int) (-delta * (BTN_H + GAP));
             clampScroll();
             return true;
         }
-        return super.mouseScrolled(mouseX, mouseY, delta);
+        return false;
     }
 
     @Override
-    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderBackground(graphics);
-
+    protected void renderPanel(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         // 面板
         graphics.fill(leftPos - 2, topPos - 2, leftPos + GUI_W + 2, topPos + GUI_H + 2, 0x403B82F6);
         graphics.fill(leftPos - 1, topPos - 1, leftPos + GUI_W + 1, topPos + GUI_H + 1, 0xFF1E293B);
@@ -180,7 +192,7 @@ public class CrossDimScreen extends Screen {
         // 裁剪列表区域后绘制按钮
         int listTop = topPos + LIST_TOP_OFFSET;
         int listBottom = topPos + GUI_H - LIST_BOTTOM_OFFSET;
-        graphics.enableScissor(leftPos, listTop, leftPos + GUI_W, listBottom);
+        beginPanelScissor(graphics, leftPos, listTop, leftPos + GUI_W, listBottom);
         for (int i = 0; i < dimButtons.size(); i++) {
             Button btn = dimButtons.get(i);
             int by = listTop + i * (BTN_H + GAP) - scrollOffset;
@@ -190,7 +202,7 @@ public class CrossDimScreen extends Screen {
         for (var renderable : this.renderables) {
             renderable.render(graphics, mouseX, mouseY, partialTick);
         }
-        graphics.disableScissor();
+        endPanelScissor(graphics);
 
         // 底部提示 / 滚动条
         if (!toggleActive) {

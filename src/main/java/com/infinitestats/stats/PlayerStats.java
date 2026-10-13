@@ -3,12 +3,20 @@ package com.infinitestats.stats;
 import com.infinitestats.Config;
 import com.infinitestats.crafting.PortableBrewingData;
 import com.infinitestats.furnace.PlayerFurnaceData;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
+import net.minecraft.world.effect.MobEffect;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 玩家属性数据 - 使用 Map 存储以支持动态属性数量
@@ -75,12 +83,30 @@ public class PlayerStats {
     // 记录本模组当前正在提供的能力（用于区分本模组 vs 其他模组给予的效果）
     private final Set<String> providedAbilities = new HashSet<>();
 
-    // buff 过滤模式：true = 黑名单（列表中的拦截），false = 白名单（列表中的绝对不拦截，其他不管）
+    // 效果过滤模式：true = 黑名单（列表中的拦截），false = 白名单（保护：列表中的效果在自然结束前不会被外力清除）
     private boolean buffUseBlacklist = true;
     // 效果 ID 黑名单（黑名单模式下拦截这些效果，如 "minecraft:poison"）
     private final Set<String> buffBlacklist = new HashSet<>();
-    // 效果 ID 白名单（白名单模式下保护这些效果）。与黑名单各自独立，切换模式不会互相污染
+    // 效果 ID 白名单（保护模式下的保护名单）。与黑名单各自独立，切换模式不会互相污染
     private final Set<String> buffWhitelist = new HashSet<>();
+
+    /**
+     * 保护快照：效果 ID → 最近一次观察到的实例状态与剩余时长（见 {@link ProtectedEffect}）。
+     * <p>
+     * 刻意<b>不参与存档</b>：效果的有效期以玩家身上那瓶药水本身为准，快照只用来区分
+     * 「被外力清除」（补回）与「自然到期」（放手）。登录 / 换维度后下一 tick 会重新采样。
+     */
+    private final Map<String, ProtectedEffect> protectedSnapshots = new HashMap<>();
+
+    /**
+     * 保护模式的「死亡重生继承」开关（默认关）。
+     * <p>
+     * 开启后玩家死亡重生时保护快照一并带过去：原版死亡抹掉的效果会被按剩余时长补回，
+     * 直到原本的自然结束时间；关闭时死亡即视为自然终止，重生后不再补回。
+     * <p>
+     * 换维度（非死亡克隆）无论开关如何都必须搬运快照，否则会白丢一次剩余时长记录。
+     */
+    private boolean protectAcrossDeath = false;
 
     // 定点传送点集合：名称 → 传送点
     private final Map<String, Waypoint> waypoints = new HashMap<>();
@@ -497,21 +523,27 @@ public class PlayerStats {
     // ========== Buff 过滤系统 ==========
 
     /**
-     * 获取过滤模式：true=黑名单（列表中的拦截），false=白名单（列表中的绝对不拦截，其他不管）
+     * 获取过滤模式：true=黑名单（列表中的拦截），false=白名单（保护名单）
      */
     public boolean isBuffUseBlacklist() {
         return buffUseBlacklist;
     }
 
     /**
-     * 设置过滤模式
+     * 设置过滤模式。
+     * <p>
+     * 切到黑名单 = 退出保护模式，保护快照立即作废（否则切回来时会凭空补回早已消失的效果）。
      */
     public void setBuffUseBlacklist(boolean blacklist) {
+        if (blacklist && !this.buffUseBlacklist) {
+            protectedSnapshots.clear();
+        }
         this.buffUseBlacklist = blacklist;
     }
 
     /**
-     * 获取当前模式生效的过滤列表（不可变副本）
+     * 获取当前模式生效的过滤列表（不可变副本）：
+     * 黑名单模式是「要拦截的效果」，白名单模式是「要保护的效果」。
      */
     public Set<String> getBuffFilterList() {
         return Collections.unmodifiableSet(buffActiveList());
@@ -536,6 +568,7 @@ public class PlayerStats {
      */
     public void clearBuffFilters() {
         buffActiveList().clear();
+        if (!buffUseBlacklist) protectedSnapshots.clear();
     }
 
     /**
@@ -549,6 +582,10 @@ public class PlayerStats {
         Set<String> target = buffActiveList();
         target.clear();
         if (list != null) target.addAll(list);
+        if (!buffUseBlacklist) {
+            // 被取消保护的条目立即停止保护（通配 / 标签同样按匹配结果判定），不必等 tick 逻辑回头清理
+            protectedSnapshots.keySet().removeIf(id -> !isProtectedEffect(id));
+        }
     }
 
     /** 当前模式生效的名单（内部可变引用，仅本类使用）。 */
@@ -557,16 +594,208 @@ public class PlayerStats {
     }
 
     /**
-     * 检查某个效果是否应该被拦截
+     * 检查某个效果是否应该被拦截。
+     * <p>
+     * 只有黑名单模式会拦截；白名单模式是「保护」语义，走 {@link #isProtectedEffect(String)}。
+     *
      * @return true = 应该拦截
      */
     public boolean shouldBlockEffect(String effectId) {
         if (!buffUseBlacklist) {
-            // 白名单模式：名单中的绝对不拦截，其他的不管（不处理）
+            // 白名单（保护）模式：不拦截任何效果
             return false;
         }
         // 黑名单模式：名单中的就是要拦截的；空列表 = 没有要拦截的 = 全放行
-        return buffBlacklist.contains(effectId);
+        return matchesAnyEntry(buffBlacklist, effectId);
+    }
+
+    // ========== 名单条目匹配（ID / 通配 / 标签） ==========
+
+    /** {@code #标签} 条目的 {@link TagKey} 解析缓存（标签在一次游戏运行内不会变）。 */
+    private static final Map<String, TagKey<MobEffect>> EFFECT_TAG_CACHE = new ConcurrentHashMap<>();
+
+    /**
+     * 单个名单条目是否命中某个效果。
+     * <p>
+     * 条目写法（黑名单 / 白名单通用）：
+     * <ul>
+     *   <li>{@code minecraft:poison} —— 单个效果 ID，精确匹配；</li>
+     *   <li>{@code somemod:*} —— 该命名空间（整个模组）的所有效果；</li>
+     *   <li>{@code *} —— 所有效果（慎用：会连正面 Buff 一起处理）；</li>
+     *   <li>{@code #forge:effect_tag} —— 效果标签归属，如 {@code #forge:boss_effects}。</li>
+     * </ul>
+     *
+     * @param pattern  名单条目（调用方需已规范化：小写、带命名空间）
+     * @param effectId 效果 ID（形如 {@code minecraft:poison}）
+     */
+    public static boolean matchesFilterEntry(String pattern, String effectId) {
+        if (pattern == null || effectId == null || pattern.isEmpty()) return false;
+        if (pattern.equals(effectId)) return true;
+
+        if (pattern.startsWith("#")) {
+            return matchesEffectTag(pattern, effectId);
+        }
+        if (pattern.equals("*")) {
+            return true;
+        }
+        if (pattern.endsWith(":*")) {
+            int colon = effectId.indexOf(':');
+            return colon > 0 && effectId.regionMatches(0, pattern, 0, pattern.length() - 2)
+                    && colon == pattern.length() - 2;
+        }
+        return false;
+    }
+
+    /** 名单里是否存在命中该效果的条目（先走精确匹配的快速路径）。 */
+    private static boolean matchesAnyEntry(Set<String> patterns, String effectId) {
+        if (patterns.isEmpty() || effectId == null) return false;
+        if (patterns.contains(effectId)) return true;
+
+        for (String pattern : patterns) {
+            if (pattern == null || pattern.equals(effectId)) continue;
+            // 只有通配 / 标签才需要慢路径
+            if (pattern.equals("*") || pattern.startsWith("#") || pattern.endsWith(":*")) {
+                if (matchesFilterEntry(pattern, effectId)) return true;
+            }
+        }
+        return false;
+    }
+
+    /** {@code #标签} 归属判定（标签不存在时恒为 false）。 */
+    private static boolean matchesEffectTag(String pattern, String effectId) {
+        TagKey<MobEffect> tag = EFFECT_TAG_CACHE.computeIfAbsent(pattern, key -> {
+            ResourceLocation tagId = ResourceLocation.tryParse(key.substring(1));
+            return tagId == null ? null : TagKey.create(Registries.MOB_EFFECT, tagId);
+        });
+        if (tag == null) return false;
+
+        ResourceLocation effectRl = ResourceLocation.tryParse(effectId);
+        if (effectRl == null) return false;
+        return BuiltInRegistries.MOB_EFFECT
+                .getHolder(ResourceKey.create(Registries.MOB_EFFECT, effectRl))
+                .map(holder -> holder.is(tag))
+                .orElse(false);
+    }
+
+    // ========== 白名单「保护」模式 ==========
+
+    /**
+     * 白名单模式即「保护」模式：名单中的效果在<b>自然结束前不会被任何外力清除</b> ——
+     * 本模组自己的清理（自动复活、夜视 / 隐身等 toggle 收尾）、其它模组、牛奶桶、
+     * {@code /effect clear} 都算外力。
+     * <p>
+     * 与黑名单的「拦截」互斥：同一玩家同一时刻只会处于其中一种模式。
+     */
+    public boolean isProtectionMode() {
+        return !buffUseBlacklist;
+    }
+
+    /** 该效果当前是否受保护（仅白名单 / 保护模式生效，条目同样支持通配与标签）。 */
+    public boolean isProtectedEffect(String effectId) {
+        return !buffUseBlacklist && matchesAnyEntry(buffWhitelist, effectId);
+    }
+
+    /** 保护名单是否非空（供每 tick 的维护逻辑做零开销短路）。 */
+    public boolean hasProtectedEffects() {
+        return !buffUseBlacklist && !buffWhitelist.isEmpty();
+    }
+
+    /** 黑名单模式且名单非空（同上，给每 tick 的拦截清扫做短路用）。 */
+    public boolean hasBlockingEffects() {
+        return buffUseBlacklist && !buffBlacklist.isEmpty();
+    }
+
+    /** 保护快照表：由保护逻辑每 tick 采样 / 补回，见 {@link ProtectedEffect}。 */
+    public Map<String, ProtectedEffect> getProtectedSnapshots() {
+        return protectedSnapshots;
+    }
+
+    /** 死亡重生是否继承保护（仅白名单 / 保护模式有意义）。 */
+    public boolean isProtectAcrossDeath() {
+        return protectAcrossDeath;
+    }
+
+    /** 设置死亡重生是否继承保护。 */
+    public void setProtectAcrossDeath(boolean inherit) {
+        this.protectAcrossDeath = inherit;
+    }
+
+    /**
+     * 玩家实体克隆时搬运保护快照。
+     * <p>
+     * 换维度（{@code wasDeath == false}）必须搬：效果本身跟着玩家走，不搬等于白丢一次剩余时长记录。
+     * 死亡重生则看 {@link #isProtectAcrossDeath()}：关闭时死亡就是自然终止，重生后不再补回。
+     *
+     * @param other   克隆前的老数据（需已 {@code copyFrom}，开关与名单以本对象为准）
+     * @param wasDeath 是否死亡克隆
+     */
+    public void inheritProtection(PlayerStats other, boolean wasDeath) {
+        protectedSnapshots.clear();
+        if (other == null || (wasDeath && !protectAcrossDeath)) return;
+        for (Map.Entry<String, ProtectedEffect> entry : other.protectedSnapshots.entrySet()) {
+            protectedSnapshots.put(entry.getKey(), entry.getValue().copy());
+        }
+    }
+
+    /**
+     * 保护中的效果快照。
+     * <p>
+     * 每 tick 只要该效果还在身上就刷新一次（记录等级 / 粒子 / 剩余时长）；
+     * 一旦消失，按剩余时长逐 tick 递减并补回 —— 递减到 0 说明是<b>自然结束</b>，
+     * 撤销保护、不再补回。无限时长（{@code -1}）视为永不自然结束。
+     */
+    public static final class ProtectedEffect {
+
+        private int amplifier;
+        private boolean ambient;
+        private boolean visible;
+        private boolean showIcon;
+        private boolean infinite;
+        private int remaining;
+
+        /** 用玩家身上当前的实例刷新快照。 */
+        public void capture(MobEffectInstance instance) {
+            this.amplifier = instance.getAmplifier();
+            this.ambient = instance.isAmbient();
+            this.visible = instance.isVisible();
+            this.showIcon = instance.showIcon();
+            int duration = instance.getDuration();
+            this.infinite = duration == MobEffectInstance.INFINITE_DURATION;
+            this.remaining = duration;
+        }
+
+        /**
+         * 效果已从玩家身上消失时调用：按 tick 递减剩余时长。
+         *
+         * @return {@code true} = 还没到自然结束时间（应当补回）；{@code false} = 已自然结束
+         */
+        public boolean tickDown() {
+            if (infinite) return true;
+            remaining--;
+            return remaining > 0;
+        }
+
+        /** 补回时使用的剩余时长（无限时长原样返回 {@code -1}）。 */
+        public int reapplyDuration() {
+            return infinite ? MobEffectInstance.INFINITE_DURATION : Math.max(1, remaining);
+        }
+
+        /** 按快照重建一个效果实例。 */
+        public MobEffectInstance toInstance(MobEffect effect) {
+            return new MobEffectInstance(effect, reapplyDuration(), amplifier, ambient, visible, showIcon);
+        }
+
+        /** 复制一份（跨实体搬运 / 死亡重生继承用）。 */
+        public ProtectedEffect copy() {
+            ProtectedEffect copy = new ProtectedEffect();
+            copy.amplifier = amplifier;
+            copy.ambient = ambient;
+            copy.visible = visible;
+            copy.showIcon = showIcon;
+            copy.infinite = infinite;
+            copy.remaining = remaining;
+            return copy;
+        }
     }
 
     /** 把 ID 集合写成 NBT 列表（元素形如 {@code { id: "..." }}）。 */
@@ -980,10 +1209,11 @@ public class PlayerStats {
         }
         tag.put("providedAbilities", abilitiesList);
 
-        // 序列化 buff 过滤名单（黑 / 白各自一份）
+        // 序列化 buff 过滤名单（黑 / 白各自一份）+ 保护模式的死亡重生继承开关
         tag.putBoolean("debuffUseBlacklist", buffUseBlacklist);
         tag.put("debuffBlacklist", toIdList(buffBlacklist));
         tag.put("debuffWhitelist", toIdList(buffWhitelist));
+        tag.putBoolean("protectAcrossDeath", protectAcrossDeath);
 
         // 序列化定点传送点
         ListTag wpList = new ListTag();
@@ -1130,6 +1360,8 @@ public class PlayerStats {
             // 旧存档只有单份 debuffFilterList：按当前模式归入对应名单
             readIds(tag, "debuffFilterList", buffUseBlacklist ? buffBlacklist : buffWhitelist);
         }
+        // 旧存档没有这个键 → 默认关闭（保持原本「死亡即终止保护」的行为）
+        protectAcrossDeath = tag.contains("protectAcrossDeath") && tag.getBoolean("protectAcrossDeath");
 
         // 反序列化定点传送点
         waypoints.clear();
@@ -1260,6 +1492,9 @@ public class PlayerStats {
         this.buffBlacklist.addAll(other.buffBlacklist);
         this.buffWhitelist.clear();
         this.buffWhitelist.addAll(other.buffWhitelist);
+        this.protectAcrossDeath = other.protectAcrossDeath;
+        // 保护快照不在这里搬：由 PlayerEvent.Clone 显式调用 inheritProtection(其他, 是否死亡)，
+        // 因为「死亡重生是否继承」取决于本开关，只有克隆入口知道是不是死亡。
         this.allocatedPoints.clear();
         this.allocatedPoints.putAll(other.allocatedPoints);
         this.waypoints.clear();
@@ -1306,6 +1541,7 @@ public class PlayerStats {
                 buffUseBlacklist,
                 new HashSet<>(buffBlacklist),
                 new HashSet<>(buffWhitelist),
+                protectAcrossDeath,
                 new HashMap<>(waypoints),
                 reviveInvulnUntilTick,
                 new HashSet<>(favorites),
@@ -1343,6 +1579,7 @@ public class PlayerStats {
         if (snapshot.buffBlacklist != null) this.buffBlacklist.addAll(snapshot.buffBlacklist);
         this.buffWhitelist.clear();
         if (snapshot.buffWhitelist != null) this.buffWhitelist.addAll(snapshot.buffWhitelist);
+        this.protectAcrossDeath = snapshot.protectAcrossDeath;
         this.waypoints.clear();
         this.waypoints.putAll(snapshot.waypoints);
         this.favorites.clear();
@@ -1377,6 +1614,8 @@ public class PlayerStats {
         public final Set<String> buffBlacklist;
         /** buff 白名单（白名单模式生效） */
         public final Set<String> buffWhitelist;
+        /** 保护模式：死亡重生是否继承保护 */
+        public final boolean protectAcrossDeath;
         public final Map<String, Waypoint> waypoints;
         public final long reviveInvulnUntilTick;
         public final Set<String> favorites;
@@ -1395,6 +1634,7 @@ public class PlayerStats {
                 long lastReviveTime, int passiveTickCounter,
                 Map<String, Long> allocatedPoints,
                 boolean buffUseBlacklist, Set<String> buffBlacklist, Set<String> buffWhitelist,
+                boolean protectAcrossDeath,
                 Map<String, Waypoint> waypoints, long reviveInvulnUntilTick, Set<String> favorites,
                 Map<String, List<String>> networkPriorities,
                 boolean autoDepositUseWhitelist, Set<String> autoDepositBlacklist, Set<String> autoDepositWhitelist,
@@ -1408,6 +1648,7 @@ public class PlayerStats {
             this.buffUseBlacklist = buffUseBlacklist;
             this.buffBlacklist = buffBlacklist;
             this.buffWhitelist = buffWhitelist;
+            this.protectAcrossDeath = protectAcrossDeath;
             this.waypoints = waypoints;
             this.reviveInvulnUntilTick = reviveInvulnUntilTick;
             this.favorites = favorites;

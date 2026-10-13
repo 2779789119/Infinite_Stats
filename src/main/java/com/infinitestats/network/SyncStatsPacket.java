@@ -31,6 +31,7 @@ public final class SyncStatsPacket {
     private boolean buffUseBlacklist;
     private Set<String> buffBlacklist;
     private Set<String> buffWhitelist;
+    private boolean protectAcrossDeath;
     private Map<String, Waypoint> waypoints;
     private Set<String> favorites;
     private Map<String, List<String>> networkPriorities;
@@ -52,6 +53,7 @@ public final class SyncStatsPacket {
         this.buffUseBlacklist = snapshot.buffUseBlacklist;
         this.buffBlacklist = snapshot.buffBlacklist;
         this.buffWhitelist = snapshot.buffWhitelist;
+        this.protectAcrossDeath = snapshot.protectAcrossDeath;
         this.waypoints = snapshot.waypoints;
         this.favorites = snapshot.favorites;
         this.networkPriorities = snapshot.networkPriorities;
@@ -89,6 +91,7 @@ public final class SyncStatsPacket {
         this.buffWhitelist = new HashSet<>();
         int buffWhiteCount = buf.readVarInt();
         for (int i = 0; i < buffWhiteCount; i++) buffWhitelist.add(buf.readUtf());
+        this.protectAcrossDeath = buf.readBoolean();
 
         // 读取传送点
         int wpCount = buf.readVarInt();
@@ -160,6 +163,7 @@ public final class SyncStatsPacket {
         Set<String> buffWhite = msg.buffWhitelist != null ? msg.buffWhitelist : Set.of();
         buf.writeVarInt(buffWhite.size());
         for (String effectId : buffWhite) buf.writeUtf(effectId);
+        buf.writeBoolean(msg.protectAcrossDeath);
 
         // 写入传送点
         buf.writeVarInt(msg.waypoints.size());
@@ -228,6 +232,7 @@ public final class SyncStatsPacket {
                         msg.buffUseBlacklist,
                         msg.buffBlacklist,
                         msg.buffWhitelist,
+                        msg.protectAcrossDeath,
                         msg.waypoints,
                         msg.reviveInvulnUntilTick,
                         msg.favorites,
@@ -255,6 +260,7 @@ public final class SyncStatsPacket {
                 buffUseBlacklist,
                 buffBlacklist,
                 buffWhitelist,
+                protectAcrossDeath,
                 waypoints,
                 reviveInvulnUntilTick,
                 favorites,

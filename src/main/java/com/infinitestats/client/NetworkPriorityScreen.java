@@ -34,7 +34,7 @@ import java.util.Locale;
  * <p>
  * 视觉与交互沿用 {@link EditorUi} 规范；提交走数据包 {@code SetNetworkPriorityPacket}。
  */
-public class NetworkPriorityScreen extends Screen {
+public class NetworkPriorityScreen extends PanelScreen {
 
     /** 支持的全部存储键（与 NetworkIO / NetworkHandler#normalizeNetworkOrder 口径一致） */
     private static final List<String> ALL_KEYS = List.of("RS", "AE2", "TOMS", "BACKPACK", "BD");
@@ -61,7 +61,7 @@ public class NetworkPriorityScreen extends Screen {
     /** 关闭时返回的父界面 */
     private final Screen parent;
 
-    private int leftPos, topPos;
+
     private int hoveredRow = -1;
 
     public NetworkPriorityScreen(Screen parent, String scope) {
@@ -96,10 +96,17 @@ public class NetworkPriorityScreen extends Screen {
     }
 
     @Override
-    protected void init() {
-        leftPos = (width - GUI_W) / 2;
-        topPos = (height - GUI_H) / 2;
+    protected int panelW() {
+        return GUI_W;
+    }
 
+    @Override
+    protected int panelH() {
+        return GUI_H;
+    }
+
+    @Override
+    protected void init() {
         for (int i = 0; i < order.size(); i++) {
             final int index = i;
             int rowY = topPos + LIST_Y + i * ROW_H;
@@ -165,8 +172,7 @@ public class NetworkPriorityScreen extends Screen {
     // ======================== 绘制 ========================
 
     @Override
-    public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-        renderBackground(g);
+    protected void renderPanel(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         EditorUi.panel(g, leftPos, topPos, GUI_W, GUI_H);
         EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
         g.drawString(font,
@@ -210,8 +216,6 @@ public class NetworkPriorityScreen extends Screen {
             }
             EditorUi.tooltip(g, mouseX, mouseY, lines, EditorUi.INFO);
         }
-
-        super.render(g, mouseX, mouseY, partialTick);
     }
 
     // ======================== 工具 ========================

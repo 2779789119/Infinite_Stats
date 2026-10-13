@@ -32,7 +32,7 @@ import java.util.*;
  * 提交后由服务端走能力写回（见 {@link com.infinitestats.compat.SlashBladeCompat}）。
  * 视觉规范复用 {@link EditorUi}。
  */
-public class SlashBladeEditScreen extends Screen {
+public class SlashBladeEditScreen extends PanelScreen {
 
     // ======================== 布局常量 ========================
 
@@ -65,7 +65,16 @@ public class SlashBladeEditScreen extends Screen {
     // ======================== 状态 ========================
 
     private final ItemEditorScreen parent;
-    private int leftPos, topPos;
+
+    @Override
+    protected int panelW() {
+        return GUI_W;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_H;
+    }
 
     /** 候选（注册表全集）与过滤后的视图。 */
     private final List<ResourceLocation> saAll = new ArrayList<>();
@@ -125,8 +134,6 @@ public class SlashBladeEditScreen extends Screen {
     @Override
     protected void init() {
         super.init();
-        leftPos = Math.max(0, (width - GUI_W) / 2);
-        topPos = Math.max(0, (height - GUI_H) / 2);
         rebuildSaView();
         rebuildSeView();
 
@@ -196,8 +203,7 @@ public class SlashBladeEditScreen extends Screen {
     // ======================== 绘制 ========================
 
     @Override
-    public void render(GuiGraphics g, int mx, int my, float pt) {
-        renderBackground(g);
+    protected void renderPanel(GuiGraphics g, int mx, int my, float pt) {
         EditorUi.panel(g, leftPos, topPos, GUI_W, GUI_H);
         EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
         drawItemBar(g);
@@ -227,8 +233,10 @@ public class SlashBladeEditScreen extends Screen {
         drawSaColumn(g, mx, my);
         drawSeColumn(g, mx, my);
 
-        super.render(g, mx, my, pt);
+    }
 
+    @Override
+    protected void renderPanelOverlay(GuiGraphics g, int mx, int my, float pt) {
         if (hoveredSa != null) {
             EditorUi.tooltip(g, mx, my, List.of(
                     "§e" + SlashBladeCompat.slashArtsName(hoveredSa),
@@ -367,8 +375,16 @@ public class SlashBladeEditScreen extends Screen {
     // ======================== 输入 ========================
 
     @Override
-    public boolean mouseClicked(double mx, double my, int button) {
+    protected boolean onPanelClick(int mx, int my, int button) {
         if (button == 0) {
+            int sbCol = colAt(mx);
+            if (sbCol >= 0 && maxScrollOf(sbCol) > 0
+                    && EditorUi.onScrollbar(mx, my, scrollbarX(sbCol), LIST_Y, LIST_H - 2)) {
+                scrollbarCol = sbCol;
+                setScrollOf(sbCol, EditorUi.scrollFromMouseY(my, LIST_Y, LIST_H - 2,
+                        maxScrollOf(sbCol), VISIBLE_ROWS));
+                return true;
+            }
             int saIdx = rowIndexAt(saRects, mx, my);
             if (saIdx >= 0) {
                 saSel = saView.get(saIdx).toString();
@@ -383,7 +399,7 @@ public class SlashBladeEditScreen extends Screen {
                 return true;
             }
         }
-        return super.mouseClicked(mx, my, button);
+        return false;
     }
 
     /** 命中列表行则返回视图下标，否则 -1。 */
@@ -397,7 +413,7 @@ public class SlashBladeEditScreen extends Screen {
     }
 
     @Override
-    public boolean mouseScrolled(double mx, double my, double delta) {
+    protected boolean onPanelScroll(int mx, int my, double delta) {
         int col = colAt(mx);
         if (col == 0) {
             saScroll = clamp(saScroll + (delta > 0 ? -1 : 1), 0, saMaxScroll);
@@ -407,7 +423,7 @@ public class SlashBladeEditScreen extends Screen {
             seScroll = clamp(seScroll + (delta > 0 ? -1 : 1), 0, seMaxScroll);
             return true;
         }
-        return super.mouseScrolled(mx, my, delta);
+        return false;
     }
 
     @Override
@@ -425,6 +441,44 @@ public class SlashBladeEditScreen extends Screen {
             if (mx >= x && mx < x + COL_W) return col;
         }
         return -1;
+    }
+
+    // ======================== 滚动条拖拽（每列一条） ========================
+
+    /** 正在被拖拽的列；-1 = 没在拖。 */
+    private int scrollbarCol = -1;
+
+    private int maxScrollOf(int col) {
+        return col == 0 ? saMaxScroll : seMaxScroll;
+    }
+
+    private void setScrollOf(int col, int value) {
+        if (col == 0) saScroll = value;
+        else seScroll = value;
+    }
+
+    /** 该列滚动条的 x（与 {@link EditorUi#scrollbar} 的绘制位置一致）。 */
+    private int scrollbarX(int col) {
+        return colX(col) + COL_W - EditorUi.SCROLL_W;
+    }
+
+    @Override
+    protected boolean onPanelDrag(int mx, int my, int button, int dx, int dy) {
+        if (scrollbarCol >= 0) {
+            setScrollOf(scrollbarCol, EditorUi.scrollFromMouseY(my, LIST_Y, LIST_H - 2,
+                    maxScrollOf(scrollbarCol), VISIBLE_ROWS));
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected boolean onPanelRelease(int mx, int my, int button) {
+        if (scrollbarCol >= 0) {
+            scrollbarCol = -1;
+            return true;
+        }
+        return false;
     }
 
     // ======================== 提交 ========================

@@ -15,7 +15,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /**
  * Create（机械动力）联动「无限应力」—— <b>存档不落改写后的产能</b>。
  * <p>
- * 配套 {@link CreateKineticNetworkMixin}：那一半把网络的产能改写成一个「无限」值（10 亿），
+ * 配套 {@link CreateKineticNetworkMixin}：那一半把网络的产能改写成一个「无限」值（配置项，默认 10 亿），
  * 这个值会顺着 {@code KineticNetwork.sync()} 写进每个成员方块的 {@code capacity} 字段。
  * 而 {@code KineticBlockEntity.write(compound, clientPacket)} 是<b>同一个字段</b>的两个出口
  * （已用 {@code javap} 核对：{@code writeClient} 传 {@code true} 发包给客户端、
@@ -24,7 +24,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *   <li>{@code clientPacket = true}：<b>照原样发</b>。客户端正是靠这个数字自己重算超载判定
  *       （{@code KineticBlockEntity.read}：{@code overStressed = capacity < stress}），
  *       改了它两边才会一致；</li>
- *   <li>{@code clientPacket = false}：<b>换回真值再写</b>。否则 10 亿会被烤进存档，
+ *   <li>{@code clientPacket = false}：<b>换回真值再写</b>。否则这个改写值会被烤进存档，
  *       重登后 {@code initFromTE} 会把它当成「未加载区块的产能」收进网络（{@code unloadedCapacity}），
  *       从此这张网络永久不过载 —— 属性关掉、甚至卸载本模组都退不回来，等于污染存档。</li>
  * </ul>
@@ -64,7 +64,7 @@ public abstract class CreateKineticBlockEntityMixin {
         Level level = self.getLevel();
         if (level == null || level.isClientSide) return; // 只在服务端存档路径上动手
 
-        if (capacity < CreateStressCompat.INFINITE_CAPACITY) return;   // 没被本模组改写过
+        if (capacity < CreateStressCompat.infiniteCapacity()) return; // 没被本模组改写过
         if (!self.hasNetwork()) return;
 
         KineticNetwork network = self.getOrCreateNetwork();

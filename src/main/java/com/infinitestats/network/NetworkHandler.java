@@ -22,9 +22,12 @@ import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import com.infinitestats.handler.AttributeHandler;
+import com.infinitestats.util.EntityPanelToggles;
+import com.infinitestats.util.EntityPanelWand;
 import com.infinitestats.util.TeleportUtil;
 import com.infinitestats.handler.HandlerRegistry;
 import com.infinitestats.client.CrossDimScreen;
+import com.infinitestats.client.EntityPanelScreen;
 import net.minecraft.advancements.Advancement;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -37,6 +40,9 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.crafting.Ingredient;
@@ -48,6 +54,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.util.Mth;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraftforge.network.NetworkEvent;
@@ -66,8 +73,12 @@ import java.util.function.Supplier;
  */
 public final class NetworkHandler {
 
-    // 21：SyncStatsPacket 改为同时下发 buff / 自动入库的黑白两份名单
-    private static final String PROTOCOL_VERSION = "21";
+    // 22：SyncStatsPacket / UpdateBuffFilterPacket 增加「死亡重生继承保护」开关
+    // 23：新增 OpenEntityPanelPacket（服务端下发「打开某个生物的面板」）
+    // 24：OpenEntityPanelPacket 增加开关掩码与可编辑标志，并新增 EntityPanelActionPacket（切换生物开关）
+    // 25：新增 EntityPanelAttributePacket（改生物某条属性的基础值）
+    // 26：新增传送石碑三个包（列表请求 / 列表同步 / 传送）
+    private static final String PROTOCOL_VERSION = "26";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -99,6 +110,14 @@ public final class NetworkHandler {
     public static volatile long forcedChunksVersion = 0;
 
     /**
+     * 待处理的「已激活传送石碑」列表（由 {@link WaystoneListPacket} 写入，{@code WaypointScreen} 读取）。
+     * 没装传送石碑时一直是空表。
+     */
+    public static volatile List<WaystoneEntry> pendingWaystones = List.of();
+    /** 上面那份列表的版本号：每次同步自增，界面据此重建列表。 */
+    public static volatile long waystoneListVersion = 0;
+
+    /**
      * 注册所有数据包
      */
     public static void register() {
@@ -107,6 +126,23 @@ public final class NetworkHandler {
                 SyncStatsPacket::encode,
                 SyncStatsPacket::decode,
                 SyncStatsPacket::handle);
+
+        // ========== 传送点面板 × 传送石碑（Waystones）联动 ==========
+        // 列表请求（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, WaystoneListRequestPacket.class,
+                WaystoneListRequestPacket::encode,
+                WaystoneListRequestPacket::decode,
+                WaystoneListRequestPacket::handle);
+        // 列表同步（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, WaystoneListPacket.class,
+                WaystoneListPacket::encode,
+                WaystoneListPacket::decode,
+                WaystoneListPacket::handle);
+        // 传送请求（客户端 → 服务器，免费无冷却）
+        CHANNEL.registerMessage(packetId++, WaystoneTeleportPacket.class,
+                WaystoneTeleportPacket::encode,
+                WaystoneTeleportPacket::decode,
+                WaystoneTeleportPacket::handle);
 
         // ========== 随身工作台 / 熔炉 联动 Refined Storage ==========
         CHANNEL.registerMessage(packetId++, CraftingRecipeFillPacket.class,
@@ -412,6 +448,49 @@ public final class NetworkHandler {
                 EditItemBladePacket::decode,
                 EditItemBladePacket::handle);
 
+        // 生物面板：通知客户端打开某个生物的面板（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, OpenEntityPanelPacket.class,
+                OpenEntityPanelPacket::encode,
+                OpenEntityPanelPacket::decode,
+                OpenEntityPanelPacket::handle);
+
+        // 生物面板：面板里切换生物的开关（客户端 → 服务器，服务端执行后回上面的包刷新状态）
+        CHANNEL.registerMessage(packetId++, EntityPanelActionPacket.class,
+                EntityPanelActionPacket::encode,
+                EntityPanelActionPacket::decode,
+                EntityPanelActionPacket::handle);
+
+        // 生物面板：改某条属性的基础值（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EntityPanelAttributePacket.class,
+                EntityPanelAttributePacket::encode,
+                EntityPanelAttributePacket::decode,
+                EntityPanelAttributePacket::handle);
+
+    }
+
+    /**
+     * 通知玩家打开某个生物的面板（也用于切换开关后刷新状态）。
+     * <p>
+     * 属性数值不用发：生物的属性（含各条修饰符）本来就随实体追踪同步到客户端，
+     * 客户端直接读本地那份即可，没必要把属性表再抄一遍发过去 —— 也就不会出现
+     * 「面板里的数值和世界里看到的不一致」。
+     * <p>
+     * 但面板里的「开关」状态必须发：{@code NoAI} / {@code Silent} 这些字段大多<b>不在</b>
+     * 同步实体数据里，客户端本地读不到权威值 —— 所以这里带上「哪些开关可用」与「当前开着哪些」两个掩码，
+     * 以及「这个玩家能不能改」（配置 + 服务端校验的结果）。
+     */
+    public static void sendOpenEntityPanel(ServerPlayer player, Entity target) {
+        if (player == null || target == null) return;
+        sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
+    }
+
+    /** 按当前真实状态回包（切换开关后、或校验失败后都用它把客户端拉回权威状态）。 */
+    private static void sendEntityPanelState(ServerPlayer player, Entity target, boolean editable) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new OpenEntityPanelPacket(target.getId(),
+                        EntityPanelToggles.applicableMask(target),
+                        EntityPanelToggles.enabledMask(target),
+                        editable));
     }
 
     /**
@@ -513,6 +592,8 @@ public final class NetworkHandler {
                         syncToClient(player);
                         // 更新属性
                         AttributeHandler.applyAllAttributes(player, stats);
+                        // 生物面板：刚解锁 / 刚退款都要立刻见效，不等下一秒的定时对齐
+                        EntityPanelWand.sync(player, stats);
                     }
                 });
             });
@@ -589,15 +670,17 @@ public final class NetworkHandler {
     }
 
     /**
-     * Buff 过滤列表更新数据包
+     * Buff 过滤列表更新数据包（名单 + 模式 + 保护模式的死亡重生继承开关一起提交）
      */
     public static final class UpdateBuffFilterPacket {
         private final boolean useBlacklist;
         private final Set<String> effectIds;
+        private final boolean protectAcrossDeath;
 
-        public UpdateBuffFilterPacket(boolean useBlacklist, Set<String> effectIds) {
+        public UpdateBuffFilterPacket(boolean useBlacklist, Set<String> effectIds, boolean protectAcrossDeath) {
             this.useBlacklist = useBlacklist;
             this.effectIds = effectIds;
+            this.protectAcrossDeath = protectAcrossDeath;
         }
 
         public static void encode(UpdateBuffFilterPacket msg, FriendlyByteBuf buf) {
@@ -606,6 +689,7 @@ public final class NetworkHandler {
             for (String id : msg.effectIds) {
                 buf.writeUtf(id);
             }
+            buf.writeBoolean(msg.protectAcrossDeath);
         }
 
         public static UpdateBuffFilterPacket decode(FriendlyByteBuf buf) {
@@ -615,7 +699,8 @@ public final class NetworkHandler {
             for (int i = 0; i < count; i++) {
                 ids.add(buf.readUtf());
             }
-            return new UpdateBuffFilterPacket(useBlacklist, ids);
+            boolean protectAcrossDeath = buf.readBoolean();
+            return new UpdateBuffFilterPacket(useBlacklist, ids, protectAcrossDeath);
         }
 
         public static void handle(UpdateBuffFilterPacket msg, Supplier<NetworkEvent.Context> ctx) {
@@ -625,6 +710,7 @@ public final class NetworkHandler {
 
                 player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
                     stats.setBuffFilterList(new HashSet<>(msg.effectIds), msg.useBlacklist);
+                    stats.setProtectAcrossDeath(msg.protectAcrossDeath);
                     // 同步回客户端
                     syncToClient(player);
                 });
@@ -2583,5 +2669,279 @@ public final class NetworkHandler {
             });
             ctx.get().setPacketHandled(true);
         }
+    }
+
+    // ==================================================================
+    // 传送点面板 × 传送石碑（Waystones）联动
+    //   打开面板 → 请求列表 → 服务端读「已激活的石碑」下发 → 点传送回传 UUID。
+    //   全部走反射（见 WaystonesCompat），没装传送石碑时列表恒为空。
+    // ==================================================================
+
+    /** 传送石碑列表请求（客户端 → 服务端）：打开传送点面板时发一次。 */
+    public static final class WaystoneListRequestPacket {
+
+        public WaystoneListRequestPacket() {}
+
+        public static void encode(WaystoneListRequestPacket msg, FriendlyByteBuf buf) {
+            // 无字段
+        }
+
+        public static WaystoneListRequestPacket decode(FriendlyByteBuf buf) {
+            return new WaystoneListRequestPacket();
+        }
+
+        public static void handle(WaystoneListRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                        new WaystoneListPacket(com.infinitestats.compat.WaystonesCompat.getActivated(player)));
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 传送石碑列表同步（服务端 → 客户端）：写进静态字段供面板读取。 */
+    public static final class WaystoneListPacket {
+
+        private final List<WaystoneEntry> waystones;
+
+        public WaystoneListPacket(List<WaystoneEntry> waystones) {
+            this.waystones = waystones == null ? List.of() : waystones;
+        }
+
+        public static void encode(WaystoneListPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.waystones.size());
+            for (WaystoneEntry entry : msg.waystones) {
+                buf.writeUUID(entry.uid);
+                buf.writeUtf(entry.name, 64);
+                buf.writeUtf(entry.dimension, 128);
+                buf.writeDouble(entry.x);
+                buf.writeDouble(entry.y);
+                buf.writeDouble(entry.z);
+            }
+        }
+
+        public static WaystoneListPacket decode(FriendlyByteBuf buf) {
+            int size = buf.readVarInt();
+            List<WaystoneEntry> list = new ArrayList<>(Math.max(0, size));
+            for (int i = 0; i < size; i++) {
+                UUID uid = buf.readUUID();
+                String name = buf.readUtf(64);
+                String dimension = buf.readUtf(128);
+                list.add(new WaystoneEntry(uid, name, dimension,
+                        buf.readDouble(), buf.readDouble(), buf.readDouble()));
+            }
+            return new WaystoneListPacket(list);
+        }
+
+        public static void handle(WaystoneListPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                pendingWaystones = new ArrayList<>(msg.waystones);
+                waystoneListVersion++;
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 传送请求（客户端 → 服务端）：把玩家免费（不扣经验、不进冷却）传送到指定石碑。
+     * <p>
+     * 服务端只认「该玩家已激活的石碑」——客户端递上来的 UUID 会被拿去和他自己的列表比对，
+     * 不在列表里就什么都不做（见 {@code WaystonesCompat#teleport}）。
+     */
+    public static final class WaystoneTeleportPacket {
+
+        private final UUID uid;
+
+        public WaystoneTeleportPacket(UUID uid) {
+            this.uid = uid;
+        }
+
+        public static void encode(WaystoneTeleportPacket msg, FriendlyByteBuf buf) {
+            buf.writeUUID(msg.uid);
+        }
+
+        public static WaystoneTeleportPacket decode(FriendlyByteBuf buf) {
+            return new WaystoneTeleportPacket(buf.readUUID());
+        }
+
+        public static void handle(WaystoneTeleportPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player != null) {
+                    com.infinitestats.compat.WaystonesCompat.teleport(player, msg.uid);
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：服务端 → 客户端，要求打开（或刷新）目标生物的面板。
+     * <p>
+     * 由服务端在「手持生物观察杖右键生物」时下发（见 {@code StatEventHandler#onEntityInteractWithWand}），
+     * 也用于每次切换开关后把权威状态推回客户端。属性数值从客户端本地那份实体数据里读，
+     * 开关状态则只能来自这里（那几个字段不在同步实体数据里）。
+     */
+    public static final class OpenEntityPanelPacket {
+        private final int entityId;
+        private final int applicableMask;
+        private final int enabledMask;
+        private final boolean editable;
+
+        public OpenEntityPanelPacket(int entityId, int applicableMask, int enabledMask, boolean editable) {
+            this.entityId = entityId;
+            this.applicableMask = applicableMask;
+            this.enabledMask = enabledMask;
+            this.editable = editable;
+        }
+
+        public static void encode(OpenEntityPanelPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeVarInt(msg.applicableMask);
+            buf.writeVarInt(msg.enabledMask);
+            buf.writeBoolean(msg.editable);
+        }
+
+        public static OpenEntityPanelPacket decode(FriendlyByteBuf buf) {
+            return new OpenEntityPanelPacket(buf.readVarInt(), buf.readVarInt(), buf.readVarInt(), buf.readBoolean());
+        }
+
+        public static void handle(OpenEntityPanelPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> EntityPanelScreen.openForEntity(
+                    msg.entityId, msg.applicableMask, msg.enabledMask, msg.editable));
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，请求切换目标生物的某个开关。
+     * <p>
+     * 只传「实体 id + 开关下标 + 想要的值」，真正能不能改由服务端说了算
+     * （属性是否激活、手里有没有观察杖、距离、配置开关都在这边查），
+     * 执行完再回一发 {@link OpenEntityPanelPacket} 把客户端刷新成权威状态 ——
+     * 所以客户端就算乱发包也只能改到自己有权改的生物，改不动就原地回弹。
+     */
+    public static final class EntityPanelActionPacket {
+        private final int entityId;
+        private final int index;
+        private final boolean value;
+
+        public EntityPanelActionPacket(int entityId, int index, boolean value) {
+            this.entityId = entityId;
+            this.index = index;
+            this.value = value;
+        }
+
+        public static void encode(EntityPanelActionPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeVarInt(msg.index);
+            buf.writeBoolean(msg.value);
+        }
+
+        public static EntityPanelActionPacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelActionPacket(buf.readVarInt(), buf.readVarInt(), buf.readBoolean());
+        }
+
+        public static void handle(EntityPanelActionPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                // 目标不一定还是生物 / 可能已经被打死或卸载
+                Entity target = player.level().getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity)) return;
+
+                boolean allowed = canEditEntity(player, target);
+                if (allowed) {
+                    EntityPanelToggles.apply(target, msg.index, msg.value);
+                }
+                // 无论成功与否都回一发现状：客户端据此覆盖自己的乐观更新
+                sendEntityPanelState(player, target, allowed);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，把某条属性的**基础值**改成指定数值。
+     * <p>
+     * 与开关同一条权限链（{@link #canEditEntity}）；数值会被夹进属性自己的取值范围
+     * （{@code RangedAttribute} 的 min / max），改「生命上限」后会顺手把当前生命夹回上限之内。
+     * 属性值的同步走原版机制（{@code ClientboundUpdateAttributesPacket}），不需要额外回包 ——
+     * 客户端面板每 10 tick 重读一次本地实体，权威值会自动盖掉乐观更新。
+     */
+    public static final class EntityPanelAttributePacket {
+        private final int entityId;
+        private final String attributeId;
+        private final double value;
+
+        public EntityPanelAttributePacket(int entityId, String attributeId, double value) {
+            this.entityId = entityId;
+            this.attributeId = attributeId;
+            this.value = value;
+        }
+
+        public static void encode(EntityPanelAttributePacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeUtf(msg.attributeId);
+            buf.writeDouble(msg.value);
+        }
+
+        public static EntityPanelAttributePacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelAttributePacket(buf.readVarInt(), buf.readUtf(), buf.readDouble());
+        }
+
+        public static void handle(EntityPanelAttributePacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                Entity target = player.level().getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity living) || !canEditEntity(player, target)) return;
+
+                ResourceLocation id = ResourceLocation.tryParse(msg.attributeId);
+                net.minecraft.world.entity.ai.attributes.Attribute attribute =
+                        id == null ? null : ForgeRegistries.ATTRIBUTES.getValue(id);
+                if (attribute == null) return;
+
+                AttributeInstance instance = living.getAttribute(attribute);
+                if (instance == null) return;
+
+                double value = msg.value;
+                if (!Double.isFinite(value)) return;
+                // 取值范围：RangedAttribute 自带 min / max（没有范围的属性不夹）
+                if (attribute instanceof net.minecraft.world.entity.ai.attributes.RangedAttribute ranged) {
+                    value = Mth.clamp(value, ranged.getMinValue(), ranged.getMaxValue());
+                }
+
+                try {
+                    instance.setBaseValue(value);
+                } catch (Throwable ignored) {
+                    return; // 个别属性在特殊状态下会拒绝写入（如 dirty 锁定），当作没改
+                }
+                // 生命上限被改小后，当前生命要跟着夹回来，否则会顶着一截超出上限的血
+                if (attribute == net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH) {
+                    living.setHealth(Math.min(living.getHealth(), living.getMaxHealth()));
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 「生物面板」能不能改这个生物 —— 开关切换与属性编辑共用这一条链：
+     * 手里拿着观察杖 + 配置允许 + 目标在 8 格内 + 属性已激活。
+     * <p>
+     * 8 格是为了：右键交互距离之外一律当作无效请求，防止远程改别人基地里的生物。
+     */
+    private static boolean canEditEntity(ServerPlayer player, Entity target) {
+        return EntityPanelWand.isHeld(player)
+                && Config.ALLOW_ENTITY_EDITING.get()
+                && player.distanceToSqr(target) <= 64.0D
+                && player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                        .map(stats -> stats.isToggleActive(EntityPanelWand.STAT_ID))
+                        .orElse(false);
     }
 }
