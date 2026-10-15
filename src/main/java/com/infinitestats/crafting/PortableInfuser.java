@@ -1,0 +1,395 @@
+package com.infinitestats.crafting;
+
+import com.infinitestats.stats.PlayerStats;
+import com.infinitestats.stats.PlayerStatsProvider;
+import net.minecraft.core.Holder;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.Container;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.enchantment.Enchantment;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.item.enchantment.ItemEnchantments;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 进阶高级附魔台的核心规则与换算（自选附魔 / 经验修复 / 经验回收）。
+ * <p>
+ * 参考 Fuzss 的 Enchanting Infuser（「进阶高级附魔台」档）：<b>不用随机、自己挑附魔</b>，
+ * 并且把进阶档的几项额外功能一并做了进来：
+ * <ul>
+ *   <li><b>自选附魔</b>：列出该物品能附的所有魔，逐条选等级，按价付款（付款方式见 {@link Payment}）；</li>
+ *   <li><b>改已有附魔</b>：物品上已有的附魔同样在列表里，升 / 降 / 清零即可升级、降级、移除；</li>
+ *   <li><b>经验修复</b>：花等级（或点数）直接把耐久修满，不需要修复材料；</li>
+ *   <li><b>经验回收</b>：把这件物品上的附魔全部拆下来，按价折算返还（类似砂轮）；</li>
+ *   <li><b>制作附魔书</b>：往槽里放书，选好附魔即产出附魔书，用来搭自己的附魔库。</li>
+ * </ul>
+ * <b>本类必须双端可用</b>：界面（客户端）要拿 {@link #applicable} 与 {@link #costOf} 画列表，
+ * 服务端要拿 {@link #performEnchant} 等做校验与结算。查询类方法纯函数、两端结果一致，
+ * 因此客户端只需把「选了哪些附魔、各多少级」发到服务端，无需额外的同步协议。
+ *
+ * <h3>1.21.1 适配要点（与 1.20.1 主线的差异）</h3>
+ * <ul>
+ *   <li><b>附魔类型</b>：1.21 的附魔是注册表对象，统一用 {@link Holder}&lt;{@link Enchantment}&gt; 传递
+ *       —— 组件里的附魔、标签判定、界面列表都用它，避免反复 {@code wrapAsHolder}；</li>
+ *   <li><b>没有 {@code EnchantmentCategory}</b>：1.20.1 靠它做「铁砧限定组合」的放宽，
+ *       1.21 改成了数据驱动的 {@code supported_items} 标签，而原版这个标签本身就比 1.20.1 的类别更宽
+ *       （例如锋利支持 {@code #minecraft:weapons}，斧头也能附），所以这里直接<b>用原版
+ *       {@link Enchantment#isSupportedItem(ItemStack)}</b> 判定，不再自己维护一份类别放宽表；</li>
+ *   <li><b>没有稀有度</b>：1.20.1 按 {@code getRarity()} 定价，1.21 删掉了稀有度，改用等价的
+ *       {@link Enchantment#getWeight()}（1~10，越大越常见）分档定价；</li>
+ *   <li><b>不按宝藏标签加价</b>：1.21 的「宝藏附魔」是 {@code #minecraft:treasure} 标签，
+ *       而标签是否同步到客户端不由本模组掌控；为了<b>保证客户端显示价与服务端结算价永远一致</b>，
+ *       这里只用注册表里必定同步的 weight 定价（weight 本身已反映稀有度）；</li>
+ *   <li><b>附魔上限</b>：暂时用原版 {@link Enchantment#getMaxLevel()}；
+ *       将来移植「附魔上限突破」时改走该属性的上限查询即可（见 {@link #maxLevel}）。</li>
+ * </ul>
+ */
+public final class PortableInfuser {
+
+    /** 付款方式：经验等级 / 属性点数（界面右上角切换）。不消耗青金石。 */
+    public enum Payment {
+        /** 扣原版经验等级（创造模式免扣）。 */
+        LEVELS,
+        /** 扣本模组的可用属性点数。 */
+        POINTS;
+
+        /** 网络包用：稳定序号，两端必须一致。 */
+        public int id() {
+            return this == POINTS ? 1 : 0;
+        }
+
+        public static Payment byId(int id) {
+            return id == 1 ? POINTS : LEVELS;
+        }
+    }
+
+    /**
+     * 修复换算：每 1 级能修回「总耐久 / 该值」点耐久（至少 1 点）。
+     * <p>
+     * 取 25 是手感折中：一把钻石镐（1561 耐久）从空修满约 25 级，
+     * 与「用材料在铁砧上修」相比偏贵（这是买断式修理的代价），但不至于离谱。
+     */
+    private static final int REPAIR_DURABILITY_PER_LEVEL = 25;
+
+    /** 经验回收的返还比例：按「重新买回来要多少」折算，留出损耗，避免倒卖刷经验。 */
+    private static final double RECYCLE_REFUND_RATIO = 0.6D;
+
+    /** 各 weight 档的「每级基础价」（单位：经验等级 或 属性点数）。 */
+    private static final int PRICE_COMMON = 3;
+    private static final int PRICE_UNCOMMON = 4;
+    private static final int PRICE_RARE = 6;
+    private static final int PRICE_VERY_RARE = 8;
+
+    private PortableInfuser() {}
+
+    // ========== 物品判定 ==========
+
+    /** 书（普通书 / 附魔书）：进阶高级附魔台可以把附魔做成书。 */
+    public static boolean isBook(ItemStack stack) {
+        return stack.is(Items.BOOK) || stack.is(Items.ENCHANTED_BOOK);
+    }
+
+    /**
+     * 该物品能不能放进附魔槽：书本可以，可附魔物品可以，
+     * <b>已经带附魔的物品也可以</b>（哪怕是不可再附魔的，也要能改 / 能拆）。
+     */
+    public static boolean isSupported(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        // canStoreEnchantments = 该物品自带 ENCHANTMENTS（书）/ STORED_ENCHANTMENTS（附魔书）组件
+        return EnchantmentHelper.canStoreEnchantments(stack) || stack.isEnchanted();
+    }
+
+    // ========== 可选附魔 ==========
+
+    /**
+     * 该物品当前可选的附魔清单（顺序固定：价低的在前，同价按注册名排序）。
+     * <p>
+     * <b>顺序必须固定</b>：列表顺序若随「当前选了什么等级」变化，玩家每点一下 ◀ ▶ 整张表就会跳，
+     * 完全没法用。因此不按「是否已附魔」排序 —— 已附魔的靠行内高亮表示。
+     */
+    public static List<Holder<Enchantment>> applicable(ItemStack stack, HolderLookup.Provider registries) {
+        List<Holder<Enchantment>> list = new ArrayList<>();
+        if (!isSupported(stack) || registries == null) return list;
+        // 附魔是数据驱动注册表：必须在调用方传入的 RegistryAccess 里查（服务端用玩家所在世界的，
+        // 客户端用 Minecraft#level 的），不能像 1.20.1 那样从 BuiltInRegistries 直接取。
+        registries.lookupOrThrow(Registries.ENCHANTMENT).listElements()
+                .filter(enchantment -> canApply(enchantment, stack))
+                .forEach(list::add);
+        list.sort(Comparator.comparingInt(PortableInfuser::basePrice)
+                .thenComparing(PortableInfuser::registryName));
+        return list;
+    }
+
+    /** 这条附魔能不能附到该物品上。 */
+    public static boolean canApply(Holder<Enchantment> enchantment, ItemStack stack) {
+        if (stack.isEmpty() || enchantment == null) return false;
+        // 书：什么都能承载（「自己搭附魔库」就是这个功能的意义所在，连诅咒都让玩家自己决定）
+        if (isBook(stack)) return true;
+        // 1.21 的原版判定：该物品是否在附魔的 supported_items 标签里
+        return enchantment.value().isSupportedItem(stack);
+    }
+
+    /** 该附魔在这件物品上允许的最高等级（移植「附魔上限突破」时改这里）。 */
+    public static int maxLevel(Holder<Enchantment> enchantment) {
+        return Math.max(1, enchantment.value().getMaxLevel());
+    }
+
+    // ========== 定价 ==========
+
+    /**
+     * 单条附魔的花费：weight 档基础价 × 等级。
+     * <p>
+     * 刻意<b>不</b>对「超出原版上限的等级」加价：突破本来就更贵（等级越高线性越贵），
+     * 门槛交给「附魔上限突破」那个开关属性。这里必须用 long 相乘再饱和 ——
+     * 突破后的等级可以是天文数字，int 溢出成负数会变成「倒贴钱」。
+     */
+    public static int costOf(Holder<Enchantment> enchantment, int level) {
+        if (enchantment == null || level <= 0) return 0;
+        long price = (long) basePrice(enchantment) * level;
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(1L, price));
+    }
+
+    /** 整张选择表的花费合计（同样饱和，不溢出）。 */
+    public static int totalCost(Map<Holder<Enchantment>, Integer> selection) {
+        long total = 0L;
+        for (Map.Entry<Holder<Enchantment>, Integer> entry : selection.entrySet()) {
+            total += costOf(entry.getKey(), entry.getValue());
+        }
+        return (int) Math.min(Integer.MAX_VALUE, total);
+    }
+
+    /** 按 weight 分档：weight 越大越常见 → 越便宜（对应 1.20.1 时代按稀有度定价的档位）。 */
+    private static int basePrice(Holder<Enchantment> enchantment) {
+        int weight = enchantment.value().getWeight();
+        if (weight >= 8) return PRICE_COMMON;
+        if (weight >= 4) return PRICE_UNCOMMON;
+        if (weight >= 2) return PRICE_RARE;
+        return PRICE_VERY_RARE;
+    }
+
+    private static String registryName(Holder<Enchantment> enchantment) {
+        return enchantment.unwrapKey()
+                .map(ResourceKey::location)
+                .map(Object::toString)
+                .orElse("");
+    }
+
+    /** 价格文案（界面与提示共用）：经验等级 / 属性点数两种口径。 */
+    public static Component priceText(Payment payment, long amount) {
+        return payment == Payment.POINTS
+                ? Component.translatable("gui.infinitestats.infuser.price_points", amount)
+                : Component.translatable("gui.infinitestats.infuser.price_levels", amount);
+    }
+
+    // ========== 自选附魔 ==========
+
+    /**
+     * 服务端执行附魔：校验 → 按<b>差额</b>结算 → 改写物品（书则产出附魔书）。
+     * <p>
+     * 结算按差额而不是按整张表：物品自带的附魔不该重复收费，降级还要退回差价
+     * （线性定价下「先买 5 级再降到 3 级」的总花费恰好等于直接买 3 级，不存在套利）。
+     *
+     * @return 给玩家看的反馈（成功与失败都有文案）
+     */
+    public static Component performEnchant(ServerPlayer player, Container input,
+                                           Map<Holder<Enchantment>, Integer> selection, Payment payment) {
+        ItemStack stack = input.getItem(0);
+        if (stack.isEmpty()) return message("no_item");
+        if (!isSupported(stack)) return message("unsupported");
+
+        // 读取当前附魔：1.21 由 EnchantmentHelper 按物品类型自动选对组件（附魔书 → STORED_ENCHANTMENTS）
+        ItemEnchantments current = EnchantmentHelper.getEnchantmentsForCrafting(stack);
+        Map<Holder<Enchantment>, Integer> result = new LinkedHashMap<>();
+        for (Holder<Enchantment> holder : current.keySet()) {
+            int level = current.getLevel(holder);
+            if (level > 0) result.put(holder, level);
+        }
+
+        long cost = 0L;
+        int changed = 0;
+
+        for (Map.Entry<Holder<Enchantment>, Integer> entry : selection.entrySet()) {
+            Holder<Enchantment> enchantment = entry.getKey();
+            if (enchantment == null) continue;
+            int level = Math.max(0, entry.getValue());
+            Integer before = result.get(enchantment);
+
+            if (level <= 0) {
+                if (before != null) {
+                    result.remove(enchantment);
+                    cost -= costOf(enchantment, before);
+                    changed++;
+                }
+                continue;
+            }
+            if (!canApply(enchantment, stack) || level > maxLevel(enchantment)) {
+                return message("bad_selection");
+            }
+            // 刻意**不做互斥校验**：进阶高级附魔台的定位就是「想怎么配就怎么配」，
+            // 锋利 / 亡灵杀手 / 节肢杀手这类原版互斥的组合允许同时附在一件物品上
+            // （它们的效果本来就是各自独立结算的，互斥只是原版为了保证随机附魔不出怪组合）。
+            cost += costOf(enchantment, level) - (before == null ? 0L : costOf(enchantment, before));
+            if (before == null || before != level) changed++;
+            result.put(enchantment, level);
+        }
+
+        if (changed == 0) return message("nothing_selected");
+
+        PlayerStats stats = statsOf(player);
+        if (cost > 0L) {
+            if (!canPay(player, stats, payment, cost)) {
+                return message(payment == Payment.POINTS ? "not_enough_points" : "not_enough_levels",
+                        priceText(payment, cost));
+            }
+            pay(player, stats, payment, cost);
+        } else if (cost < 0L) {
+            refund(player, stats, payment, -cost);
+        }
+
+        // 组出结果组件：只写 level > 0 的条目（0 级在上一步已从 result 中移除）
+        ItemEnchantments.Mutable mutable = new ItemEnchantments.Mutable(ItemEnchantments.EMPTY);
+        for (Map.Entry<Holder<Enchantment>, Integer> entry : result.entrySet()) {
+            mutable.set(entry.getKey(), entry.getValue());
+        }
+        ItemEnchantments enchanted = mutable.toImmutable();
+
+        if (isBook(stack)) {
+            // 书 → 附魔书：从槽里取走一本，成品优先放回槽（槽空了就放这儿，玩家直接拿走）
+            ItemStack book = new ItemStack(Items.ENCHANTED_BOOK);
+            EnchantmentHelper.setEnchantments(book, enchanted);
+            stack.shrink(1);
+            if (stack.isEmpty()) {
+                input.setItem(0, book);
+            } else if (!player.getInventory().add(book)) {
+                player.drop(book, false);
+            }
+            input.setChanged();
+        } else {
+            EnchantmentHelper.setEnchantments(stack, enchanted);
+            input.setChanged();
+        }
+        // 降级退差价时 cost 为负，文案要跟着变「返还」而不是「消耗」
+        Component pricePart = cost >= 0L
+                ? message("cost_part", priceText(payment, cost))
+                : message("refund_part", priceText(payment, -cost));
+        return message("enchant_done", changed, pricePart);
+    }
+
+    // ========== 经验修复 ==========
+
+    /** 该物品能不能修（有耐久、且有损耗）。 */
+    public static boolean canRepair(ItemStack stack) {
+        return !stack.isEmpty() && stack.isDamageableItem() && stack.getDamageValue() > 0;
+    }
+
+    /** 修满所需花费。 */
+    public static int repairCost(ItemStack stack) {
+        if (!canRepair(stack)) return 0;
+        int perLevel = Math.max(1, stack.getMaxDamage() / REPAIR_DURABILITY_PER_LEVEL);
+        return Math.max(1, (stack.getDamageValue() + perLevel - 1) / perLevel);
+    }
+
+    /** 服务端执行修复：花等级（或点数）把耐久直接修满。 */
+    public static Component performRepair(ServerPlayer player, Container input, Payment payment) {
+        ItemStack stack = input.getItem(0);
+        if (stack.isEmpty()) return message("no_item");
+        if (!canRepair(stack)) return message("nothing_to_repair");
+
+        int cost = repairCost(stack);
+        PlayerStats stats = statsOf(player);
+        if (!canPay(player, stats, payment, cost)) {
+            return message(payment == Payment.POINTS ? "not_enough_points" : "not_enough_levels",
+                    priceText(payment, cost));
+        }
+        pay(player, stats, payment, cost);
+        stack.setDamageValue(0);
+        input.setChanged();
+        return message("repaired", priceText(payment, cost));
+    }
+
+    // ========== 经验回收 ==========
+
+    /** 该物品能不能回收（身上有附魔）。 */
+    public static boolean canRecycle(ItemStack stack) {
+        return !stack.isEmpty() && EnchantmentHelper.hasAnyEnchantments(stack);
+    }
+
+    /** 回收能返还多少（按价折算，向下取整，至少 1）。 */
+    public static int recycleRefund(ItemStack stack) {
+        ItemEnchantments current = EnchantmentHelper.getEnchantmentsForCrafting(stack);
+        if (current.isEmpty()) return 0;
+        long sum = 0L;
+        for (Holder<Enchantment> holder : current.keySet()) {
+            sum += costOf(holder, current.getLevel(holder));
+        }
+        return Math.max(1, (int) Math.floor(sum * RECYCLE_REFUND_RATIO));
+    }
+
+    /**
+     * 服务端执行回收：拆掉全部附魔并返还。
+     * <p>
+     * 顺带清掉铁砧的「累积惩罚」（{@code REPAIR_COST}）—— 附魔都没了，惩罚还留着
+     * 会让玩家拿去铁砧改的时候莫名其妙贵一大截（原版砂轮同理）。
+     */
+    public static Component performRecycle(ServerPlayer player, Container input, Payment payment) {
+        ItemStack stack = input.getItem(0);
+        if (stack.isEmpty()) return message("no_item");
+        if (!canRecycle(stack)) return message("nothing_to_recycle");
+
+        int refund = recycleRefund(stack);
+        // 对附魔书写入空组件：getComponentType 会挑对组件，附魔书清的是 STORED_ENCHANTMENTS
+        EnchantmentHelper.setEnchantments(stack, ItemEnchantments.EMPTY);
+        stack.set(DataComponents.REPAIR_COST, 0);
+        input.setChanged();
+        refund(player, statsOf(player), payment, refund);
+        return message("recycled", priceText(payment, refund));
+    }
+
+    // ========== 付款 ==========
+
+    /** 钱够不够。创造模式免经验（与附魔台一致），但属性点数是本模组的账，照扣。 */
+    public static boolean canPay(ServerPlayer player, PlayerStats stats, Payment payment, long cost) {
+        if (cost <= 0L) return true;
+        if (payment == Payment.POINTS) return stats != null && stats.getAvailablePoints() >= cost;
+        return player.isCreative() || player.experienceLevel >= cost;
+    }
+
+    private static void pay(ServerPlayer player, PlayerStats stats, Payment payment, long cost) {
+        if (cost <= 0L) return;
+        if (payment == Payment.POINTS) {
+            if (stats != null) stats.setAvailablePoints(stats.getAvailablePoints() - cost);
+        } else if (!player.isCreative()) {
+            // 等级上限是 int 上限，这里再夹一道，避免天文数字转 int 时符号翻掉变成「白送等级」
+            player.giveExperienceLevels((int) -Math.min(cost, Integer.MAX_VALUE));
+        }
+    }
+
+    /** 返还（回收返还、降级退差价）。 */
+    public static void refund(ServerPlayer player, PlayerStats stats, Payment payment, long amount) {
+        if (amount <= 0L) return;
+        if (payment == Payment.POINTS) {
+            if (stats != null) stats.setAvailablePoints(stats.getAvailablePoints() + amount);
+        } else {
+            player.giveExperienceLevels((int) amount);
+        }
+    }
+
+    public static PlayerStats statsOf(ServerPlayer player) {
+        return PlayerStatsProvider.of(player).orElse(null);
+    }
+
+    private static Component message(String key, Object... args) {
+        return Component.translatable("message.infinitestats.infuser." + key, args);
+    }
+}

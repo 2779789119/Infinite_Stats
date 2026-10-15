@@ -1,0 +1,12 @@
+{
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.import.gradle.enabled": true,
+  "java.compile.nullAnalysis.mode": "automatic",
+  "java.format.settings.url": "",
+  "gradle.nestedProjects": true,
+  "files.exclude": {
+    "**/.gradle": true,
+    "**/.modmind": true,
+    "**/.modtool": true
+  }
+}

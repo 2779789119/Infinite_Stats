@@ -1,0 +1,26 @@
+# Gradle / 构建输出
+.gradle/
+build/
+bin/
+run/
+run-*/
+logs/
+
+# ModMind 脚手架数据
+.modmind/
+
+# 本地工具链与分析用产物（体积大、可重建，不进仓库）
+#   .jdk8  ~292 MB 本地 JDK 21
+#   .refsrc / .neoref  反编译的参考源码（各 30+ MB）
+#   .analysis-src  分析用的原版源码摘录
+.jdk8/
+.refsrc/
+.neoref/
+.analysis-src/
+.migration-backup/
+.migrate-tmp/
+
+# 编译产物与杂项
+*.class
+*.log
+.DS_Store

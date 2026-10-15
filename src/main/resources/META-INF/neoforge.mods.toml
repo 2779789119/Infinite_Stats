@@ -1,0 +1,86 @@
+modLoader="javafml"
+loaderVersion="[3,)"
+license="GPL-3.0-only"
+issueTrackerURL="https://github.com/2779789119/Infinite_Stats/issues"
+
+[[mods]]
+modId="infinitestats"
+version="${version}"
+displayName="infinite_stats-无限加点"
+authors="佚名既无名"
+# 游戏内「模组列表」的图标，路径相对 jar 根目录（src/main/resources/logo.png）
+logoFile="logo.png"
+description='''
+A Terraria-like infinite stat point system for Minecraft 1.21.1 (NeoForge).
+
+Kill mobs and gain passive XP to level up, then freely allocate attribute
+points into any stat - there is no level cap, and points can always be
+refunded and re-spent.
+
+- 112 built-in stats in 4 categories: Attack / Defense / Mobility / Utility
+- Auto-discovery: attributes registered by other mods appear as an
+  "External" category and can be leveled exactly like built-in ones,
+  with Chinese translations shipped for 30+ mods so raw keys like
+  [gunsmithlib:bullet_damage] are never shown
+- Toggle abilities: Flight, Night Vision, Vein Miner, Auto Smelt, Auto Fish,
+  Eat When Full, Multi Shot, Extra Strike, Multi Jump, Climb Speed,
+  Keep Inventory, Keep XP, Trade Discount, Instant Restock, Instant Growth
+  and many more
+- Mod integration - every entry below is optional and does nothing when the
+  target mod is absent: Create (infinite stress), Superb Warfare (infinite ammo,
+  zero heat, no recoil, infinite vehicle health), Curios (accessories are kept
+  on death), Waystones (activated waystones show up in the waypoint panel),
+  Goety (infinite soul energy), Thirst Was Taken (no thirst), Cold Sweat
+  (no temperature), Iron's Spells / Ars Nouveau / Botania (infinite mana),
+  NeoForge Energy (infinite energy for FE/RF machines, items and vehicles),
+  Apotheosis (its enchant level caps are honoured), SlashBlade (in-game blade
+  editor)
+- Panels: Stats (P), HUD (H), Item Editor (O), EMC Transmutation (V),
+  Achievements (U) and Waypoints (Y)
+- Portable stations: crafting table, furnace, anvil, enchanting table,
+  stonecutter, loom, cartography table, grindstone, ender chest
+  (materials can be pulled from Refined Storage / AE2 / other storage networks)
+- Per-player feature switches (pack authors can gate content and unlock it
+  later with /infstats feature)
+- Full multiplayer support: stats, EMC and waypoints are stored per player
+  and synced to the server
+- No required dependencies. Optional: cloth_config draws the in-game config
+  screen, pinyin_search powers the pinyin search boxes - without either one
+  the corresponding feature degrades gracefully
+'''
+
+[[dependencies.infinitestats]]
+modId="neoforge"
+type="required"
+versionRange="[21.1.234,)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.infinitestats]]
+modId="minecraft"
+type="required"
+versionRange="[1.21.1]"
+ordering="NONE"
+side="BOTH"
+
+# 可选：配置界面（Cloth Config API）——「模组列表 → Config」按钮用它画配置界面。
+# 没装时配置仍然生效，只是没有图形界面（改 config/infinitestats-common.toml 或命令）
+[[dependencies.infinitestats]]
+modId="cloth_config"
+type="optional"
+versionRange="[15.0,)"
+ordering="NONE"
+side="CLIENT"
+
+# 可选：拼音搜索（通用拼音搜索库）—— 各搜索框据此启用拼音匹配。
+# 没装时退化为原文包含（装了 JustEnoughCharacters 时也支持拼音，那条不走依赖声明）
+[[dependencies.infinitestats]]
+modId="pinyin_search"
+type="optional"
+versionRange="[1.0.0,)"
+ordering="NONE"
+side="CLIENT"
+
+# Mixin 配置（NeoForge 自带 Mixin 运行时，无需额外依赖；official 映射下不需要 refmap）
+[[mixins]]
+config="infinitestats.mixins.json"

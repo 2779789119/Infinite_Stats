@@ -1,0 +1,114 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'net.neoforged.moddev' version '2.0.143'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+// 第三方模组联动的「编译期存根」（源码在 src/compatApiStub/java）：
+// Mixin 注解处理器要求 @Mixin 的目标类在编译期类路径上，而机械动力这类对本模组只是
+// 「装了才生效」的可选运行时联动。存根只把被注入 / 被读取的成员按真实签名抄一遍，
+// 只进编译期类路径、不会打进 jar（运行时若目标模组缺席，对应 Mixin 由 MixinPlugin 跳过）。
+sourceSets {
+    compatApiStub {
+        java.srcDir 'src/compatApiStub/java'
+        // 存根只用到原版类（BlockEntity / CompoundTag …），复用主源集的编译类路径即可。
+        // 这里刻意<b>不</b>加 sourceSets.main.output：那样会让本任务依赖主源集的产物，
+        // 而下面又把本源集的产物并进主源集的编译类路径，Gradle 会直接判定为循环依赖。
+        compileClasspath += sourceSets.main.compileClasspath
+    }
+}
+
+// 存根只进编译期类路径，不会打进 jar（jar 只打包 sourceSets.main.output）
+sourceSets.main.compileClasspath += sourceSets.compatApiStub.output
+
+tasks.named('compileJava') {
+    dependsOn tasks.named('compileCompatApiStubJava')
+}
+
+// 构建产物命名：英文名称-中文名称-模组版本-模组加载器-游戏版本
+def archivesFullName = "${project.mod_name_en}-${project.mod_name_cn}-${project.mod_version}-${project.mod_loader_name}-${project.minecraft_version}"
+
+tasks.named('jar', Jar) {
+    archiveFileName = "${archivesFullName}.jar"
+}
+
+tasks.withType(Jar).configureEach {
+    if (name == 'sourcesJar') {
+        archiveFileName = "${archivesFullName}-sources.jar"
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+    withSourcesJar()
+}
+
+sourceSets {
+    gameTest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+    }
+}
+
+repositories {
+    maven {
+        // JEI
+        url "https://maven.blamejared.com/"
+    }
+    maven {
+        // Cloth Config API（配置界面控件库）
+        url "https://maven.shedaniel.me/"
+    }
+}
+
+neoForge {
+    version = project.neo_version
+    runs {
+        client { client() }
+        server {
+            server()
+            programArgument '--nogui'
+        }
+        gameTestServer {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'infinitestats'
+        }
+    }
+    mods {
+        "infinitestats" { sourceSet(sourceSets.main) }
+    }
+}
+
+dependencies {
+    compileOnly "mezz.jei:jei-1.21.1-common-api:${jei_version}"
+    compileOnly "mezz.jei:jei-1.21.1-neoforge-api:${jei_version}"
+    runtimeOnly "mezz.jei:jei-1.21.1-neoforge:${jei_version}"
+
+    // Cloth Config API（用来画模组列表 →「Config」按钮打开的配置界面）
+    compileOnly "me.shedaniel.cloth:cloth-config-neoforge:${cloth_config_version}"
+    runtimeOnly "me.shedaniel.cloth:cloth-config-neoforge:${cloth_config_version}"
+}
+
+processResources {
+    filteringCharset = 'UTF-8'
+    inputs.property 'version', project.version
+    filesMatching('META-INF/neoforge.mods.toml') { expand version: project.version }
+}
+
+tasks.configureEach {
+    if (name in ['runClient', 'runServer', 'runGameTestServer']) {
+        dependsOn 'processResources', 'classes'
+    }
+}

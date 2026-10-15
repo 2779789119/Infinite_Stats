@@ -1,0 +1,63 @@
+plugins {
+    id 'java'
+    id 'net.minecraftforge.gradle' version '7.0.31'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+    // 迁移期间需要一次性看到全部错误（默认 100 条就截断）
+    options.compilerArgs.addAll(['-Xmaxerrs', '5000', '-nowarn'])
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(25)
+    withSourcesJar()
+}
+
+minecraft {
+    mappings channel: 'official', version: project.minecraft_version
+    runs {
+        configureEach {
+            workingDir = layout.projectDirectory.dir('run')
+            systemProperty 'forge.enabledGameTestNamespaces', 'infinitestats'
+        }
+        register('client')
+        register('server') { args '--nogui' }
+        register('gameTestServer')
+    }
+}
+
+repositories {
+    minecraft.mavenizer(it)
+    maven fg.forgeMaven
+    maven fg.minecraftLibsMaven
+    mavenCentral()
+}
+
+dependencies {
+    implementation minecraft.dependency("net.minecraftforge:forge:${project.loader_version}")
+}
+
+// JEI 集成面向 1.20.1 的 JEI API；26.2 的 JEI 尚未提供对应坐标与 API，
+// 在补齐依赖前先排除编译（源码保留在 compat/jei/，恢复时删掉这段 exclude 即可）。
+sourceSets {
+    main {
+        java {
+            exclude 'com/infinitestats/compat/jei/**'
+        }
+    }
+}
+
+processResources {
+    filteringCharset = 'UTF-8'
+    inputs.property 'version', project.version
+    filesMatching('META-INF/mods.toml') { expand version: project.version }
+}
