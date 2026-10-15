@@ -24,3 +24,9 @@ logs/
 *.class
 *.log
 .DS_Store
+
+# 开发期工具脚本与过程文档（不参与构建，本地保留、不进仓库）
+#   tools/  迁移期间的批处理（fix-lines*.ps1）与迁移脚本
+#   docs/   迁移文档、AI 会话记录、旧的 gradle wrapper 副本
+tools/
+docs/
