@@ -22,6 +22,7 @@ import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import com.infinitestats.handler.AttributeHandler;
+import com.infinitestats.util.AttributeValueMath;
 import com.infinitestats.util.EntityPanelToggles;
 import com.infinitestats.util.EntityPanelWand;
 import com.infinitestats.util.TeleportUtil;
@@ -78,7 +79,8 @@ public final class NetworkHandler {
     // 24：OpenEntityPanelPacket 增加开关掩码与可编辑标志，并新增 EntityPanelActionPacket（切换生物开关）
     // 25：新增 EntityPanelAttributePacket（改生物某条属性的基础值）
     // 26：新增传送石碑三个包（列表请求 / 列表同步 / 传送）
-    private static final String PROTOCOL_VERSION = "26";
+    // 27：EntityPanelAttributePacket 的语义改成「目标最终值」（旧客户端拿来当基础值写会算错，故升版本）
+    private static final String PROTOCOL_VERSION = "27";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -212,6 +214,17 @@ public final class NetworkHandler {
                 VeinMinerConfigPacket::encode,
                 VeinMinerConfigPacket::decode,
                 VeinMinerConfigPacket::handle);
+
+        // 矿透设置：客户端提交（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, UpdateOreVisionConfigPacket.class,
+                UpdateOreVisionConfigPacket::encode,
+                UpdateOreVisionConfigPacket::decode,
+                UpdateOreVisionConfigPacket::handle);
+        // 矿透设置：服务端下发（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, OreVisionConfigPacket.class,
+                OreVisionConfigPacket::encode,
+                OreVisionConfigPacket::decode,
+                OreVisionConfigPacket::handle);
 
         // 物品编辑器数据包（客户端 → 服务器）
         CHANNEL.registerMessage(packetId++, EditItemPacket.class,
@@ -731,6 +744,9 @@ public final class NetworkHandler {
             // 连锁设置跟着属性数据一起下发，登录 / 重生 / 改设置后客户端手上都是新的
             CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                     new VeinMinerConfigPacket(stats.getVeinMinerConfig()));
+            // 矿透设置同路下发
+            CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                    new OreVisionConfigPacket(stats.getOreVisionConfig()));
         });
     }
 
@@ -739,6 +755,13 @@ public final class NetworkHandler {
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
                 CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                         new VeinMinerConfigPacket(stats.getVeinMinerConfig())));
+    }
+
+    /** 单独下发矿透设置（设置提交后的回同步）。 */
+    public static void syncOreVisionConfig(ServerPlayer player) {
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                        new OreVisionConfigPacket(stats.getOreVisionConfig())));
     }
 
     /**
@@ -2853,40 +2876,46 @@ public final class NetworkHandler {
                 Entity target = player.level().getEntity(msg.entityId);
                 if (!(target instanceof LivingEntity)) return;
 
-                boolean allowed = canEditEntity(player, target);
-                if (allowed) {
+                if (canEditEntity(player, target)) {
                     EntityPanelToggles.apply(target, msg.index, msg.value);
                 }
-                // 无论成功与否都回一发现状：客户端据此覆盖自己的乐观更新
-                sendEntityPanelState(player, target, allowed);
+                // 无论成功与否都回一发现状：客户端据此覆盖自己的乐观更新。
+                // 「可编辑」只反映配置允不允许改 —— 单次动作因距离等原因被拒绝时不能把整个面板
+                // 永久锁成只读（否则玩家会看到「一点开关就变成只读」）。
+                sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
             });
             ctx.get().setPacketHandled(true);
         }
     }
 
     /**
-     * 生物面板：客户端 → 服务器，把某条属性的**基础值**改成指定数值。
+     * 生物面板：客户端 → 服务器，把某条属性的**最终值**设为指定数值。
      * <p>
-     * 与开关同一条权限链（{@link #canEditEntity}）；数值会被夹进属性自己的取值范围
-     * （{@code RangedAttribute} 的 min / max），改「生命上限」后会顺手把当前生命夹回上限之内。
+     * 包里传的是<b>玩家想看到的那个最终值</b>，服务端按原版公式反算出基础值再写
+     * （见 {@code AttributeValueMath#baseForFinal}）—— 因为只有基础值会被存档，
+     * 而修饰符属于药水 / 装备 / 其它模组，不能去动。
+     * <p>
+     * 与开关同一条权限链（{@link #canEditEntity}）；目标值会先夹进属性自己的取值范围
+     * （{@code RangedAttribute} 的 min / max），改「生命上限」后会把当前生命夹回上限之内。
      * 属性值的同步走原版机制（{@code ClientboundUpdateAttributesPacket}），不需要额外回包 ——
      * 客户端面板每 10 tick 重读一次本地实体，权威值会自动盖掉乐观更新。
      */
     public static final class EntityPanelAttributePacket {
         private final int entityId;
         private final String attributeId;
-        private final double value;
+        /** 目标**最终值**（不是基础值）。 */
+        private final double targetValue;
 
-        public EntityPanelAttributePacket(int entityId, String attributeId, double value) {
+        public EntityPanelAttributePacket(int entityId, String attributeId, double targetValue) {
             this.entityId = entityId;
             this.attributeId = attributeId;
-            this.value = value;
+            this.targetValue = targetValue;
         }
 
         public static void encode(EntityPanelAttributePacket msg, FriendlyByteBuf buf) {
             buf.writeVarInt(msg.entityId);
             buf.writeUtf(msg.attributeId);
-            buf.writeDouble(msg.value);
+            buf.writeDouble(msg.targetValue);
         }
 
         public static EntityPanelAttributePacket decode(FriendlyByteBuf buf) {
@@ -2909,15 +2938,18 @@ public final class NetworkHandler {
                 AttributeInstance instance = living.getAttribute(attribute);
                 if (instance == null) return;
 
-                double value = msg.value;
-                if (!Double.isFinite(value)) return;
+                double wanted = msg.targetValue;
+                if (!Double.isFinite(wanted)) return;
                 // 取值范围：RangedAttribute 自带 min / max（没有范围的属性不夹）
                 if (attribute instanceof net.minecraft.world.entity.ai.attributes.RangedAttribute ranged) {
-                    value = Mth.clamp(value, ranged.getMinValue(), ranged.getMaxValue());
+                    wanted = Mth.clamp(wanted, ranged.getMinValue(), ranged.getMaxValue());
                 }
+                // 反算基础值：最终值 = (base + Σ加法) × (1 + Σ乘基) × Π(1 + Σ乘总)
+                double base = AttributeValueMath.baseForFinal(instance, wanted);
+                if (Double.isNaN(base)) return;
 
                 try {
-                    instance.setBaseValue(value);
+                    instance.setBaseValue(base);
                 } catch (Throwable ignored) {
                     return; // 个别属性在特殊状态下会拒绝写入（如 dirty 锁定），当作没改
                 }
@@ -2930,18 +2962,54 @@ public final class NetworkHandler {
         }
     }
 
+    /** 生物面板「改生物」的距离基数（格）。 */
+    private static final double EDIT_RANGE_BASE = 16.0D;
+
+    /** 诊断开关：{@code -Dinfinitestats.debugEntityPanel=true} 时，每次「改不动」都往日志打一行原因。 */
+    private static final boolean DEBUG_ENTITY_PANEL =
+            Boolean.getBoolean("infinitestats.debugEntityPanel");
+
     /**
      * 「生物面板」能不能改这个生物 —— 开关切换与属性编辑共用这一条链：
-     * 手里拿着观察杖 + 配置允许 + 目标在 8 格内 + 属性已激活。
-     * <p>
-     * 8 格是为了：右键交互距离之外一律当作无效请求，防止远程改别人基地里的生物。
+     * 手里拿着观察杖 + 配置允许 + 目标在可达范围内 + 属性已激活。
+     *
+     * <h2>距离为什么按碰撞箱算、还要跟着 entity_reach 走</h2>
+     * 早先直接拿「生物原点（脚底）到玩家的距离 ≤ 8 格」当闸门，结果两类正常情况被误判成「改不了」：
+     * <ul>
+     *   <li><b>巨型 / 飞行生物</b>：玩家明明贴着碰撞箱右键，但本体原点可能在十几格外；</li>
+     *   <li><b>加了「实体交互距离」属性</b>：本模组自己就能把交互距离拉到 8 格以上，
+     *       能右键开出面板，却因为这个 8 格限制一次都改不动。</li>
+     * </ul>
+     * 现在按「碰撞箱 → 玩家眼睛」的距离算，上限取 {@link #EDIT_RANGE_BASE} 与
+     * 「玩家实体交互距离 + 4 格」的较大者 —— 仍然拦得住远程改别人基地里的生物，
+     * 但不会再拦掉手边这只。真正的闸门还是配置 {@code EntityPanel.allowEntityEditing}。
      */
     private static boolean canEditEntity(ServerPlayer player, Entity target) {
-        return EntityPanelWand.isHeld(player)
-                && Config.ALLOW_ENTITY_EDITING.get()
-                && player.distanceToSqr(target) <= 64.0D
-                && player.getCapability(PlayerStatsProvider.PLAYER_STATS)
-                        .map(stats -> stats.isToggleActive(EntityPanelWand.STAT_ID))
-                        .orElse(false);
+        // 这里只要求「身上有观察杖」，不要求「此刻正拿在手上」：
+        // 面板本来就是手持它右键打开的，而界面打开期间玩家根本换不了手 ——
+        // 早期版本卡「必须还拿在手里」，一旦手持物品被别的模组改 NBT / 同步抖动，
+        // 就会出现「面板开着但一次都改不动」这种说不通的失败，没必要。
+        boolean held = EntityPanelWand.hasWand(player);
+        boolean config = Config.ALLOW_ENTITY_EDITING.get();
+        boolean active = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .map(stats -> stats.isToggleActive(EntityPanelWand.STAT_ID))
+                .orElse(false);
+
+        double reach = EDIT_RANGE_BASE;
+        AttributeInstance reachAttribute = player.getAttribute(
+                net.minecraftforge.common.ForgeMod.ENTITY_REACH.get());
+        if (reachAttribute != null) reach = Math.max(reach, reachAttribute.getValue() + 4.0D);
+
+        double distanceSqr = target.getBoundingBox().distanceToSqr(player.getEyePosition());
+        boolean near = distanceSqr <= reach * reach;
+
+        boolean allowed = held && config && active && near;
+        if (!allowed && DEBUG_ENTITY_PANEL) {
+            System.out.println("[InfiniteStats][EntityPanel] 拒绝编辑 " + target.getType()
+                    + " —— held=" + held + " config=" + config + " active=" + active
+                    + " 距离=" + String.format(java.util.Locale.ROOT, "%.2f", Math.sqrt(distanceSqr))
+                    + " 上限=" + reach);
+        }
+        return allowed;
     }
 }

@@ -2,16 +2,23 @@ package com.infinitestats.handler;
 
 import com.infinitestats.Config;
 import com.infinitestats.event.StatEventHandler;
+import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.StatCategory;
 import com.infinitestats.stats.StatType;
+import com.infinitestats.util.TeleportUtil;
+import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.DamageTypeTags;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraftforge.registries.ForgeRegistries;
 
 import java.util.Iterator;
@@ -22,6 +29,9 @@ import java.util.Map;
  * 处理：免疫、格挡、伤害减免、护盾、闪避、复活、反射、效果过滤（黑名单拦截 / 白名单保护）
  */
 public class DefenseHandler implements StatEffectHandler {
+
+    /** 虚空脱困防抖用的持久化 NBT 键（存在 player 实体上，随实体走）。 */
+    private static final String VOID_ESCAPE_TICK = "infinitestats_void_escape_tick";
 
     @Override
     public String getId() {
@@ -35,6 +45,14 @@ public class DefenseHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
+        // 掉出世界兜底：放在最前。等人受伤时往往已经在虚空底部，甚至已被原版移除，
+        // 所以这里按坐标提前拉回（早于原版 -128 的掉出世界伤害）。
+        if (handleVoidEscape(player, stats)) {
+            player.displayClientMessage(
+                    net.minecraft.network.chat.Component.translatable("message.infinitestats.auto_revive_void"), true);
+            NetworkHandler.syncToClient(player);
+        }
+
         // 白名单（保护）模式：每 tick 采样受保护效果，并把被外力清除的补回。
         // 未处于保护模式时零开销，放在最前面是为了与外部的清除发生在同一 tick 内（不成帧闪烁）。
         applyProtectedEffects(player, stats);
@@ -250,7 +268,11 @@ public class DefenseHandler implements StatEffectHandler {
         long cooldownTicks = Config.AUTO_REVIVE_COOLDOWN.get() * 20L;
 
         if (gameTick - stats.getLastReviveTime() >= cooldownTicks) {
-            player.setHealth(player.getMaxHealth() * Config.AUTO_REVIVE_HEALTH_PERCENT.get().floatValue());
+            // 取 1 点保底：最大生命被其它模组压到 1~3 点时，按百分比算出来可能是 0 血、
+            // 复活后立刻再死（还会白白吃掉冷却）。
+            float reviveHealth = Math.min(player.getMaxHealth(),
+                    Math.max(1.0f, player.getMaxHealth() * Config.AUTO_REVIVE_HEALTH_PERCENT.get().floatValue()));
+            player.setHealth(reviveHealth);
             player.setAirSupply(player.getMaxAirSupply());
 
             // 清除效果：默认只清负面效果以保留其他模组的增益Buff；关闭则该回全部清除（旧行为）
@@ -281,6 +303,123 @@ public class DefenseHandler implements StatEffectHandler {
             return true;
         }
         return false;
+    }
+
+    /**
+     * 致死伤害预拦截：在 {@code LivingDamageEvent} 里判断「这一下会打死玩家」，
+     * 命中就复活并把伤害清零 —— 玩家完全不会进入死亡流程。
+     * <p>
+     * 为什么还要这一层：死亡事件虽然能拦住 {@code /kill}（它也走 {@code hurt}），但那时原版已经
+     * 走完扣血、图腾判定、死亡掉落与统计，任何挂在 {@code die} 上的模组逻辑都插过队了；
+     * 而且冷却期内挨一下 {@code Float.MAX_VALUE} 的伤害，人就没了。在伤害结算阶段就截断，
+     * 可以保证「没有任何一次致死扣血真正落地」。
+     * <p>
+     * {@code incoming} 是护甲 / 减伤 / 其它模组限伤结算后的最终扣血量。
+     */
+    public static boolean handleLethalDamage(ServerPlayer player, PlayerStats stats, float incoming) {
+        if (!Config.AUTO_REVIVE_PREVENT_LETHAL.get()) return false;
+        if (incoming <= 0 || !Float.isFinite(incoming)) return false;
+        // LivingDamageEvent 拿到的是吸收护盾之前的值：先扣掉护盾再判致死，
+        // 否则「有盾挡得住」的伤害也会被当成致死伤害，白白消耗一次复活冷却。
+        float afterAbsorption = Math.max(0f, incoming - player.getAbsorptionAmount());
+        // 只有「这一下确实会致死」才接管，普通受伤仍走原版结算（吸血 / 反弹等逻辑不受影响）
+        if (player.getHealth() - afterAbsorption > 0) return false;
+        return handleAutoRevive(player, stats);
+    }
+
+    /**
+     * 掉出世界（虚空 / 世界底部）脱困。
+     * <p>
+     * <b>不检查、不消耗复活冷却</b>：虚空伤害是每 tick 的持续伤害，靠死亡事件复活一次后
+     * 人还在虚空里，下一 tick 继续掉 —— 冷却没走完就彻底没救。所以这条路径只负责「把人拉回来」。
+     * <p>
+     * 触发点比原版早：主世界默认 y &lt; -72 就拉回，而原版要到 -128 才开始扣掉出世界伤害，
+     * 因此多数情况下玩家连伤害都吃不到；下界 / 末地的世界底部是 0，默认 y &lt; -8 触发。
+     */
+    public static boolean handleVoidEscape(ServerPlayer player, PlayerStats stats) {
+        return handleVoidEscape(player, stats, false);
+    }
+
+    /**
+     * @param allowDying 死亡事件里调用时传 {@code true}：此时血量已经归零，但死亡还没真正落地
+     *                   （事件被取消即可），可以放心拉回来。tick / 受伤路径必须传 {@code false}，
+     *                   否则会把已经进入死亡界面的玩家强行救活，客户端状态对不上。
+     */
+    public static boolean handleVoidEscape(ServerPlayer player, PlayerStats stats, boolean allowDying) {
+        if (!Config.AUTO_REVIVE_VOID_ESCAPE.get()) return false;
+        if (!stats.isToggleActive("auto_revive")) return false;
+        if (player.isRemoved()) return false;
+        if (!allowDying && player.isDeadOrDying()) return false;
+        if (!isOutOfWorld(player)) return false;
+
+        // 防抖：传送包要等客户端确认后服务端位置才稳定，这期间坐标还在世界底部，
+        // 不设闸门就会每 tick 传一次（跨维度分支尤其重）。
+        long now = player.level().getGameTime();
+        if (now - player.getPersistentData().getLong(VOID_ESCAPE_TICK) < 20L) return false;
+        player.getPersistentData().putLong(VOID_ESCAPE_TICK, now);
+
+        // 在虚空里往往已经掉到个位数血，拉回后不回血的话落地很容易被怪补刀
+        float target = player.getMaxHealth() * Config.AUTO_REVIVE_HEALTH_PERCENT.get().floatValue();
+        player.setHealth(Math.min(player.getMaxHealth(),
+                Math.max(player.getHealth(), Math.max(1.0f, target))));
+        player.setAirSupply(player.getMaxAirSupply());
+
+        int invulnSeconds = Config.AUTO_REVIVE_INVULN_SECONDS.get();
+        if (invulnSeconds > 0) {
+            stats.setReviveInvulnUntilTick(player.level().getGameTime() + invulnSeconds * 20L);
+        }
+
+        teleportToSafety(player);
+        return true;
+    }
+
+    /** 玩家是否已掉到世界底部之外（比原版掉出世界的伤害判定更早，留出救援余量）。 */
+    public static boolean isOutOfWorld(ServerPlayer player) {
+        return player.getY() < player.level().getMinBuildHeight() - Config.AUTO_REVIVE_VOID_ESCAPE_DEPTH.get();
+    }
+
+    /**
+     * 送回重生点（没有重生点则回当前维度的世界出生点），并挑一个不会卡在方块里的落点。
+     * <p>
+     * 跨维度走 {@link TeleportUtil#forceTeleportTo}，它复制了原版传送流程但跳过
+     * {@code onTravelToDimension} 门控，避免被其它模组的维度黑名单拦下、人卡在虚空里。
+     */
+    private static void teleportToSafety(ServerPlayer player) {
+        MinecraftServer server = player.server;
+        ServerLevel target = player.serverLevel();
+        BlockPos origin = null;
+
+        BlockPos respawn = player.getRespawnPosition();
+        if (respawn != null) {
+            ServerLevel respawnLevel = server.getLevel(player.getRespawnDimension());
+            if (respawnLevel != null) {
+                target = respawnLevel;
+                origin = respawn;
+            }
+        }
+        if (origin == null) origin = target.getSharedSpawnPos();
+
+        BlockPos safe = findSafeSpot(target, origin);
+        TeleportUtil.forceTeleportTo(player, target, safe.getX() + 0.5, safe.getY(), safe.getZ() + 0.5,
+                player.getYRot(), player.getXRot());
+        player.setDeltaMovement(0, 0, 0);
+        player.fallDistance = 0;
+    }
+
+    /** 以 origin 所在列为准，从地表往上找一处「脚下不是岩浆、头顶两格空」的落脚点。 */
+    private static BlockPos findSafeSpot(ServerLevel level, BlockPos origin) {
+        BlockPos surface = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, origin);
+        BlockPos.MutableBlockPos pos = surface.mutable();
+        int maxY = level.getMaxBuildHeight() - 3;
+        if (pos.getY() > maxY) pos.setY(maxY);
+
+        for (int i = 0; i < 16 && pos.getY() <= maxY; i++, pos.move(0, 1, 0)) {
+            if (level.getBlockState(pos).isAir() && level.getBlockState(pos.above()).isAir()
+                    && !level.getFluidState(pos.below()).is(FluidTags.LAVA)) {
+                return pos.immutable();
+            }
+        }
+        return pos.immutable();
     }
 
     /**

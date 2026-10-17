@@ -2,6 +2,7 @@ package com.infinitestats.client;
 
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.StatType;
+import com.infinitestats.util.AttributeValueMath;
 import com.infinitestats.util.EntityPanelToggles;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -686,11 +687,11 @@ public class EntityPanelScreen extends PanelScreen {
 
     // ======================== 属性基础值编辑 ========================
 
-    /** 把输入框挪到这一行、填上当前基础值并聚焦。 */
+    /** 把输入框挪到这一行、填上当前**最终值**并聚焦。 */
     private void startEditing(int index) {
         if (index < 0 || index >= rows.size()) return;
         editingIndex = index;
-        valueField.setValue(EditorUi.amount(rows.get(index).base()));
+        valueField.setValue(EditorUi.amount(rows.get(index).value()));
         valueField.setVisible(true);
         setFocused(valueField);
     }
@@ -721,30 +722,44 @@ public class EntityPanelScreen extends PanelScreen {
             cancelEditing();
             return;
         }
-        applyBaseValue(editingIndex, value);
+        applyFinalValue(editingIndex, value);
     }
 
-    /** Shift + 点击：恢复成「该生物类型自带的默认基础值」。 */
+    /**
+     * Shift + 点击：恢复成「该生物类型自带的默认基础值」。
+     * <p>
+     * 包里的语义统一是「目标最终值」，所以这里先把默认基础值换算成它会产生的那份最终值再提交 ——
+     * 「恢复默认」因此也只是一次普通的最终值写入，不必给网络包再加一个模式开关。
+     */
     private void resetToDefault(int index) {
         if (index < 0 || index >= rows.size()) return;
         Row row = rows.get(index);
         Attribute attribute = attributeOf(row.id());
         if (attribute == null) return;
-        applyBaseValue(index, entity.getAttributes().getBaseValue(attribute));
+        AttributeInstance instance = entity.getAttribute(attribute);
+        if (instance == null) return;
+        double target = AttributeValueMath.finalForBase(instance,
+                entity.getAttributes().getBaseValue(attribute));
+        if (Double.isNaN(target)) return;
+        applyFinalValue(index, target);
     }
 
     /**
-     * 提交一条基础值：先本地乐观更新（只改这一行的显示数据），再发包让服务端执行。
+     * 提交一个**目标最终值**：先本地乐观更新（只改这一行的显示数据），再发包让服务端执行。
      * <p>
+     * 基础值用同一套公式在本地反算一份，纯粹为了这一秒内浮窗能自洽；
      * 权威值走原版属性同步回来，面板每 10 tick 也会重读本地实体，
      * 所以被服务端夹过范围 / 拒绝的写入会在一秒内自动显示成真值。
      */
-    private void applyBaseValue(int index, double value) {
+    private void applyFinalValue(int index, double target) {
         Row row = rows.get(index);
-        rows.set(index, new Row(row.name(), row.id(), value + (row.value() - row.base()), value,
-                row.modifiers(), row.vanilla()));
+        Attribute attribute = attributeOf(row.id());
+        AttributeInstance instance = attribute == null ? null : entity.getAttribute(attribute);
+        double base = instance == null ? Double.NaN : AttributeValueMath.baseForFinal(instance, target);
+        if (Double.isNaN(base)) base = row.base();
+        rows.set(index, new Row(row.name(), row.id(), target, base, row.modifiers(), row.vanilla()));
         NetworkHandler.CHANNEL.sendToServer(
-                new NetworkHandler.EntityPanelAttributePacket(entity.getId(), row.id(), value));
+                new NetworkHandler.EntityPanelAttributePacket(entity.getId(), row.id(), target));
         cancelEditing();
     }
 

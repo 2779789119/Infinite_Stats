@@ -7,7 +7,7 @@
 | | |
 |---|---|
 | **Mod ID** | `infinitestats` |
-| **当前版本** | 1.62.0 |
+| **当前版本** | 1.65.0 |
 | **运行环境** | Minecraft `1.20.1` / Forge `47.3.0` 或更高 |
 | **前置模组** | 无 |
 | **联机** | 支持单人 / 多人服务器 |
@@ -22,7 +22,7 @@
 3. 按 **`P`** 打开属性面板，点击属性右侧的 `+` 加点
 4. 随时可以重置，点数**全额退还**
 
-属性分为 **攻击 / 防御 / 机动 / 功能** 四大类，共 **112 个**。安装其它模组后，它们注册的属性会自动收入「外部属性」分类，同样可以加点。
+属性分为 **攻击 / 防御 / 机动 / 功能** 四大类，共 **113 个**。安装其它模组后，它们注册的属性会自动收入「外部属性」分类，同样可以加点。
 
 等级**没有上限**，可以放心分配。
 
@@ -41,6 +41,7 @@
 
 - 飞行、夜视、水下呼吸、免饥饿、隐身、免摔落伤害、火焰 / 弹射物 / 爆炸免疫……
 - **连锁挖掘**：一次破坏成片同类方块；右键还可整片剥皮 / 铺路 / 耕地 / 收割作物
+- **矿透**：周围已加载区块里的矿石描边并**穿透方块**显示，按矿物种类着色；半径、描边上限与要显示的种类在「矿透设置」面板里调
 - 自动钓鱼、立即咬钩、自动冶炼、自动修理、繁殖无冷却、一键长大、物品 / 经验磁铁
 - **满饱食度进食**：饱食度已满时仍可继续进食
 
@@ -95,8 +96,8 @@
 - 属性面板 `P`、HUD `H`、物品编辑器 `O`、EMC 转化桌 `V`、成就 / 统计 `U`、传送点 `Y`、随身工具 `G`
 - **生物面板**：解锁后获得一根**生物观察杖**（带标记的木棍），手持它右键任意生物即可打开该生物的面板
   - **属性**页：列出它身上的**全部属性**（生命上限 / 护甲 / 攻击力 / 移动速度……连其它模组添加的属性也在内），
-    悬停某行能看到注册名、基础值 / 最终值、**默认值**与取值范围；**左键点一行即可改它的基础值**
-    （回车确认，`Shift + 左键` 一键恢复该生物类型的默认值）
+    悬停某行能看到注册名、基础值 / 最终值、**默认值**与取值范围；**左键点一行即可把它的最终值设为任意数字**
+    （回车确认；带 buff / 装备时也会自动扣掉修饰符那部分再写基础值，`Shift + 左键` 恢复该生物类型的默认值）
   - **开关**页：点一下就能直接改这只生物 —— **AI**（关掉就是木头人）、**幼年 / 成年**、**静音**、**不可见**、
     **发光**、**无敌**、**无重力**
   - 改动一律由服务端执行并回传权威状态（客户端改不出来），数值会被夹进该属性自身的取值范围
@@ -104,7 +105,7 @@
 - **传送点**：保存 / 删除 / 传送，支持**跨维度传送**
 - **天气控制**：一键切换晴天 / 下雨 / 雷暴
 - **区块强加载**：将指定区块设为强加载，重启后依然有效
-- **功能开关**：112 条属性可逐条关闭（每个玩家独立），关闭后从面板隐藏，对应功能入口一并消失
+- **功能开关**：113 条属性可逐条关闭（每个玩家独立），关闭后从面板隐藏，对应功能入口一并消失
 - **效果过滤**：黑名单模式「拦截勾选的效果」（需开启 `debuff_immunity` 开关），白名单模式「保护勾选的效果」——
   自然结束前不会被任何外力清除（其它模组、牛奶桶、`/effect clear`、本模组的清效果逻辑都算外力）。
   名单条目支持 `minecraft:poison`、`somemod:*`（整个模组的全部效果）、`#forge:effect_tag`（效果标签）、`*`（全部效果），
@@ -239,7 +240,7 @@
 
 ---
 
-## 🧬 内置属性一览（共 112 个）
+## 🧬 内置属性一览（共 113 个）
 
 > 标 **[开关]** 的为功能型开关，激活后即时生效，可随时开启 / 关闭。
 
@@ -255,11 +256,11 @@
 
 `movement_speed` 移动速度 · `swim_speed` 游泳速度 · `jump_height` 跳跃高度 · `multi_jump` N 段跳 · `step_height` 抬腿高度 · `auto_step` **[开关]** 自动抬腿 · `fly_speed` 飞行速度 · `fly` **[开关]** 飞行 · `climb_speed` 爬梯加速 · `no_fall_damage` **[开关]** 免摔落伤害
 
-### 🧰 功能（53 + 11 个随身工具）
+### 🧰 功能（54 + 11 个随身工具）
 
 > 11 个 `portable_*`「随身工具」属性统一在**随身工具面板**里用左键解锁 / 右键关闭，因此不再显示在属性面板。
 
-`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 掉落幸运 · `double_loot` 双倍战利品 · `item_magnet` **[开关]** 物品磁铁 · `xp_magnet` **[开关]** 经验磁铁 · `auto_deposit` **[开关]** 自动入库 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `auto_fish` **[开关]** 自动钓鱼 · `instant_bite` **[开关]** 立即咬钩 · `breed_no_cooldown` **[开关]** 繁殖无冷却 · `instant_grow` **[开关]** 一键长大 · `crafting_bonus` 合成加成 · `auto_repair` **[开关]** 自动修理 · `repair_amount` 修理量 · `use_speed` 使用速度 · `bow_draw_speed` 拉弓加速 · `cooldown_reduction` 冷却缩减 · `projectile_tracking` **[开关]** 弹射物追踪 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `no_thirst` **[开关]** 免口渴 · `no_temperature` **[开关]** 免体温 · `always_eat` **[开关]** 满饱食度进食 · `invisibility` **[开关]** 隐身 · `keep_inventory` **[开关]** 死亡不掉落 · `keep_xp` **[开关]** 死亡不掉经验 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `enchant_limit` **[开关]** 附魔上限突破 · `weather_control` **[开关]** 天气控制 · `chunk_loader` **[开关]** 区块强加载 · `entity_panel` **[开关]** 生物面板 · `trade_discount` 村民交易折扣 · `trade_restock` **[开关]** 交易即刻补货 · `anvil_cost` 铁砧经验减免 · `pe_auto_learn` **[开关]** PE 自动学习 · `emc_learn_bonus` EMC 学习收益 · `emc_extract_discount` EMC 转化折扣 · `infinite_energy` **[开关]** 无限能源（FE/RF） · `sbw_infinite_health` **[开关]** 无限载具血量 · `goety_infinite_soul` **[开关]** 无限灵魂能量 · `create_infinite_stress` **[开关]** 无限应力 · `infinite_mana` **[开关]** 无限魔力
+`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 掉落幸运 · `double_loot` 双倍战利品 · `item_magnet` **[开关]** 物品磁铁 · `xp_magnet` **[开关]** 经验磁铁 · `auto_deposit` **[开关]** 自动入库 · `vein_miner` **[开关]** 连锁挖掘 · `ore_vision` **[开关]** 矿透 · `auto_smelt` **[开关]** 自动冶炼 · `auto_fish` **[开关]** 自动钓鱼 · `instant_bite` **[开关]** 立即咬钩 · `breed_no_cooldown` **[开关]** 繁殖无冷却 · `instant_grow` **[开关]** 一键长大 · `crafting_bonus` 合成加成 · `auto_repair` **[开关]** 自动修理 · `repair_amount` 修理量 · `use_speed` 使用速度 · `bow_draw_speed` 拉弓加速 · `cooldown_reduction` 冷却缩减 · `projectile_tracking` **[开关]** 弹射物追踪 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `no_thirst` **[开关]** 免口渴 · `no_temperature` **[开关]** 免体温 · `always_eat` **[开关]** 满饱食度进食 · `invisibility` **[开关]** 隐身 · `keep_inventory` **[开关]** 死亡不掉落 · `keep_xp` **[开关]** 死亡不掉经验 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `enchant_limit` **[开关]** 附魔上限突破 · `weather_control` **[开关]** 天气控制 · `chunk_loader` **[开关]** 区块强加载 · `entity_panel` **[开关]** 生物面板 · `trade_discount` 村民交易折扣 · `trade_restock` **[开关]** 交易即刻补货 · `anvil_cost` 铁砧经验减免 · `pe_auto_learn` **[开关]** PE 自动学习 · `emc_learn_bonus` EMC 学习收益 · `emc_extract_discount` EMC 转化折扣 · `infinite_energy` **[开关]** 无限能源（FE/RF） · `sbw_infinite_health` **[开关]** 无限载具血量 · `goety_infinite_soul` **[开关]** 无限灵魂能量 · `create_infinite_stress` **[开关]** 无限应力 · `infinite_mana` **[开关]** 无限魔力
 
 ### 🌐 外部属性（动态）
 

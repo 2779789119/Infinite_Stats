@@ -20,7 +20,8 @@ apply plugin: 'maven-publish'
 
 version = "${mod_version}"
 group = 'com.infinitestats'
-archivesBaseName = "infinite_stats-无限加点-${minecraft_version}"
+// 只是基础名；实际产物名按「英文名称-中文名称-模组版本-模组加载器-游戏版本」在下面「打包」一节里显式指定
+archivesBaseName = "infinite_stats-无限加点"
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)
 
@@ -154,8 +155,10 @@ tasks.named('compileJava', JavaCompile).configure {
 
 // ============================================================
 // 打包：两个产物（assemble / build 一起产出，一内嵌一不内嵌）
-//   <名>-<版本>.jar        不内嵌 —— 标准产物名。整合包自己装了 pinyin_search 时用它
-//   <名>-<版本>-all.jar    内嵌 pinyin_search（Forge JAR-in-JAR）—— 没另装拼音库时用它
+//   命名规则：英文名称-中文名称-模组版本-模组加载器-游戏版本
+//     infinite_stats-无限加点-<版本>-Forge-<游戏版本>.jar      不内嵌 —— 标准产物。整合包自己装了 pinyin_search 时用它
+//     infinite_stats-无限加点-<版本>-Forge-<游戏版本>-all.jar  内嵌 pinyin_search（Forge JAR-in-JAR）—— 没另装拼音库时用它
+//   为什么不用 archivesBaseName + version 的默认拼法：那会把游戏版本排到版本号前面，也看不出加载器。
 // 为什么不再合并：原先 `jar` 任务会把 jarJar 的 `META-INF/jarjar/**` 并进主产物，
 //   于是主产物与 `-all` 内容逐字节相同 —— 一次构建出三个包（主产物 / `-all` / 过滤出来的
 //   `-noembed`），分发时全靠肉眼分辨。现在不合并：主产物本身就不内嵌，`-all` 才内嵌，
@@ -163,6 +166,17 @@ tasks.named('compileJava', JavaCompile).configure {
 // ============================================================
 jarJar.enable()
 tasks.named('assemble') { dependsOn tasks.named('jarJar') }
+
+// 两个产物共用的文件名主干（命名规则见上）
+def artifactBaseName = "infinite_stats-无限加点-${mod_version}-Forge-${minecraft_version}"
+tasks.named('jar', Jar).configure {
+    archiveFileName = "${artifactBaseName}.jar"
+}
+// jarJar 是 net.minecraftforge.gradle.userdev.tasks.JarJar（继承 Jar），同样认 archiveFileName。
+// 它在被 jar 任务 finalizedBy 的 reobfJar 之前就产出了，这里显式指定可避免默认拼法（基础名-版本-all）。
+tasks.named('jarJar').configure {
+    archiveFileName = "${artifactBaseName}-all.jar"
+}
 
 tasks.named('jar', Jar).configure {
     // 兜底校验：refmap 没进 jar 就直接让构建失败。

@@ -724,6 +724,10 @@ public final class StatType {
                 .behavior(StatBehavior.TOGGLE).maxLevel(3).perPointValue(0)
                 .build(),
 
+            create("ore_vision").category(StatCategory.UTILITY)
+                .behavior(StatBehavior.TOGGLE).maxLevel(3).perPointValue(0)
+                .build(),
+
             create("auto_smelt").category(StatCategory.UTILITY)
                 .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
                 .build(),

@@ -114,6 +114,18 @@ public final class StatEventHandler {
         // 自动复活
         if (event.getEntity() instanceof ServerPlayer player) {
             player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                // 掉出世界优先走「脱困」而不是原地复活：原地复活后人还在虚空里，
+                // 同一 tick 继续往下掉，冷却没走完就真的没救了。脱困不消耗冷却。
+                if (DefenseHandler.handleVoidEscape(player, stats, true)) {
+                    event.setCanceled(true);
+                    player.displayClientMessage(
+                            net.minecraft.network.chat.Component.translatable("message.infinitestats.auto_revive_void"),
+                            true
+                    );
+                    HandlerRegistry.loginAll(player, stats);
+                    NetworkHandler.syncToClient(player);
+                    return;
+                }
                 if (DefenseHandler.handleAutoRevive(player, stats)) {
                     event.setCanceled(true);
                     player.displayClientMessage(
@@ -996,6 +1008,18 @@ public final class StatEventHandler {
             hurtPlayer.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
                 float amount = event.getAmount();
 
+                // 掉出世界：必须放在无敌判断之前。无敌只免伤，人不传送回来会一直在虚空里下坠，
+                // 等无敌窗口结束就再也救不回来了。
+                if (DefenseHandler.handleVoidEscape(hurtPlayer, stats)) {
+                    event.setCanceled(true);
+                    hurtPlayer.displayClientMessage(
+                            net.minecraft.network.chat.Component.translatable("message.infinitestats.auto_revive_void"),
+                            true
+                    );
+                    NetworkHandler.syncToClient(hurtPlayer);
+                    return;
+                }
+
                 // 复活无敌窗口：取消一切伤害（最高优先级，防止复活瞬间原地再死）
                 if (DefenseHandler.isReviveInvulnerable(hurtPlayer, stats)) {
                     event.setCanceled(true);
@@ -1072,6 +1096,27 @@ public final class StatEventHandler {
     public static void onLivingDamage(LivingDamageEvent event) {
         float bonus = AttackHandler.takeTrueDamage(event.getEntity(), event.getSource());
         if (event.isCanceled()) return;
+
+        // 致死伤害预拦截：这一下会打死玩家时直接复活并把伤害清零，玩家不会进入死亡流程。
+        // 必须放在真伤结算之前 —— 真伤是直接 setHealth 扣血，等落地后再拦就只剩一具 0 血尸体了。
+        // 覆盖范围比死亡事件更广：/kill、绕过无敌的伤害、以及其它模组挂在 die 上的逻辑
+        // 都不会再有执行机会（它们拿不到「玩家已死亡」这个前提）。
+        if (event.getAmount() > 0 && event.getEntity() instanceof ServerPlayer hurtPlayer) {
+            boolean revived = hurtPlayer.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                    .map(stats -> DefenseHandler.handleLethalDamage(hurtPlayer, stats, event.getAmount()))
+                    .orElse(false);
+            if (revived) {
+                event.setAmount(0);
+                hurtPlayer.displayClientMessage(
+                        net.minecraft.network.chat.Component.translatable("message.infinitestats.auto_revive"), true);
+                // 复活时清掉的效果要立刻补回（理由同死亡事件里那段注释）
+                hurtPlayer.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                        .ifPresent(stats -> HandlerRegistry.loginAll(hurtPlayer, stats));
+                NetworkHandler.syncToClient(hurtPlayer);
+                return;
+            }
+        }
+
         if (bonus > 0 && Float.isFinite(bonus)) {
             // 真伤改为直接扣血结算，不叠加进 event.getAmount()：
             // 叠加会与主伤害一起被后续的抗性提升 / 保护附魔 / 吸收护盾，
@@ -1215,10 +1260,37 @@ public final class StatEventHandler {
 
     // ========== 挖掘速度 ==========
 
-    @SubscribeEvent
+    /**
+     * 诊断开关：启动参数 {@code -Dinfinitestats.debugBreakSpeed=true} 时，
+     * 每 20 tick 打印一次 BreakSpeed 事件的数据（双端各打一份），
+     * 用于排查「加了很多点却挖不快」到底是数值没吃到，还是被别的监听器覆盖。
+     */
+    private static final boolean DEBUG_BREAK_SPEED =
+            Boolean.getBoolean("infinitestats.debugBreakSpeed");
+
+    /**
+     * 优先级用 LOWEST：保证在所有其它监听器（包括其它模组）改完速度之后再做最终覆盖，
+     * 否则本模组的加成可能被别的模组在更靠后的优先级里按原始速度覆盖掉。
+     */
+    @SubscribeEvent(priority = EventPriority.LOWEST)
     public static void onBreakSpeed(PlayerEvent.BreakSpeed event) {
-        event.getEntity().getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+        Player player = event.getEntity();
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             float bonus = UtilityHandler.getMiningSpeedMultiplier(stats);
+            if (DEBUG_BREAK_SPEED && player.tickCount % 20 == 0) {
+                BlockState debugState = event.getState();
+                BlockPos debugPos = event.getPosition().orElse(player.blockPosition());
+                System.out.println("[InfiniteStats][BreakSpeed] side="
+                        + (player.level().isClientSide ? "CLIENT" : "SERVER")
+                        + " value=" + stats.getStatValue(StatType.fromId("mining_speed"))
+                        + " bonus=" + bonus
+                        + " orig=" + event.getOriginalSpeed()
+                        + " new=" + event.getNewSpeed()
+                        + " block=" + debugState.getBlock().getDescriptionId()
+                        + " hardness=" + debugState.getDestroySpeed(player.level(), debugPos)
+                        + " correctTool=" + player.hasCorrectToolForDrops(debugState)
+                        + " onGround=" + player.onGround());
+            }
             if (bonus > 1) {
                 float effectiveBonus = bonus;
                 // 原版 getDigSpeed 在此事件后对「不在地面」执行 ÷5 惩罚。

@@ -220,6 +220,7 @@ public class StatsScreen extends PanelScreen {
         icon("item_magnet", Items.HOPPER);
         icon("invisibility", Items.GLASS_BOTTLE);
         icon("vein_miner", Items.IRON_PICKAXE);
+        icon("ore_vision", Items.SPYGLASS);
         icon("auto_smelt", Items.FURNACE);
         icon("xp_magnet", Items.EXPERIENCE_BOTTLE);
         icon("projectile_tracking", Items.SPECTRAL_ARROW);
@@ -826,6 +827,10 @@ public class StatsScreen extends PanelScreen {
         addNav(labels, actions, "vein_miner",
                 Component.translatable("gui.infinitestats.nav.vein_miner"),
                 () -> { if (minecraft != null) minecraft.setScreen(new VeinMinerSettingsScreen(this)); });
+        // 矿透：半径 / 上限 / 矿物种类筛选（未解锁或已关闭时入口不显示）
+        addNav(labels, actions, "ore_vision",
+                Component.translatable("gui.infinitestats.nav.ore_vision"),
+                () -> { if (minecraft != null) minecraft.setScreen(new OreVisionSettingsScreen(this)); });
 
         // 入口变多后按可用宽度收窄，避免挤到面板外
         int maxNavW = GUI_WIDTH - 16;
@@ -1470,11 +1475,7 @@ public class StatsScreen extends PanelScreen {
                 boolean collapsed = collapsedExternalGroups.contains(groupNamespace);
                 lines.add("§e" + groupNamespace);
                 lines.add("§7" + groupSize + " 个属性 · " + (collapsed ? "点击展开" : "点击折叠"));
-                List<net.minecraft.util.FormattedCharSequence> visualLines = new ArrayList<>();
-                for (String line : lines) {
-                    visualLines.add(Component.literal(line).getVisualOrderText());
-                }
-                g.renderTooltip(font, visualLines, screenMouseX, screenMouseY);
+                renderWrappedTooltip(g, lines, screenMouseX, screenMouseY);
                 return;
             }
             stat = entry.stat;
@@ -1536,13 +1537,41 @@ public class StatsScreen extends PanelScreen {
             }
         }
 
-        if (!tooltipLines.isEmpty()) {
-            List<net.minecraft.util.FormattedCharSequence> visualLines = new ArrayList<>();
-            for (String line : tooltipLines) {
-                visualLines.add(Component.literal(line).getVisualOrderText());
+        if (!tooltipLines.isEmpty()) renderWrappedTooltip(g, tooltipLines, screenMouseX, screenMouseY);
+    }
+
+    /**
+     * 折行后再画浮窗。
+     *
+     * <h2>为什么不直接用 {@code g.renderTooltip(font, 行列表, x, y)}</h2>
+     * 这条重载收的是 {@link net.minecraft.util.FormattedCharSequence}，原版<b>只按传入的行数排版，
+     * 不做宽度折行</b>：一行有多宽就画多宽。功能描述动辄上百字（例如「无限弹药」那条），
+     * 于是整条文本一路画到屏幕外，超出部分被视口裁掉 —— 表现为「描述看不全」。
+     * <p>
+     * 所以这里先按当前可用宽度折行（与 {@code EntityPanelScreen} / {@code DebuffFilterScreen} 一致），
+     * 再把折好的多行交给原版画背景框，浮窗宽度就始终落在屏幕内。
+     */
+    private void renderWrappedTooltip(GuiGraphics g, List<String> lines, int screenX, int screenY) {
+        int maxWidth = tooltipWrapWidth();
+        List<net.minecraft.util.FormattedCharSequence> visualLines = new ArrayList<>();
+        for (String line : lines) {
+            for (String wrapped : EditorUi.wrap(font, line, maxWidth)) {
+                visualLines.add(Component.literal(wrapped).getVisualOrderText());
             }
-            g.renderTooltip(font, visualLines, screenMouseX, screenMouseY);
         }
+        g.renderTooltip(font, visualLines, screenX, screenY);
+    }
+
+    /**
+     * 浮窗文本折行宽度（面板坐标）。
+     * <p>
+     * 浮窗是在面板缩放的姿态里画出来的，面板坐标 1 单位最终只占 {@code 面板缩放} 个屏幕像素，
+     * 所以可用宽度要按缩放换算回去；上限 220 是排版上限，避免宽屏下折出一整行超长短句。
+     */
+    private int tooltipWrapWidth() {
+        int guiWidth = minecraft != null ? minecraft.getWindow().getGuiScaledWidth() : 320;
+        int fit = Math.round((guiWidth - 24) / Math.max(0.25f, panelScale()));
+        return Mth.clamp(fit, 90, 220);
     }
 
     // ======================== 鼠标输入 ========================

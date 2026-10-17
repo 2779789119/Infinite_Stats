@@ -46,6 +46,9 @@ public final class Config {
     public static ForgeConfigSpec.IntValue AUTO_REVIVE_INVULN_SECONDS;
     public static ForgeConfigSpec.BooleanValue AUTO_REVIVE_REFILL_FOOD;
     public static ForgeConfigSpec.BooleanValue AUTO_REVIVE_CLEAR_DEBUFFS_ONLY;
+    public static ForgeConfigSpec.BooleanValue AUTO_REVIVE_PREVENT_LETHAL;
+    public static ForgeConfigSpec.BooleanValue AUTO_REVIVE_VOID_ESCAPE;
+    public static ForgeConfigSpec.IntValue AUTO_REVIVE_VOID_ESCAPE_DEPTH;
 
     // ========== 被动效果设置 ==========
 
@@ -247,6 +250,16 @@ public final class Config {
         AUTO_REVIVE_CLEAR_DEBUFFS_ONLY = builder
                 .comment("true=复活时仅清除负面效果并保留增益Buff；false=清除全部效果（旧行为）。")
                 .define("autoReviveClearDebuffsOnly", true);
+        AUTO_REVIVE_PREVENT_LETHAL = builder
+                .comment("true=在伤害结算阶段就把「这一下会致死」的攻击拦下来并直接复活（连死亡事件都不会触发，"
+                        + "/kill 与各种绕过无敌的致死伤害同样有效）；false=回到只在死亡事件里复活。")
+                .define("autoRevivePreventLethal", true);
+        AUTO_REVIVE_VOID_ESCAPE = builder
+                .comment("true=掉出世界（虚空 / 世界底部）时立刻拉回重生点，不占用复活冷却。")
+                .define("autoReviveVoidEscape", true);
+        AUTO_REVIVE_VOID_ESCAPE_DEPTH = builder
+                .comment("距离世界最低点下方多少格算「已掉出世界」。默认 8：主世界 y < -72、下界/末地 y < -8 触发。")
+                .defineInRange("autoReviveVoidEscapeDepth", 8, 1, 256);
         builder.pop();
 
         // 被动效果设置

@@ -172,6 +172,12 @@ public class PlayerStats {
     private VeinMinerConfig veinMinerConfig = new VeinMinerConfig();
 
     /**
+     * 矿透的个人设置（扫描半径、上限、矿物种类筛选）。
+     * 与连锁设置同路：随玩家数据存档并同步到客户端，游戏内通过「矿透设置」面板修改。
+     */
+    private OreVisionConfig oreVisionConfig = new OreVisionConfig();
+
+    /**
      * 死亡不掉落（keep_inventory）的暂存物品。
      * <p>
      * 死亡瞬间把主背包 / 盔甲 / 副手清空并暂存在这里，重生时（{@code PlayerEvent.Clone}）
@@ -298,6 +304,23 @@ public class PlayerStats {
         } else {
             config.sanitize();
             veinMinerConfig = config;
+        }
+    }
+
+    // ========== 矿透设置 ==========
+
+    /** 矿透的个人设置（永不为 null）。界面直接读写这个对象，提交时整份覆盖。 */
+    public OreVisionConfig getOreVisionConfig() {
+        return oreVisionConfig;
+    }
+
+    /** 整份替换矿透设置（网络同步 / 界面提交时调用）；传入 null 视为恢复默认。 */
+    public void setOreVisionConfig(OreVisionConfig config) {
+        if (config == null) {
+            oreVisionConfig = new OreVisionConfig();
+        } else {
+            config.sanitize();
+            oreVisionConfig = config;
         }
     }
 
@@ -1264,6 +1287,9 @@ public class PlayerStats {
         // 序列化连锁挖掘设置
         tag.put("veinMinerConfig", veinMinerConfig.serialize());
 
+        // 序列化矿透设置
+        tag.put("oreVisionConfig", oreVisionConfig.serialize());
+
         // 序列化死亡不掉落暂存物品（必须落盘：玩家在死亡界面断线 / 服务器重启也不能丢）
         ListTag keptList = new ListTag();
         for (ItemStack stack : pendingKeptInventory) {
@@ -1442,6 +1468,10 @@ public class PlayerStats {
         veinMinerConfig = VeinMinerConfig.deserialize(
                 tag.contains("veinMinerConfig") ? tag.getCompound("veinMinerConfig") : null);
 
+        // 反序列化矿透设置（老存档没有这一段 → 用默认值）
+        oreVisionConfig = OreVisionConfig.deserialize(
+                tag.contains("oreVisionConfig") ? tag.getCompound("oreVisionConfig") : null);
+
         // 反序列化死亡不掉落暂存物品
         pendingKeptInventory.clear();
         if (tag.contains("pendingKeptInventory")) {
@@ -1524,6 +1554,7 @@ public class PlayerStats {
         this.autoDepositWhitelist.clear();
         this.autoDepositWhitelist.addAll(other.autoDepositWhitelist);
         this.veinMinerConfig = other.veinMinerConfig.copy();
+        this.oreVisionConfig = other.oreVisionConfig.copy();
         this.disabledStats.clear();
         this.disabledStats.addAll(other.disabledStats);
         this.defaultDisabledApplied = other.defaultDisabledApplied;
