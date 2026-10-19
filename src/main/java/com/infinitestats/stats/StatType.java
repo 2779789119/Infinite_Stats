@@ -475,7 +475,8 @@ public final class StatType {
             create("true_damage").category(StatCategory.ATTACK)
                 .percentage()
                 .perPointValue(0.01f)
-                .description("每次攻击附加基于伤害的额外真实伤害，无视护甲与减伤")
+                .description("每次攻击附加基于伤害的额外真实伤害：无视护甲 / 抗性 / 保护附魔 / 吸收护盾与其它模组的限伤、免伤、复活；"
+                        + "本模组自己的闪避 / 格挡 / 免疫 / 无敌仍可挡下")
                 .build(),
 
             create("reduce_max_health").category(StatCategory.ATTACK)

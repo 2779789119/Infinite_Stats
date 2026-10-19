@@ -201,7 +201,8 @@ public final class ItemAndDamageRegressionTests {
             cancelled.setCanceled(true);
             StatEventHandler.onLivingDamage(cancelled);
             close(1, cancelled.getAmount(), "Cancelled hit received bonus");
-            close(firstHealth, first.getHealth(), "Cancelled hit still applied true damage");
+            // 第三方取消只影响主伤害：真伤是独立结算，必须照常落地
+            close(firstHealth - 4, first.getHealth(), "Third-party cancellation swallowed true damage");
             LivingDamageEvent finalHit = new LivingDamageEvent(second, source, 1);
             StatEventHandler.onLivingDamage(finalHit);
             close(secondHealth - 2, second.getHealth(), "Concurrent target lost or inherited another hit's bonus");
@@ -210,7 +211,7 @@ public final class ItemAndDamageRegressionTests {
             StatEventHandler.onLivingHurt(new LivingHurtEvent(first, source, 8));
             AttackHandler.clearPendingTrueDamage();
             StatEventHandler.onLivingDamage(new LivingDamageEvent(first, source, 1));
-            close(firstHealth, first.getHealth(), "Abandoned hit leaked into next tick");
+            close(firstHealth - 4, first.getHealth(), "Abandoned hit leaked into next tick");
         } finally { AttackHandler.clearPendingTrueDamage(); }
         helper.succeed();
     }

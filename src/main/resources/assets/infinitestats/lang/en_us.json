@@ -629,7 +629,7 @@
   "screen.infinitestats.achievements.empty": "No matching achievements",
 
   "stat.infinitestats.true_damage": "True Damage",
-  "stat.infinitestats.true_damage.desc": "Deal bonus true damage based on attack damage, ignoring armor and damage reduction",
+  "stat.infinitestats.true_damage.desc": "Deal bonus true damage based on attack damage: ignores armor, resistance, protection, absorption and other mods' damage caps, immunities and revives. This mod's own dodge / block / immunity / invincibility still stop it",
   "stat.infinitestats.reduce_max_health": "Max Health Drain",
   "stat.infinitestats.reduce_max_health.desc": "Each attack lowers the target's max health (1 per point, minimum 1 HP remains)",
   "stat.infinitestats.scope_attack": "Area Attack",

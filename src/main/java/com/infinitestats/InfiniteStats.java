@@ -20,7 +20,17 @@ import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 public final class InfiniteStats {
 
     public static final String MODID = "infinitestats";
-    public static final String VERSION = "1.64.3";
+
+    /**
+     * 运行期版本号：直接取模组元数据（jar 里 mods.toml 的 version），
+     * 不再手写常量 —— 之前那个常量常年停在 1.64.3，日志里的版本号完全不可信。
+     */
+    public static String version() {
+        return net.minecraftforge.fml.ModList.get()
+                .getModContainerById(MODID)
+                .map(container -> container.getModInfo().getVersion().toString())
+                .orElse("dev");
+    }
 
     public InfiniteStats() {
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
@@ -49,7 +59,7 @@ public final class InfiniteStats {
         ModMenuTypes.MENU_TYPES.register(modEventBus);
 
         // 模组信息日志
-        System.out.println("[InfiniteStats] Version " + VERSION + " loaded successfully");
+        System.out.println("[InfiniteStats] Version " + version() + " loaded successfully");
     }
 
     private void setup(final net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent event) {

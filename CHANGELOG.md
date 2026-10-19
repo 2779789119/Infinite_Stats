@@ -1,5 +1,108 @@
 # 更新日志 (Changelog)
 
+## [1.68.3] - 2026-10-19
+
+### 🐞 真伤击杀被「复活」拦截时补结算掉落
+
+- **现象**：给生物挂了「复活」词条的整合包里，真伤把目标打到 0 血后实体直接消失，
+  **既没有掉落物也没有经验**，词条本身的复活也没生效。
+- **原因**：这类词条在 `LivingDeathEvent` 里 `setCanceled(true)`。原版
+  `LivingEntity#die` 在事件之后第一行就 `return`，`killedEntity`（击杀统计 / 成就 / 进度）
+  与 `dropAllDeathLoot`（战利品表 / 装备 / 经验 / `LivingDropsEvent`）全部没执行；
+  紧接着 `forceKill` 的 `remove(KILLED)` 把实体抹掉，于是「无掉落、无经验」。
+- **修法**：`forceKill` 在移除实体前判断 `die()` 是否真的走完（`pose == DYING` / 已移除）；
+  没走完就手动补一次结算 —— `attacker.killedEntity(...)` + `dropAllDeathLoot(source)`。
+  - `dropAllDeathLoot` 在 1.20.1 是 `protected`，新增 `LivingEntityAccessor`（Mixin `@Invoker`）
+    暴露；它内部已包含 `dropExperience()` 与 `ForgeHooks.onLivingDrops`，一次调用即可。
+  - 掉落按玩家击杀 roll（`lastHurtByPlayerTime` 已在 `forceKill` 里设好），
+    所以 `LivingDropsEvent`、抢夺附魔、FTB 任务与成就都照常生效。
+  - 补结算包在 `try/catch (Throwable)` 里：任何异常都不会冒泡到 Forge 事件总线拖垮服务端。
+- 排查日志新增 `manual-drops` 行（目标名、类名、当前血量），配合
+  `-Dinfinitestats.debugTrueDamage=true` 可确认补掉落是否命中。
+- 注意：真伤「击杀不接受别家拦截」的语义不变 —— 复活词条拦下的这次死亡仍会被强制收尾，
+  只是现在会把该给的东西补上。
+- 版本号 `1.68.2 → 1.68.3`。
+
+## [1.68.2] - 2026-10-17
+
+### 🩹 真伤兜底：`setHealth` 被目标拦截时退回正规伤害流程
+
+- **现象**：打 LegendaryMonsters 的坠落圣骑时，真伤数值算对了（排查日志里 `dmg=19408`），但
+  `hp=68800.0->68800.0` —— 直接扣血一个点都没生效；而同一只怪的主伤害能正常扣血
+  （68800 → 67823 → …）。其它怪的真伤一切正常。
+- **原因**：该 Boss（或整合包里某处实现）锁住了血量 / 拦截了 `setHealth`，但 `hurt()` 路径是通的。
+- **修法**：`applyUnavoidableTrueDamage` 在 `setHealth` 后校验血量是否真的下降；没降就改用本模组的
+  `direct_damage`（带 `bypasses_invulnerability`）走一次 `hurt()` 补上，并立刻把
+  `invulnerableTime` 清零 —— 否则这次 `hurt()` 拉满的无敌帧会把紧随其后的原版主伤害吞掉。
+- 排查日志新增 `fallback-hurt` 行（目标类名、最大生命、扣血前后），便于确认兜底是否命中。
+- 版本号 `1.68.1 → 1.68.2`。
+
+## [1.68.1] - 2026-10-17
+
+### 🔍 真伤排查开关 + 日志版本号修正
+
+- 新增启动参数 `-Dinfinitestats.debugTrueDamage=true`：真伤的每一次结算 / 跳过都会往日志打一行
+  `[InfiniteStats][TrueDamage] ...`，内容包括目标名、面板估算、暴击 / 弹射物 / 处决系数、最终数值、
+  扣血前后血量、以及跳过原因（如无敌帧）。默认关闭，不影响正常游玩。
+- 修正 `InfiniteStats.VERSION` 长期写死为 `1.64.3` 的问题：改为从模组元数据读取，
+  日志里的版本号与 jar 实际版本一致。
+- 版本号 `1.68.0 → 1.68.1`。
+
+## [1.68.0] - 2026-10-17
+
+### 🎯 真伤穿透「实体自己实现的限伤」（LegendaryMonsters 的 DamageCap 等）
+
+- **现象**：打 LegendaryMonsters 的小 Boss（如坠落圣骑）时，真伤只按 21 点算（配置里的
+  `MiniBoss DamageCap`），加满真伤也打不动；有时整击完全没反应。
+- **根因**：这类限伤不在 Forge 事件里 —— 实体在自己的 `hurt()` 覆盖里先
+  `amount = min(damageCap(), amount × damageReduction())` 再 `super.hurt(...)`。
+  `LivingHurtEvent`（包括 HIGHEST 阶段的快照）拿到的都是钳过的值；`isTargetCheesing`
+  （玩家站高处）与睡眠阶段更是直接 `return false`，事件根本不会触发。
+- **修法**：
+  1. `infinitestats:direct_damage` 加入 `minecraft:bypasses_invulnerability` 标签 ——
+     这类模组的约定就是「带此标签的伤害跳过减伤与上限」，范围攻击 / 额外打击 / 独立真伤入口
+     因此直接穿透；
+  2. 近战真伤的**产生点**从 `LivingHurtEvent` 前移到 `AttackEntityEvent`
+     （`onMeleeTrueDamage`），基数改用攻击者侧的 `estimateMeleeDamage`
+     （面板攻击力 × 蓄力系数 + 附魔伤害加成），目标在 `hurt()` 里怎么钳都影响不到它；
+     目标「整击拒绝」时也照样落地；
+  3. 事件链上的真伤基数改为 `max(原始快照, 面板估算)`：弹射物与玩家目标仍走事件链，
+     保证「命中判定 → 我方防御 → 真伤」的顺序（PvP 里闪避 / 格挡 / 免疫仍先生效）；
+  4. 用 `ThreadLocal` 目标标记避免近战真伤被结算两次；其它模组直接调用 `hurt()` 的技能伤害
+     不受影响（没有标记，照常按事件链结算）。
+- 版本号 `1.67.0 → 1.68.0`。
+
+## [1.67.0] - 2026-10-17
+
+### ⚔️ 真实伤害重做：只认攻击方数值，不再被第三方限伤 / 取消吞掉
+
+口径：真伤只受「这一击是否命中」与攻击方数值影响。**本模组自己的防御链（虚空脱困 / 复活无敌 / 无敌 /
+免疫 / 闪避 / 格挡 / 致死预拦截）照常生效**；其它模组的护甲、抗性、保护附魔、吸收护盾、限伤、免伤、
+复活一律不生效。
+
+- **命中层上移**：玩家受击的命中判定从 `LivingHurtEvent` 挪到 `LivingAttackEvent`（`HIGHEST`）。
+  该事件在无敌帧检查之前触发，cancel 它等于「这一击没打中」，后续 `LivingHurt` / `LivingDamage`
+  根本不会发生 —— 于是「我方取消」与「第三方取消」彻底分开：伤害事件上收到的取消只可能来自别家
+  （或本模组「减伤 ≥ 100%」这种纯数值减免），不再据此判断真伤要不要结算。
+- **数值层改用攻击方快照**：新增 `LivingHurtEvent` `HIGHEST` 阶段的原始伤害快照
+  （`AttackHandler.rememberRawHurt` / `takeRawHurt`）。真伤基数 =
+  `快照 × 本模组暴击 / 弹射物加成 + 处决加成`，不再读 `event.getAmount()`。
+  别的模组把这一击限到 1 点，真伤仍按攻击方原本该打出的伤害计算。
+- **结算层不再被取消吞掉**：`onLivingHurt` / `onLivingDamage` 都改为 `receiveCanceled = true`。
+  第三方取消只跳过「主伤害相关」的结算（范围攻击 / 削上限 / 吸血 / 额外打击 / 护盾追踪），
+  真伤照常落地。
+- **死亡收尾按目标类型分开**（`applyUnavoidableTrueDamage`）：
+  - 怪物：扣到 0 后由本模组调用 `die()` 收尾（掉落 / 经验 / 击杀归属 / 成就照常），
+    若死亡被第三方复活类模组取消，直接 `remove(KILLED)` —— 真伤击杀不接受别家拦截；
+  - 玩家：扣血前先过本模组致死预拦截（真伤穿盾，按**不扣吸收护盾**的口径判致死），
+    没拦住才扣；扣到 0 走原版 `die`，死亡与重生流程保持标准（玩家实体无法像生物那样强删，
+    别家的复活插件仍有机会插手 —— 这是引擎边界）。
+- **移除 0.01 血保护**：删除 `vanillaWillResolveDeath` 参数与「主伤害无效时最多扣到 0.01」的逻辑。
+  真伤致死现在都会真正收尾，不会再出现「0 血存活」的实体。
+- 属性描述同步（`stat.infinitestats.true_damage.desc`、`StatType`），把「无视什么 / 什么仍能挡」
+  写清楚。
+- 版本号 `1.66.1 → 1.67.0`。
+
 ## [1.66.1] - 2026-10-17
 
 ### 🔧 修：生物面板「一点开关就变成只读」

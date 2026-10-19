@@ -317,11 +317,24 @@ public class DefenseHandler implements StatEffectHandler {
      * {@code incoming} 是护甲 / 减伤 / 其它模组限伤结算后的最终扣血量。
      */
     public static boolean handleLethalDamage(ServerPlayer player, PlayerStats stats, float incoming) {
+        return handleLethalDamage(player, stats, incoming, true);
+    }
+
+    /**
+     * 致死伤害预拦截（可选是否考虑吸收护盾）。
+     *
+     * @param respectAbsorption {@code true} = 按原版口径先扣掉吸收护盾再判致死（普通伤害）；
+     *                          {@code false} = 真伤穿盾，直接按当前血量判定，避免「有盾就少判一次」。
+     */
+    public static boolean handleLethalDamage(ServerPlayer player, PlayerStats stats, float incoming,
+                                             boolean respectAbsorption) {
         if (!Config.AUTO_REVIVE_PREVENT_LETHAL.get()) return false;
         if (incoming <= 0 || !Float.isFinite(incoming)) return false;
         // LivingDamageEvent 拿到的是吸收护盾之前的值：先扣掉护盾再判致死，
         // 否则「有盾挡得住」的伤害也会被当成致死伤害，白白消耗一次复活冷却。
-        float afterAbsorption = Math.max(0f, incoming - player.getAbsorptionAmount());
+        float afterAbsorption = respectAbsorption
+                ? Math.max(0f, incoming - player.getAbsorptionAmount())
+                : incoming;
         // 只有「这一下确实会致死」才接管，普通受伤仍走原版结算（吸血 / 反弹等逻辑不受影响）
         if (player.getHealth() - afterAbsorption > 0) return false;
         return handleAutoRevive(player, stats);

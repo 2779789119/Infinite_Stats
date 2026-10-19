@@ -12,6 +12,7 @@
     "AnimalMixin",
     "EntityMoveRelativeMixin",
     "FishingHookAccessor",
+    "LivingEntityAccessor",
     "EnchantmentMixin",
     "EnchantmentHelperMixin",
     "TaczGunScriptApiMixin",

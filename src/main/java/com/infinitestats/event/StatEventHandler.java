@@ -97,6 +97,36 @@ public final class StatEventHandler {
     private static final ThreadLocal<Boolean> ATTACK_BRANCH_ACTIVE = ThreadLocal.withInitial(() -> false);
 
     /**
+     * 刚刚在 {@code AttackEntityEvent} 里用攻击者面板结算过真伤的目标 UUID。
+     * <p>
+     * 近战路径上真伤的「产生点」前移了，但主伤害仍会照常触发 {@code LivingHurtEvent}；
+     * 用这个标记让事件链跳过同一个目标的第二次结算。只标记「目标」而不看来源，
+     * 是为了不误伤其它模组直接调用 {@code hurt()} 的技能伤害（它们没走本事件，应该照常结算）。
+     */
+    private static final ThreadLocal<UUID> MELEE_TRUE_DAMAGE_DONE = new ThreadLocal<>();
+
+    /**
+     * 真伤排查开关：启动参数 {@code -Dinfinitestats.debugTrueDamage=true} 时，
+     * 每次真伤结算 / 跳过都会往日志打一行 {@code [TrueDamage]}，用于对不上数时定位。
+     */
+    private static final boolean DEBUG_TRUE_DAMAGE =
+            Boolean.getBoolean("infinitestats.debugTrueDamage");
+
+    private static void debugTrueDamage(String message) {
+        if (DEBUG_TRUE_DAMAGE) {
+            System.out.println("[InfiniteStats][TrueDamage] " + message);
+        }
+    }
+
+    /** 该目标是否刚在 AttackEntityEvent 里结算过真伤；命中即消费，避免残留。 */
+    private static boolean consumeMeleeTrueDamageMark(LivingEntity target) {
+        UUID done = MELEE_TRUE_DAMAGE_DONE.get();
+        if (done == null || !done.equals(target.getUUID())) return false;
+        MELEE_TRUE_DAMAGE_DONE.remove();
+        return true;
+    }
+
+    /**
      * 「无箭装填」发射窗口：玩家 UUID → 发射当时的 gameTime。
      * <p>
      * 弩的弹丸存在 {@code ChargedProjectiles} 里，模组补进去的虚拟箭与玩家自己装的实弹
@@ -500,12 +530,22 @@ public final class StatEventHandler {
      * {@code onLivingHurt} 里保留了同样的清零作为兜底（覆盖下一次攻击），两处配合下
      * 玩家的每一击都能全额生效。
      */
-    @SubscribeEvent
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
     public static void onLivingAttack(LivingAttackEvent event) {
         LivingEntity target = event.getEntity();
-        // 与攻击侧保持一致：PvP 时不破坏对方玩家的无敌帧
-        if (target instanceof ServerPlayer) return;
 
+        // 玩家目标：本模组的防御链在「命中」阶段判定。
+        // LivingAttackEvent 在 hurt() 的无敌帧检查之前触发，cancel 它等于「这一击没打中」——
+        // 后面的 LivingHurt / LivingDamage 根本不会发生。这样「我方拦截」与第三方在伤害事件上
+        // 的取消就彻底分开了：伤害事件里的取消一定是别人干的（见 onLivingHurt）。
+        if (target instanceof ServerPlayer victim) {
+            if (denyHitOnPlayer(victim, event.getSource())) {
+                event.setCanceled(true);
+            }
+            return;
+        }
+
+        // 与攻击侧保持一致：PvP 时不破坏对方玩家的无敌帧
         ServerPlayer attacker = getPlayerAttacker(event.getSource());
         if (attacker == null) return;
 
@@ -514,6 +554,60 @@ public final class StatEventHandler {
                 target.invulnerableTime = 0;
             }
         });
+    }
+
+    /**
+     * 本模组对玩家受击的命中判定：返回 true 表示这一击被本模组挡下（未命中）。
+     * <p>
+     * 这些判定从 {@code LivingHurtEvent} 上移到这里，顺序与原来一致：
+     * 虚空脱困 → 复活无敌 → 无敌 → 免疫 → 闪避 → 格挡。
+     * <p>
+     * 免疫 / 闪避 / 格挡对<b>所有</b>伤害来源生效（包括带 {@code bypasses_effects} 的真伤）：
+     * 「本模组的防御必须能挡住本模组的真伤」是明确口径，别家模组的防御则完全拦不到真伤
+     * （真伤是直接扣血，根本不经过它们的结算）。
+     */
+    private static boolean denyHitOnPlayer(ServerPlayer player, DamageSource source) {
+        PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+        if (stats == null) return false;
+
+        // 掉出世界：必须放在无敌判断之前。无敌只免伤，人不传送回来会一直在虚空里下坠，
+        // 等无敌窗口结束就再也救不回来了。
+        if (DefenseHandler.handleVoidEscape(player, stats)) {
+            player.displayClientMessage(
+                    net.minecraft.network.chat.Component.translatable("message.infinitestats.auto_revive_void"),
+                    true
+            );
+            NetworkHandler.syncToClient(player);
+            return true;
+        }
+
+        // 复活无敌窗口：免疫一切伤害（防止复活瞬间原地再死）
+        if (DefenseHandler.isReviveInvulnerable(player, stats)) return true;
+
+        // 无敌：取消所有伤害
+        if (DefenseHandler.isInvincible(stats)) return true;
+
+        // 检查免疫
+        if (DefenseHandler.isImmune(stats, source, player)) return true;
+
+        // 闪避
+        if (DefenseHandler.handleDodge(player, stats)) {
+            player.displayClientMessage(
+                    net.minecraft.network.chat.Component.translatable("message.infinitestats.dodged"),
+                    true
+            );
+            return true;
+        }
+
+        // 格挡
+        if (DefenseHandler.handleBlock(player, stats)) {
+            player.displayClientMessage(
+                    net.minecraft.network.chat.Component.translatable("message.infinitestats.blocked"),
+                    true
+            );
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -541,6 +635,57 @@ public final class StatEventHandler {
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             if (stats.isToggleActive("no_invincibility_frames")) {
                 target.invulnerableTime = 0;
+            }
+        });
+    }
+
+    /**
+     * 近战真伤的「产生点」：挂在 {@code AttackEntityEvent} 上，而不是 {@code LivingHurtEvent}。
+     * <p>
+     * 原因：部分模组（如 LegendaryMonsters）把「单次伤害上限 / 减伤」实现在实体自己的
+     * {@code hurt()} 覆盖里，甚至直接 {@code return false}（卡位 / 睡眠阶段）——
+     * 那种情况下 {@code LivingHurtEvent} 根本不会触发，挂在伤害事件上的真伤永远是 0。
+     * {@code AttackEntityEvent} 在 {@code Player#attack} 里、{@code target.hurt(...)} 之前触发，
+     * 是近战路径上唯一稳定拿得到「这一下打中了谁」的位置。
+     * <p>
+     * 基数用 {@link AttackHandler#estimateMeleeDamage} 的攻击者面板估算，因此目标在
+     * {@code hurt()} 里怎么钳都没用。玩家目标不走这里（要让我方的闪避 / 格挡 / 免疫先生效，
+     * 那些判定在 {@code LivingAttackEvent} 上，而它晚于本事件）。
+     */
+    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
+    public static void onMeleeTrueDamage(AttackEntityEvent event) {
+        if (event.isCanceled()) return;
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        if (!(event.getTarget() instanceof LivingEntity target)) return;
+        if (target == player || target instanceof Player) return;
+        if (player.isSpectator() || target.isRemoved() || target.isDeadOrDying() || !target.isAttackable()) return;
+        // 与 vanilla 的受击节奏对齐：这一击本来会被无敌帧吞掉时，真伤也不再追加，否则连点鼠标
+        // 就等于无限真伤。（「取消无敌帧」开关在更早的 onAttackEntity 里已经把 invulnerableTime 清零，
+        // 那种情况下这里放行，与主伤害的节奏一致。）
+        if (target.invulnerableTime > 10) {
+            debugTrueDamage("melee skip: target=" + target.getName().getString()
+                    + " invulnerableTime=" + target.invulnerableTime);
+            return;
+        }
+
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            float estimate = AttackHandler.estimateMeleeDamage(player, target);
+            if (estimate <= 0) return;
+            boolean isFullAttack = player.getAttackStrengthScale(0.5f) > 0.9f;
+            float damage = AttackHandler.calculateTrueDamage(stats,
+                    estimate * AttackHandler.calculateCritMultiplier(player, stats, isFullAttack));
+            if (damage > 0) {
+                double before = target.getHealth();
+                AttackHandler.applyUnavoidableTrueDamage(target, damage, player);
+                debugTrueDamage("melee target=" + target.getName().getString()
+                        + " estimate=" + estimate + " dmg=" + damage
+                        + " hp=" + before + "->" + target.getHealth()
+                        + " invulnerableTime=" + target.invulnerableTime);
+                // 告诉随后那次 LivingHurtEvent：这个目标的真伤已经结算过了。
+                MELEE_TRUE_DAMAGE_DONE.set(target.getUUID());
+            } else {
+                debugTrueDamage("melee skip: true_damage stat=" + stats.getStatValue("true_damage")
+                        + " estimate=" + estimate);
             }
         });
     }
@@ -931,21 +1076,55 @@ public final class StatEventHandler {
         return false;
     }
 
-    @SubscribeEvent(priority = EventPriority.LOW)
+    /**
+     * 原始伤害快照（HIGHEST，先于所有 Forge 监听器执行）。
+     * <p>
+     * 这里拿到的只是「目标 {@code hurt()} 已经把 amount 交给 Forge 之后」的值，所以它<b>不能</b>
+     * 当作攻击方原始伤害：不少模组（如 LegendaryMonsters）是在实体自己的 {@code hurt()} 覆盖里
+     * 先钳上限 / 乘减伤再 super.hurt 的，快照里已经是钳过的数。因此真伤基数还要与
+     * {@link AttackHandler#estimateMeleeDamage} 的面板估算取大值，见 {@code onLivingHurt}。
+     */
+    @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
+    public static void onLivingHurtSnapshot(LivingHurtEvent event) {
+        AttackHandler.rememberRawHurt(event.getEntity(), event.getSource(), event.getAmount());
+    }
+
+    @SubscribeEvent(priority = EventPriority.LOW, receiveCanceled = true)
     public static void onLivingHurt(LivingHurtEvent event) {
         AttackHandler.takeTrueDamage(event.getEntity(), event.getSource());
         final float[] trueDamage = {0};
+        // 进入本方法时事件已取消：主伤害不再结算。本模组自己的格挡 / 闪避 / 免疫 / 无敌
+        // 已在 onLivingAttack 拦掉（那种情况根本收不到本事件），所以这里的取消只可能来自
+        // 第三方模组，或者本模组「减伤 ≥ 100%」这类纯数值减免 —— 两者都不该影响真伤。
+        final boolean mainDamageDenied = event.isCanceled();
         try {
         // 玩家攻击（覆盖近战、弓箭/三叉戟等玩家拥有的抛射物，
         // 避免"伤害来源实体不是玩家"导致范围伤害等攻击效果时灵时不灵）
         ServerPlayer player = getPlayerAttacker(event);
+        // 近战直击：真伤已经在 onMeleeTrueDamage 里按攻击者面板落地，这里不再重复结算。
+        // 用「目标标记」而不是「来源是不是玩家」来判断 —— 后者会把其它模组直接调用 hurt()
+        // 的技能伤害一并误判成已结算。
+        final boolean meleeHandled = consumeMeleeTrueDamageMark(event.getEntity());
+        if (meleeHandled) {
+            // trueDamage 保持 0
+        } else if (mainDamageDenied) {
+            // 主伤害被第三方取消：范围攻击 / 削上限 / 吸血等攻击属性不再结算（尊重这次取消），
+            // 但真伤是独立结算，基数照算 —— 别家的闪避 / 无敌不能吞掉真伤。
+            if (player != null && !ATTACK_BRANCH_ACTIVE.get()
+                    && !AttackHandler.isDirectDamageSource(event.getSource())) {
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
+                        trueDamage[0] = AttackHandler.calculateProjectedTrueDamage(player, stats, event));
+            }
+        }
         // 重入锁：次级受击（直接伤害）进入本方法时跳过攻击分支，彻底杜绝同步无限递归。
-        if (player != null && !ATTACK_BRANCH_ACTIVE.get()) {
+        else if (player != null && !ATTACK_BRANCH_ACTIVE.get()) {
             ATTACK_BRANCH_ACTIVE.set(true);
             try {
             if (!AttackHandler.isDirectDamageSource(event.getSource())) {
             player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
                 float amount = event.getAmount();
+                // 事件进入本方法时的数值（可能已被第三方限伤钳过），仅作快照缺失时的回退
+                float eventAmount = amount;
 
                 // 弹射物标记（弓弩箭矢、投掷物等）
                 boolean isProjectile = event.getSource().getDirectEntity()
@@ -954,10 +1133,12 @@ public final class StatEventHandler {
                 // 暴击：近战与弹射物共用同一条蓄力判定
                 // （「弹射物暴击」属性已在 1.21.0 移除，这里回到原来的单一分支）
                 boolean isFullAttack = player.getAttackStrengthScale(0.5f) > 0.9f;
-                amount *= AttackHandler.calculateCritMultiplier(player, stats, isFullAttack);
+                float critMultiplier = AttackHandler.calculateCritMultiplier(player, stats, isFullAttack);
+                amount *= critMultiplier;
 
                 // 弹射物伤害
-                amount *= AttackHandler.calculateProjectileBonus(stats, isProjectile);
+                float projectileMultiplier = AttackHandler.calculateProjectileBonus(stats, isProjectile);
+                amount *= projectileMultiplier;
 
                 event.setAmount(amount);
 
@@ -969,18 +1150,32 @@ public final class StatEventHandler {
                 AttackHandler.applyAoeLifeSteal(player, stats, amount, event.getEntity());
 
                 // 处决：对低血量目标额外伤害
+                float executeBonus = 0;
                 float executeDmg = stats.getStatValue(StatType.fromId("execute"));
                 if (executeDmg > 0) {
                     LivingEntity target = event.getEntity();
                     float hpPct = target.getHealth() / target.getMaxHealth();
                     if (hpPct < 0.3f) {
-                        float bonus = (1.0f - hpPct) * executeDmg * target.getMaxHealth();
-                        event.setAmount(event.getAmount() + bonus);
+                        executeBonus = (1.0f - hpPct) * executeDmg * target.getMaxHealth();
+                        event.setAmount(event.getAmount() + executeBonus);
                     }
                 }
 
-                // 记录减伤前的基数，最终扣血阶段再叠加，禁止在本次 hurt 内嵌套另一次 hurt。
-                trueDamage[0] = AttackHandler.calculateTrueDamage(stats, event.getAmount());
+                // 真伤基数 = 原始伤害快照 × 本模组的暴击 / 弹射物加成 + 处决加成。
+                // 刻意不用 event.getAmount()：那个值可能已被第三方限伤 / 减伤处理过。
+                float rawBase = AttackHandler.takeRawHurt(event.getEntity(), event.getSource());
+                if (!(rawBase > 0)) rawBase = eventAmount;
+                // 目标可能在自己的 hurt() 里先把 amount 钳掉（限伤 / 减伤都在事件之前），
+                // 因此近战再和攻击者面板估算取大值：这样「打出来的数字」是钳过的也没关系。
+                if (event.getSource().getDirectEntity() instanceof ServerPlayer) {
+                    rawBase = Math.max(rawBase, AttackHandler.estimateMeleeDamage(player, event.getEntity()));
+                }
+                trueDamage[0] = AttackHandler.calculateTrueDamage(
+                        stats, rawBase * critMultiplier * projectileMultiplier + executeBonus);
+                debugTrueDamage("event target=" + event.getEntity().getName().getString()
+                        + " rawBase=" + rawBase + " crit=" + critMultiplier
+                        + " proj=" + projectileMultiplier + " execute=" + executeBonus
+                        + " dmg=" + trueDamage[0]);
 
                 // 攻击降低目标最大生命值
                 AttackHandler.applyReduceMaxHealth(player, stats, event.getEntity());
@@ -1003,63 +1198,16 @@ public final class StatEventHandler {
             }
         }
 
-        // 玩家受伤
-        if (event.getEntity() instanceof ServerPlayer hurtPlayer) {
+        // 玩家受伤：这里只做数值减免。命中判定（虚空脱困 / 复活无敌 / 无敌 / 免疫 / 闪避 / 格挡）
+        // 已上移到 onLivingAttack —— 在那里 cancel 等于「这一击没打中」，与第三方在伤害事件上的
+        // 取消彻底分开，真伤才不会被别家的取消一并吞掉。
+        if (!mainDamageDenied && event.getEntity() instanceof ServerPlayer hurtPlayer) {
             hurtPlayer.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                float amount = event.getAmount();
-
-                // 掉出世界：必须放在无敌判断之前。无敌只免伤，人不传送回来会一直在虚空里下坠，
-                // 等无敌窗口结束就再也救不回来了。
-                if (DefenseHandler.handleVoidEscape(hurtPlayer, stats)) {
-                    event.setCanceled(true);
-                    hurtPlayer.displayClientMessage(
-                            net.minecraft.network.chat.Component.translatable("message.infinitestats.auto_revive_void"),
-                            true
-                    );
-                    NetworkHandler.syncToClient(hurtPlayer);
-                    return;
-                }
-
-                // 复活无敌窗口：取消一切伤害（最高优先级，防止复活瞬间原地再死）
-                if (DefenseHandler.isReviveInvulnerable(hurtPlayer, stats)) {
-                    event.setCanceled(true);
-                    return;
-                }
-
-                // 无敌：取消所有伤害
-                if (DefenseHandler.isInvincible(stats)) {
-                    event.setCanceled(true);
-                    return;
-                }
-
-                // 真实伤害遵循伤害类型的绕过效果标签，不再被本模组减伤或法力护盾削减。
+                // 真实伤害遵循伤害类型的绕过效果标签：不吃本模组减伤 / 摔落减免（反弹同样不参与，
+                // 与旧实现保持一致 —— 真伤是独立结算，不再从这条路径二次触发反伤）。
                 if (event.getSource().is(net.minecraft.tags.DamageTypeTags.BYPASSES_EFFECTS)) return;
 
-                // 检查免疫
-                if (DefenseHandler.isImmune(stats, event.getSource(), hurtPlayer)) {
-                    event.setCanceled(true);
-                    return;
-                }
-
-                // 闪避
-                if (DefenseHandler.handleDodge(hurtPlayer, stats)) {
-                    event.setCanceled(true);
-                    hurtPlayer.displayClientMessage(
-                            net.minecraft.network.chat.Component.translatable("message.infinitestats.dodged"),
-                            true
-                    );
-                    return;
-                }
-
-                // 格挡
-                if (DefenseHandler.handleBlock(hurtPlayer, stats)) {
-                    event.setCanceled(true);
-                    hurtPlayer.displayClientMessage(
-                            net.minecraft.network.chat.Component.translatable("message.infinitestats.blocked"),
-                            true
-                    );
-                    return;
-                }
+                float amount = event.getAmount();
 
                 // 伤害减免
                 amount = DefenseHandler.applyDamageReduction(stats, amount);
@@ -1080,7 +1228,8 @@ public final class StatEventHandler {
                 }
             });
         }
-        if (!event.isCanceled() && event.getAmount() > 0) {
+        // 真伤与「事件是否取消」无关：第三方取消只影响主伤害，真伤照常落地。
+        if (trueDamage[0] > 0) {
             AttackHandler.rememberTrueDamage(event.getEntity(), event.getSource(), trueDamage[0]);
         }
         } catch (Throwable t) {
@@ -1095,13 +1244,15 @@ public final class StatEventHandler {
     @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
     public static void onLivingDamage(LivingDamageEvent event) {
         float bonus = AttackHandler.takeTrueDamage(event.getEntity(), event.getSource());
-        if (event.isCanceled()) return;
+        // 事件被第三方取消：只跳过「主伤害相关」的结算（预拦截 / 吸血 / 额外打击 / 护盾追踪），
+        // 真伤是独立扣血，照常落地 —— 别家的闪避 / 无敌 / 限伤不能吞掉它。
+        final boolean mainDamageResolved = !event.isCanceled();
 
         // 致死伤害预拦截：这一下会打死玩家时直接复活并把伤害清零，玩家不会进入死亡流程。
         // 必须放在真伤结算之前 —— 真伤是直接 setHealth 扣血，等落地后再拦就只剩一具 0 血尸体了。
         // 覆盖范围比死亡事件更广：/kill、绕过无敌的伤害、以及其它模组挂在 die 上的逻辑
         // 都不会再有执行机会（它们拿不到「玩家已死亡」这个前提）。
-        if (event.getAmount() > 0 && event.getEntity() instanceof ServerPlayer hurtPlayer) {
+        if (mainDamageResolved && event.getAmount() > 0 && event.getEntity() instanceof ServerPlayer hurtPlayer) {
             boolean revived = hurtPlayer.getCapability(PlayerStatsProvider.PLAYER_STATS)
                     .map(stats -> DefenseHandler.handleLethalDamage(hurtPlayer, stats, event.getAmount()))
                     .orElse(false);
@@ -1118,15 +1269,17 @@ public final class StatEventHandler {
         }
 
         if (bonus > 0 && Float.isFinite(bonus)) {
-            // 真伤改为直接扣血结算，不叠加进 event.getAmount()：
-            // 叠加会与主伤害一起被后续的抗性提升 / 保护附魔 / 吸收护盾，
-            // 以及其它模组的「单次伤害上限（限伤）」一并削减，导致真伤形同虚设。
-            // event.getAmount() > 0 表示主伤害有效，原版随后会走完 setHealth 与死亡判定，
-            // 死亡 / 掉落 / 击杀归属仍由原版收尾。
-            AttackHandler.applyUnavoidableTrueDamage(event.getEntity(), bonus, event.getAmount() > 0);
+            // 真伤直接扣血结算，不叠加进 event.getAmount()：叠加会与主伤害一起被后续的
+            // 抗性提升 / 保护附魔 / 吸收护盾，以及其它模组的「单次伤害上限（限伤）」一并削减。
+            // 死亡收尾按目标类型分开处理（怪物强制 / 玩家走原版 die），详见 AttackHandler。
+            debugTrueDamage("damage-event target=" + event.getEntity().getName().getString()
+                    + " bonus=" + bonus + " hp=" + event.getEntity().getHealth()
+                    + " canceled=" + event.isCanceled());
+            AttackHandler.applyUnavoidableTrueDamage(event.getEntity(), bonus, getPlayerAttacker(event.getSource()));
         }
+        // 主伤害被取消时，下面这些「基于主伤害数值」的结算全部跳过。
+        if (!mainDamageResolved) return;
         // 生命偷取：此时护甲与减伤已结算，用实际伤害作为基数（而非 LivingHurtEvent 的面板值）。
-        // 被取消的伤害（格挡 / 闪避 / 无敌）会在此处提前返回，因此不会出现「打空也吸血」。
         // 次级直接伤害（范围攻击 / 真伤 / 降上限）不是玩家主动攻击，不计入吸血。
         if (event.getAmount() > 0 && !AttackHandler.isDirectDamageSource(event.getSource())) {
             ServerPlayer source = getPlayerAttacker(event.getSource());
@@ -1159,7 +1312,10 @@ public final class StatEventHandler {
     @SubscribeEvent
     public static void onServerTickEnd(TickEvent.ServerTickEvent event) {
         // 后续模组取消伤害或提前返回时可能没有 LivingDamage；不将残余记录带入下一 tick。
-        if (event.phase == TickEvent.Phase.END) AttackHandler.clearPendingTrueDamage();
+        if (event.phase == TickEvent.Phase.END) {
+            AttackHandler.clearPendingTrueDamage();
+            MELEE_TRUE_DAMAGE_DONE.remove();
+        }
     }
 
     // ========== 负面效果拦截 ==========

@@ -507,12 +507,13 @@ public final class RegressionTests {
         directTarget.setAbsorptionAmount(10);
         directTarget.invulnerableTime = 20;
         float directHealth = directTarget.getHealth();
-        AttackHandler.applyUnavoidableTrueDamage(directTarget, 2, true);
+        AttackHandler.applyUnavoidableTrueDamage(directTarget, 2, player);
         close(directHealth - 2, directTarget.getHealth(), "Direct true damage was reduced, absorbed or swallowed");
         close(10, directTarget.getAbsorptionAmount(), "Direct true damage touched absorption");
-        // 无原版结算收尾时不得留下「0 血存活」的实体
-        AttackHandler.applyUnavoidableTrueDamage(directTarget, 9999, false);
-        helper.assertTrue(directTarget.getHealth() > 0, "Lethal direct true damage left a zero-health entity");
+        // 致死真伤必须自己收尾死亡，不能留下「0 血存活」的实体
+        AttackHandler.applyUnavoidableTrueDamage(directTarget, 9999, player);
+        helper.assertTrue(directTarget.isDeadOrDying() || directTarget.isRemoved(),
+                "Lethal direct true damage left an alive entity");
         ServerPlayer victim = player(helper);
         stats(victim).setAvailablePoints(1000);
         add(stats(victim), "damage_reduction", 400);
