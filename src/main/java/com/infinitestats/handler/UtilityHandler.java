@@ -62,16 +62,16 @@ public class UtilityHandler implements StatEffectHandler {
         // 夜视：每 tick 强制维持（forceAddEffect 绕过其他模组对 Applicable 事件的拦截/清除）
         applyNightVision(player, stats);
 
-        // 每5tick处理磁铁和效果
-        if (tickCount % 5 == 0) {
+        // 磁铁与隐身：按配置间隔处理（默认 5 tick）
+        if (tickCount % Math.max(1, Config.MAGNET_PICKUP_INTERVAL.get()) == 0) {
             applyItemMagnet(player, stats);
             applyXpMagnet(player, stats);
             applyInvisibility(player, stats);
         }
 
-        // 每 4 tick（约 5 次/秒）处理弹射物追踪：降低扫描频率即可大幅降低开销，
-        // 对追踪平滑度影响极小
-        if (tickCount % 4 == 0) {
+        // 弹射物追踪：按配置间隔扫描（默认 4 tick，约 5 次/秒）——
+        // 降低扫描频率即可大幅降低开销，对追踪平滑度影响极小
+        if (tickCount % Math.max(1, Config.PROJECTILE_TRACKING_INTERVAL.get()) == 0) {
             applyProjectileTracking(player, stats);
         }
 
@@ -81,13 +81,13 @@ public class UtilityHandler implements StatEffectHandler {
             applyLootLuck(player, stats);
         }
 
-        // 每0.5秒处理饥饿
-        if (tickCount % 10 == 0) {
+        // 免饥饿：按配置间隔刷新（默认 0.5 秒）
+        if (tickCount % Math.max(1, Config.NO_HUNGER_REFRESH_INTERVAL.get()) == 0) {
             applyNoHunger(player, stats);
         }
 
-        // 每1秒处理自动修理
-        if (tickCount % 20 == 0) {
+        // 自动修理：按配置间隔执行（默认 1 秒）
+        if (tickCount % Math.max(1, Config.AUTO_REPAIR_INTERVAL.get()) == 0) {
             applyAutoRepair(player, stats);
         }
 
@@ -464,8 +464,18 @@ public class UtilityHandler implements StatEffectHandler {
         }
     }
 
-    /** 视锥半角余弦，0.5 约等于玩家正前方 ±60°。 */
+    /** 视锥半角余弦的兜底值（配置未加载时使用），0.5 约等于玩家正前方 ±60°。 */
     private static final double VIEW_CONE_COS = 0.5;
+
+    /** 当前生效的视锥阈值：配置项 Combat.projectileTrackingConeCos。 */
+    private static double viewConeCos() {
+        try {
+            double value = Config.PROJECTILE_TRACKING_CONE_COS.get();
+            return Double.isFinite(value) ? value : VIEW_CONE_COS;
+        } catch (Throwable ignored) {
+            return VIEW_CONE_COS;
+        }
+    }
 
     /** 目标是否落在玩家前方的视锥内。 */
     private static boolean isInPlayerViewCone(ServerPlayer player, LivingEntity target) {
@@ -473,7 +483,7 @@ public class UtilityHandler implements StatEffectHandler {
         Vec3 toTarget = target.getEyePosition().subtract(player.getEyePosition());
         // 贴脸时方向向量退化，直接视作在视野内
         if (toTarget.lengthSqr() < 1.0E-4) return true;
-        return look.dot(toTarget.normalize()) >= VIEW_CONE_COS;
+        return look.dot(toTarget.normalize()) >= viewConeCos();
     }
 
     /** 在候选集合里找离弹射物最近的一个；集合为空时返回 {@code null}。 */
@@ -498,8 +508,9 @@ public class UtilityHandler implements StatEffectHandler {
         if (!stats.isToggleActive("auto_repair")) return;
 
         // 用「有效点数」：repair_amount 被「功能开关」关闭时按 0 计（退化为最小修理量 1）
-        long repairAmount = stats.getEffectiveStatLevel("repair_amount");
-        if (repairAmount <= 0) repairAmount = 1;
+        long repairLevel = stats.getEffectiveStatLevel("repair_amount");
+        double perLevel = Config.AUTO_REPAIR_PER_LEVEL.get();
+        long repairAmount = (long) Math.max(1.0D, Math.round(repairLevel * perLevel));
 
         // 修理所有物品栏（主物品栏 + 盔甲 + 副手 + Curios饰品）
         List<ItemStack> allItems = new ArrayList<>();
@@ -720,6 +731,11 @@ public class UtilityHandler implements StatEffectHandler {
      */
     public static long applyXpGainBonus(PlayerStats stats, long baseXp) {
         float multiplier = 1.0f + stats.getStatValue(StatType.fromId("xp_gain"));
+        // 总倍率上限：配置 0 表示不设上限
+        float cap = Config.XP_GAIN_CAP.get().floatValue();
+        if (cap > 0f) {
+            multiplier = Math.min(multiplier, cap);
+        }
         return (long) (baseXp * multiplier);
     }
 

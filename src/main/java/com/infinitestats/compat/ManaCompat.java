@@ -50,6 +50,16 @@ public final class ManaCompat {
      */
     private static final int POOL_INTERVAL = 20;
 
+    /** 当前生效的魔力池补魔间隔（配置项 Modules.manaPoolRefillInterval）。 */
+    private static int poolInterval() {
+        try {
+            int value = com.infinitestats.Config.MANA_POOL_REFILL_INTERVAL.get();
+            return Math.max(1, value);
+        } catch (Throwable ignored) {
+            return POOL_INTERVAL;
+        }
+    }
+
     private ManaCompat() {}
 
     /** 由 {@code UtilityHandler} 在每个玩家 tick 调用（只在「无限魔力」已解锁时进入）。 */
@@ -212,7 +222,7 @@ public final class ManaCompat {
             try {
                 fillStacks(player, getManaItems);
                 fillStacks(player, getManaAccesories);
-                if (tickCount % POOL_INTERVAL == 0) {
+                if (tickCount % poolInterval() == 0) {
                     fillOwnedPools(player);
                 }
             } catch (Throwable ignored) {

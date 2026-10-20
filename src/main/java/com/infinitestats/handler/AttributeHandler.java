@@ -41,8 +41,8 @@ public class AttributeHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
-        // 每2秒检查属性
-        if (tickCount % 40 == 0) {
+        // 按配置间隔检查属性（默认 40 tick = 2 秒）
+        if (tickCount % Math.max(1, com.infinitestats.Config.ATTRIBUTE_APPLY_INTERVAL.get()) == 0) {
             applyAllAttributes(player, stats);
         }
     }

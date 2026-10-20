@@ -89,8 +89,9 @@ public final class ClientEventHandler {
      */
     private static void accelerateCooldowns(LocalPlayer player) {
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            float cap = CooldownHandler.maxReduction();
             float reduction = stats.getStatValue(StatType.fromId("cooldown_reduction"));
-            if (reduction > CooldownHandler.MAX_REDUCTION) reduction = CooldownHandler.MAX_REDUCTION;
+            if (reduction > cap) reduction = cap;
             // 与服务端共用同一套逻辑（含满额时的清除路径），避免两边算法漂移
             CooldownHandler.apply(player, stats, reduction);
         });

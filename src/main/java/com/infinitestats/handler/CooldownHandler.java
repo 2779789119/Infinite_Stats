@@ -1,5 +1,6 @@
 package com.infinitestats.handler;
 
+import com.infinitestats.compat.CuriosBridge;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.StatType;
 import net.minecraft.server.level.ServerPlayer;
@@ -20,7 +21,8 @@ import java.util.List;
  *       就等于等比加速全部冷却 —— 不需要 Mixin，也不需要反射私有字段。</li>
  *   <li><b>满额（100%）</b>：语义是「零冷却」。用加速实现不了：额外流速为
  *       {@code r/(1-r)}，r = 1 时除零；而且无论推多快都只是"接近零"而非真的零。
- *       所以满额时改为直接清除玩家身上的冷却。</li>
+ *       所以满额时改为直接清除玩家身上的冷却（物品栏 + Curios 饰品栏，见
+ *       {@link #clearVisibleCooldowns(Player, ItemCooldowns)}）。</li>
  * </ol>
  * 倍率换算（未满额时）：属性语义是「冷却时间减少的百分比」，剩余冷却 = 原时长 × (1 - r)，
  * 所以计时器需要跑到 {@code 1/(1-r)} 倍速，即额外部分为 {@code r/(1-r)}。
@@ -31,8 +33,18 @@ import java.util.List;
  */
 public class CooldownHandler implements StatEffectHandler {
 
-    /** 冷却缩减上限，100% 表示零冷却（此时走直接清除路径）。 */
+    /** 冷却缩减上限的兜底值，100% 表示零冷却（此时走直接清除路径）。 */
     public static final float MAX_REDUCTION = 1.0f;
+
+    /** 当前生效的冷却缩减上限（配置项 Combat.cooldownReductionCap）。 */
+    public static float maxReduction() {
+        try {
+            float value = com.infinitestats.Config.COOLDOWN_REDUCTION_CAP.get().floatValue();
+            return value > 0f ? value : MAX_REDUCTION;
+        } catch (Throwable ignored) {
+            return MAX_REDUCTION;
+        }
+    }
 
     @Override
     public String getId() {
@@ -88,7 +100,7 @@ public class CooldownHandler implements StatEffectHandler {
 
         if (reduction >= 1.0f) {
             stats.setCooldownAccum(0);
-            clearVisibleCooldowns(cooldowns, player.getInventory());
+            clearVisibleCooldowns(player, cooldowns);
             return;
         }
 
@@ -101,14 +113,22 @@ public class CooldownHandler implements StatEffectHandler {
     /**
      * 清除玩家身上的物品冷却。
      * <p>
-     * {@link ItemCooldowns} 没有公开的「列出全部冷却」接口，所以这里遍历玩家自己的物品栏
-     * （主栏 + 护甲 + 副手，约 41 格）。触发冷却的物品几乎必然在玩家身上，因此覆盖足够；
+     * {@link ItemCooldowns} 没有公开的「列出全部冷却」接口，所以这里遍历玩家自己戴着 / 带着的物品：
+     * 原版物品栏（主栏 + 护甲 + 副手，约 41 格）加 Curios 饰品槽（装了 Curios 才扫，
+     * 见 {@link CuriosBridge#forEachStack}）。触发冷却的物品几乎必然在这两处，因此覆盖足够；
      * 代价是每 tick 固定几十次 {@code HashMap.remove}，可忽略。
+     * <p>
+     * <b>为什么必须扫饰品栏</b>：不少模组把「有冷却的技能物品」做成饰品（Curios 槽里的东西
+     * 既不在 {@code Inventory.items} 也不在 {@code armor} / {@code offhand} 里）。漏掉它等于
+     * 满额时这些物品的冷却清不掉 —— 而加速路径（{@code < 100%}）只操作 tracker、不看物品在哪，
+     * 所以只有满额这一条会漏。Curios 未加载时该调用是空操作。
      */
-    private static void clearVisibleCooldowns(ItemCooldowns cooldowns, Inventory inventory) {
+    private static void clearVisibleCooldowns(Player player, ItemCooldowns cooldowns) {
+        Inventory inventory = player.getInventory();
         removeAll(cooldowns, inventory.items);
         removeAll(cooldowns, inventory.armor);
         removeAll(cooldowns, inventory.offhand);
+        CuriosBridge.forEachStack(player, stack -> cooldowns.removeCooldown(stack.getItem()));
     }
 
     private static void removeAll(ItemCooldowns cooldowns, List<ItemStack> stacks) {
@@ -121,8 +141,9 @@ public class CooldownHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
+        float cap = maxReduction();
         float reduction = stats.getStatValue("cooldown_reduction");
-        if (reduction > MAX_REDUCTION) reduction = MAX_REDUCTION;
+        if (reduction > cap) reduction = cap;
         apply(player, stats, reduction);
     }
 

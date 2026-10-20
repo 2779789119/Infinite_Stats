@@ -48,6 +48,16 @@ public final class AutoFish {
      */
     private static final int MIN_BITE_WAIT = 1;
 
+    /** 当前生效的咬钩等待 tick（配置项 Modules.autoFishInstantBiteTicks）。 */
+    private static int minBiteWait() {
+        try {
+            int value = com.infinitestats.Config.AUTO_FISH_INSTANT_BITE_TICKS.get();
+            return Math.max(0, value);
+        } catch (Throwable ignored) {
+            return MIN_BITE_WAIT;
+        }
+    }
+
     /** 各玩家下一次允许抛竿的 tickCount（收杆后的随机延迟）。 */
     private static final Map<UUID, Long> RECAST_AT = new HashMap<>();
 
@@ -93,6 +103,15 @@ public final class AutoFish {
     /** 自动抛竿的视线检查距离（格）。原版浮标从眼前 0.6 格处沿视线以约 1 格/tick 抛出，落点最远 10 格上下。 */
     private static final double AIM_CHECK_DISTANCE = 12.0;
 
+    /** 当前生效的视线检查距离（配置项 Modules.autoFishAimDistance）。 */
+    private static double aimCheckDistance() {
+        try {
+            return com.infinitestats.Config.AUTO_FISH_AIM_DISTANCE.get();
+        } catch (Throwable ignored) {
+            return AIM_CHECK_DISTANCE;
+        }
+    }
+
     /**
      * 视线前方是不是水面。
      * <p>
@@ -105,7 +124,7 @@ public final class AutoFish {
      */
     private static boolean aimingAtWater(ServerPlayer player) {
         Vec3 eye = player.getEyePosition();
-        Vec3 end = eye.add(player.getLookAngle().scale(AIM_CHECK_DISTANCE));
+        Vec3 end = eye.add(player.getLookAngle().scale(aimCheckDistance()));
         BlockHitResult hit = player.level().clip(new ClipContext(eye, end,
                 ClipContext.Block.COLLIDER, ClipContext.Fluid.ANY, player));
         if (hit.getType() != HitResult.Type.BLOCK) return false;
@@ -121,11 +140,12 @@ public final class AutoFish {
      */
     private static void compressBiteTimers(FishingHook hook) {
         FishingHookAccessor acc = (FishingHookAccessor) hook;
-        if (acc.infinitestats$getTimeUntilLured() > MIN_BITE_WAIT) {
-            acc.infinitestats$setTimeUntilLured(MIN_BITE_WAIT);
+        int wait = minBiteWait();
+        if (acc.infinitestats$getTimeUntilLured() > wait) {
+            acc.infinitestats$setTimeUntilLured(wait);
         }
-        if (acc.infinitestats$getTimeUntilHooked() > MIN_BITE_WAIT) {
-            acc.infinitestats$setTimeUntilHooked(MIN_BITE_WAIT);
+        if (acc.infinitestats$getTimeUntilHooked() > wait) {
+            acc.infinitestats$setTimeUntilHooked(wait);
         }
     }
 

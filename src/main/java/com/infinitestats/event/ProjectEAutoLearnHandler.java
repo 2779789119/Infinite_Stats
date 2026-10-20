@@ -54,6 +54,15 @@ public final class ProjectEAutoLearnHandler {
     /** 兜底扫描间隔（tick）：40 tick = 2 秒。 */
     private static final int SCAN_INTERVAL = 40;
 
+    /** 当前生效的兜底扫描间隔（配置项 Modules.peAutoLearnScanInterval）。 */
+    private static int scanInterval() {
+        try {
+            return Math.max(1, Config.PE_AUTO_LEARN_SCAN_INTERVAL.get());
+        } catch (Throwable ignored) {
+            return SCAN_INTERVAL;
+        }
+    }
+
     private ProjectEAutoLearnHandler() {
     }
 
@@ -148,8 +157,8 @@ public final class ProjectEAutoLearnHandler {
         Player player = event.player;
         if (player == null || player.level().isClientSide) return;
         if (!enabled(player)) return;
-        // 每隔 SCAN_INTERVAL tick 扫描一次；tickCount 为玩家存活总 tick，取模即可均匀分布
-        if ((player.tickCount % SCAN_INTERVAL) != 0) return;
+        // 每隔配置间隔扫描一次；tickCount 为玩家存活总 tick，取模即可均匀分布
+        if ((player.tickCount % scanInterval()) != 0) return;
         scanInventory(player);
     }
 

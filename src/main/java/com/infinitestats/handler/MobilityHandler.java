@@ -33,6 +33,15 @@ public class MobilityHandler implements StatEffectHandler {
      */
     public static final float AUTO_STEP_HEIGHT = 1.25f;
 
+    /** 当前生效的自动跨越高度：优先读配置（Modules.autoStepHeight），未加载时用常量兜底。 */
+    public static float autoStepHeight() {
+        try {
+            return com.infinitestats.Config.AUTO_STEP_HEIGHT.get().floatValue();
+        } catch (Throwable ignored) {
+            return AUTO_STEP_HEIGHT;
+        }
+    }
+
     @Override
     public String getId() {
         return "mobility";
@@ -45,8 +54,8 @@ public class MobilityHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
-        // 每5tick更新飞行状态和跨越高度
-        if (tickCount % 5 == 0) {
+        // 按配置间隔更新飞行状态和跨越高度（默认 5 tick）
+        if (tickCount % Math.max(1, com.infinitestats.Config.MOBILITY_UPDATE_INTERVAL.get()) == 0) {
             updateFlight(player, stats, false);
             updateStepHeight(player, stats);
         }
@@ -160,7 +169,7 @@ public class MobilityHandler implements StatEffectHandler {
 
     /** 该玩家的有效跨越高度（基准 × (1 + 百分比加成)；加成为负时不参与，与原实现一致）。 */
     public static float stepHeightOf(PlayerStats stats) {
-        float base = stats.isToggleActive("auto_step") ? AUTO_STEP_HEIGHT : DEFAULT_STEP_HEIGHT;
+        float base = stats.isToggleActive("auto_step") ? autoStepHeight() : DEFAULT_STEP_HEIGHT;
         float bonus = stats.getStatValue(StatType.fromId("step_height"));
         return bonus > 0 ? base * (1.0f + bonus) : base;
     }
@@ -185,7 +194,7 @@ public class MobilityHandler implements StatEffectHandler {
      * 属性同步包，每 tick 无脑重写会变成刷包。
      */
     public static void applyStepHeight(LivingEntity entity, PlayerStats stats) {
-        float base = stats.isToggleActive("auto_step") ? AUTO_STEP_HEIGHT : DEFAULT_STEP_HEIGHT;
+        float base = stats.isToggleActive("auto_step") ? autoStepHeight() : DEFAULT_STEP_HEIGHT;
         float target = stepHeightOf(stats);
 
         // 原版通道：字段固定写基准值（不写目标值，避免与下面的属性重复相加）

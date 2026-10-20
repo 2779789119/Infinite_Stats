@@ -63,8 +63,8 @@ public class DefenseHandler implements StatEffectHandler {
         // 这段最长 2 秒的空窗里白跳好几跳伤害。名单为空或开关未开时零开销。
         applyDebuffImmunity(player, stats);
 
-        // 无敌：每秒恢复满生命值
-        if (tickCount % 20 == 0) {
+        // 无敌：按配置间隔恢复满生命值（默认 20 tick = 每秒）
+        if (tickCount % Config.INVINCIBILITY_HEAL_INTERVAL.get() == 0) {
             applyInvincibilityTick(player, stats);
         }
 
@@ -73,8 +73,8 @@ public class DefenseHandler implements StatEffectHandler {
             applyHealthRegen(player, stats);
         }
 
-        // 每2秒处理吸收护盾（setAbsorptionAmount 会同步实体数据，不宜每 tick 调用）
-        if (tickCount % 40 == 0) {
+        // 按配置间隔处理吸收护盾（setAbsorptionAmount 会同步实体数据，不宜每 tick 调用）
+        if (tickCount % Config.ABSORPTION_REFRESH_INTERVAL.get() == 0) {
             applyAbsorptionShield(player, stats);
         }
     }
@@ -468,7 +468,8 @@ public class DefenseHandler implements StatEffectHandler {
      * @return true表示格挡成功，取消伤害
      */
     public static boolean handleBlock(ServerPlayer player, PlayerStats stats) {
-        float blockChance = stats.getStatValue(StatType.fromId("block_chance"));
+        float blockChance = Math.min(stats.getStatValue(StatType.fromId("block_chance")),
+                Config.BLOCK_CHANCE_CAP.get().floatValue());
         if (blockChance > 0 && player.getRandom().nextFloat() < blockChance) {
             return true;
         }
@@ -480,7 +481,8 @@ public class DefenseHandler implements StatEffectHandler {
      * @return true表示闪避成功，取消伤害
      */
     public static boolean handleDodge(ServerPlayer player, PlayerStats stats) {
-        float dodgeChance = stats.getStatValue(StatType.fromId("dodge_chance"));
+        float dodgeChance = Math.min(stats.getStatValue(StatType.fromId("dodge_chance")),
+                Config.DODGE_CHANCE_CAP.get().floatValue());
         if (dodgeChance > 0 && player.getRandom().nextFloat() < dodgeChance) {
             return true;
         }
@@ -493,6 +495,9 @@ public class DefenseHandler implements StatEffectHandler {
     public static float applyDamageReduction(PlayerStats stats, float amount) {
         float reduction = stats.getStatValue(StatType.fromId("damage_reduction"));
         if (reduction != 0) {
+            // 减免上限由配置决定：默认 1.0 允许减到 100%（免疫），设成 0.9 则最多减 90%
+            float cap = Config.DAMAGE_REDUCTION_CAP.get().floatValue();
+            reduction = Math.min(reduction, cap);
             float factor = 1.0f - reduction;
             if (factor <= 0) return 0; // 减免≥100% → 免疫
             return amount * factor;
@@ -549,7 +554,8 @@ public class DefenseHandler implements StatEffectHandler {
      */
     public static void applyDamageReflection(ServerPlayer player, PlayerStats stats, 
             float amount, LivingEntity attacker) {
-        float reflection = stats.getStatValue(StatType.fromId("damage_reflection"));
+        float reflection = Math.min(stats.getStatValue(StatType.fromId("damage_reflection")),
+                Config.DAMAGE_REFLECTION_CAP.get().floatValue());
         if (reflection > 0 && attacker != null && attacker != player) {
             float reflectDmg = amount * reflection;
             if (reflectDmg > 0) {

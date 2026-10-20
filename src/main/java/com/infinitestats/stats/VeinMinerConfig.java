@@ -109,11 +109,27 @@ public class VeinMinerConfig {
     /** true = 用准星对着方块时，把会被连锁的方块描出边框（客户端本地计算，纯显示） */
     private boolean showPreview = true;
 
-    /** 每破坏一格的饥饿消耗（0 = 不消耗） */
-    private double exhaustionPerBlock = 0.005D;
+    /** 每破坏一格的饥饿消耗（0 = 不消耗）。默认值来自服务端配置。 */
+    private double exhaustionPerBlock = defaultExhaustion();
 
-    /** 每破坏一格消耗的经验点数（0 = 不消耗） */
-    private double xpPerBlock = 0.0D;
+    /** 每破坏一格消耗的经验点数（0 = 不消耗）。默认值来自服务端配置。 */
+    private double xpPerBlock = defaultXp();
+
+    private static double defaultExhaustion() {
+        try {
+            return com.infinitestats.Config.VEIN_MINER_EXHAUSTION_PER_BLOCK.get();
+        } catch (Throwable ignored) {
+            return 0.005D;
+        }
+    }
+
+    private static double defaultXp() {
+        try {
+            return com.infinitestats.Config.VEIN_MINER_XP_PER_BLOCK.get();
+        } catch (Throwable ignored) {
+            return 0.0D;
+        }
+    }
 
     // ======================== 读写 ========================
 

@@ -28,8 +28,13 @@ public final class StatType {
     /** 镜像写入的额外属性注册名（例如 Connector 环境下 Fabric 侧的等价属性） */
     private final List<String> mirrorAttributeNames;
     private final List<Supplier<Attribute>> mirrorAttributeSuppliers;
-    private final float perPointValue;
-    private final int maxLevel;
+    /** 当前生效的每点数值：默认取 {@link #defaultPerPointValue}，可被配置文件覆盖。 */
+    private float perPointValue;
+    /** 当前生效的点数上限：默认取 {@link #defaultMaxLevel}，可被配置文件覆盖。 */
+    private int maxLevel;
+    /** 出厂默认值（配置缺失 / 未加载时的兜底）。 */
+    private final float defaultPerPointValue;
+    private final int defaultMaxLevel;
     private final String description;
     private final boolean hidden;
 
@@ -72,13 +77,18 @@ public final class StatType {
         this.translationKey = builder.translationKey;
         this.category = builder.category;
         this.behavior = builder.behavior;
-        this.calculator = builder.calculator;
         this.attributeSupplier = builder.attributeSupplier;
         this.attributeName = builder.attributeName;
         this.mirrorAttributeNames = List.copyOf(builder.mirrorAttributeNames);
         this.mirrorAttributeSuppliers = List.copyOf(builder.mirrorAttributeSuppliers);
         this.perPointValue = builder.perPointValue;
         this.maxLevel = builder.maxLevel;
+        this.defaultPerPointValue = builder.perPointValue;
+        this.defaultMaxLevel = builder.maxLevel;
+        // 开关型属性的激活阈值会被配置改写，所以计算器必须读实例字段而不是构造期的快照。
+        this.calculator = builder.behavior == StatBehavior.TOGGLE
+                ? (points, value) -> points >= this.maxLevel ? 1 : 0
+                : builder.calculator;
         this.description = builder.description;
         this.hidden = builder.hidden;
     }
@@ -183,11 +193,7 @@ public final class StatType {
         }
 
         public StatType build() {
-            // 开关型属性使用 maxLevel 作为激活所需点数
-            if (this.behavior == StatBehavior.TOGGLE) {
-                final long threshold = this.maxLevel;
-                this.calculator = (points, value) -> points >= threshold ? 1 : 0;
-            }
+            // 开关型的激活阈值在 StatType 构造器里绑定到实例字段，便于配置改写。
             return new StatType(this);
         }
     }
@@ -491,7 +497,7 @@ public final class StatType {
 
             create("repulsion").category(StatCategory.ATTACK)
                 .perPointValue(0.5f)
-                .description("持续推开周围的生物与飞行中的箭矢等弹射物（半径每点 +0.5 格）")
+                .description("持续推开周围的敌对生物与它们射出的箭矢等弹射物（半径每点 +0.5 格）")
                 .build(),
 
             create("infinite_arrows").category(StatCategory.ATTACK)
@@ -1069,6 +1075,88 @@ public final class StatType {
 
     public int getMaxLevel() {
         return maxLevel;
+    }
+
+    /** 出厂默认的每点数值（配置未覆盖时生效）。 */
+    public float getDefaultPerPointValue() {
+        return defaultPerPointValue;
+    }
+
+    /** 出厂默认的点数上限 / 开关解锁点数（配置未覆盖时生效）。 */
+    public int getDefaultMaxLevel() {
+        return defaultMaxLevel;
+    }
+
+    // ========== 配置调参 ==========
+
+    /**
+     * 内置属性的出厂数值快照。
+     * <p>
+     * 这份快照只服务于 {@link com.infinitestats.Config} 生成配置项的默认值，
+     * <b>刻意不读配置</b>：Config 的静态初始化会回头引用本类，这里若再读 Config 就会形成
+     * 类初始化循环。因此快照值恒等于代码里写死的默认值。
+     */
+    public static final class TuningDefault {
+        private final String id;
+        private final float perPoint;
+        private final int maxPoints;
+        private final boolean toggle;
+
+        TuningDefault(String id, float perPoint, int maxPoints, boolean toggle) {
+            this.id = id;
+            this.perPoint = perPoint;
+            this.maxPoints = maxPoints;
+            this.toggle = toggle;
+        }
+
+        public String getId() {
+            return id;
+        }
+
+        public float getPerPoint() {
+            return perPoint;
+        }
+
+        public int getMaxPoints() {
+            return maxPoints;
+        }
+
+        public boolean isToggle() {
+            return toggle;
+        }
+    }
+
+    /** 内置属性的出厂数值列表（顺序与注册顺序一致）。 */
+    public static List<TuningDefault> tuningDefaults() {
+        List<TuningDefault> list = new ArrayList<>(BUILTIN_STATS.length);
+        for (StatType stat : BUILTIN_STATS) {
+            list.add(new TuningDefault(stat.id, stat.defaultPerPointValue, stat.defaultMaxLevel,
+                    stat.behavior == StatBehavior.TOGGLE));
+        }
+        return list;
+    }
+
+    /**
+     * 把配置文件中的「每点数值 / 点数上限」应用到所有已注册属性（内置 + 外部）。
+     * <p>
+     * 外部属性（{@code attr.*}）不会生成独立配置项，传入的是出厂默认值，因此等于不变。
+     * 配置读取失败（尚未加载）时保留当前值，不会把属性打成 0。
+     *
+     * @return 实际发生变化的属性数量（用于日志）
+     */
+    public static int applyTuningFromConfig() {
+        int changed = 0;
+        for (StatType stat : ALL_STATS_LIST) {
+            float perPoint = com.infinitestats.Config.statPerPoint(stat.id, stat.defaultPerPointValue);
+            int maxPoints = com.infinitestats.Config.statMaxPoints(stat.id, stat.defaultMaxLevel);
+            if (maxPoints < 1) maxPoints = stat.defaultMaxLevel;
+            if (perPoint != stat.perPointValue || maxPoints != stat.maxLevel) {
+                changed++;
+            }
+            stat.perPointValue = perPoint;
+            stat.maxLevel = maxPoints;
+        }
+        return changed;
     }
 
     public boolean isToggle() {

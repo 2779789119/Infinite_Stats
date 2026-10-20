@@ -18,9 +18,11 @@ import net.minecraft.world.damagesource.DamageType;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -124,7 +126,8 @@ public class AttackHandler implements StatEffectHandler {
         boolean melee = event.getSource().getDirectEntity() instanceof ServerPlayer;
         if (melee) raw = Math.max(raw, estimateMeleeDamage(player, event.getEntity()));
         boolean isProjectile = event.getSource().getDirectEntity() instanceof Projectile;
-        boolean isFullAttack = player.getAttackStrengthScale(0.5f) > 0.9f;
+        boolean isFullAttack = player.getAttackStrengthScale(0.5f)
+                > com.infinitestats.Config.FULL_CHARGE_THRESHOLD.get().floatValue();
         float projected = raw
                 * calculateCritMultiplier(player, stats, isFullAttack)
                 * calculateProjectileBonus(stats, isProjectile);
@@ -162,7 +165,7 @@ public class AttackHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
-        // 排斥：持续推开周围的生物与飞行中的弹射物
+        // 排斥：持续推开周围的敌对生物与它们射出的弹射物
         applyRepulsion(player, stats, tickCount);
     }
 
@@ -193,9 +196,10 @@ public class AttackHandler implements StatEffectHandler {
         if (!isFullAttack) return 1.0f;
 
         float critChance = stats.getStatValue(StatType.fromId("crit_chance"));
+        critChance = Math.min(critChance, com.infinitestats.Config.CRIT_CHANCE_CAP.get().floatValue());
         if (critChance > 0 && player.getRandom().nextFloat() < critChance) {
             float critDamage = stats.getStatValue(StatType.fromId("crit_damage"));
-            return 1.5f + critDamage;
+            return com.infinitestats.Config.CRIT_BASE_MULTIPLIER.get().floatValue() + critDamage;
         }
         return 1.0f;
     }
@@ -205,7 +209,8 @@ public class AttackHandler implements StatEffectHandler {
      */
     public static float applyArmorPenetration(PlayerStats stats, LivingEntity target,
                                              DamageSource source, float amount) {
-        float penetration = Math.min(1, Math.max(0, stats.getStatValue("armor_penetration")));
+        float penCap = com.infinitestats.Config.ARMOR_PENETRATION_CAP.get().floatValue();
+        float penetration = Math.min(penCap, Math.max(0, stats.getStatValue("armor_penetration")));
         if (penetration == 0 || amount <= 0 || source.is(DamageTypeTags.BYPASSES_ARMOR)) return amount;
         return compensateArmor(amount, target.getArmorValue(),
                 (float) target.getAttributeValue(Attributes.ARMOR_TOUGHNESS), penetration);
@@ -242,7 +247,8 @@ public class AttackHandler implements StatEffectHandler {
      *                     {@code StatEventHandler#onLivingDamage}。
      */
     public static void applyLifeSteal(ServerPlayer player, PlayerStats stats, float damageAmount) {
-        float lifeSteal = stats.getStatValue(StatType.fromId("life_steal"));
+        float lifeSteal = Math.min(stats.getStatValue(StatType.fromId("life_steal")),
+                com.infinitestats.Config.LIFE_STEAL_CAP.get().floatValue());
         if (lifeSteal > 0 && damageAmount > 0) {
             player.heal(damageAmount * lifeSteal);
         }
@@ -255,7 +261,7 @@ public class AttackHandler implements StatEffectHandler {
         float aoeSteal = stats.getStatValue(StatType.fromId("life_steal_aoe"));
         if (aoeSteal <= 0 || damageAmount <= 0) return;
 
-        double range = 5.0;
+        double range = com.infinitestats.Config.AOE_LIFE_STEAL_RANGE.get();
         AABB area = new AABB(
                 target.getX() - range, target.getY() - range, target.getZ() - range,
                 target.getX() + range, target.getY() + range, target.getZ() + range
@@ -266,7 +272,8 @@ public class AttackHandler implements StatEffectHandler {
 
         float totalAoeDamage = 0;
         for (LivingEntity nearbyMob : nearby) {
-            float aoeDmg = damageAmount * aoeSteal * 0.3f;
+            float aoeDmg = (float) (damageAmount * aoeSteal
+                    * com.infinitestats.Config.AOE_LIFE_STEAL_DAMAGE_RATIO.get());
             // 使用本模组"直接伤害"类型：因其 message_id 命中 isDirectDamageSource，
             // 受击实体再次进入 onLivingHurt 时会被拦截，避免对周围实体造成 playerAttack
             // 伤害后反复重入攻击分支形成同步无限递归（最终 StackOverflow 并崩溃）。
@@ -279,7 +286,7 @@ public class AttackHandler implements StatEffectHandler {
         }
 
         if (totalAoeDamage > 0) {
-            player.heal(totalAoeDamage * 0.5f);
+            player.heal((float) (totalAoeDamage * com.infinitestats.Config.AOE_LIFE_STEAL_HEAL_RATIO.get()));
         }
     }
 
@@ -524,8 +531,18 @@ public class AttackHandler implements StatEffectHandler {
         target.setHealth((float) Math.min(oldHealth, maxHp.getValue()));
     }
 
-    /** 「额外打击」的次数上限，与属性面板上的 maxLevel 保持一致。 */
+    /** 「额外打击」的次数兜底上限（配置缺失时使用）。 */
     public static final int MAX_EXTRA_STRIKES = 8;
+
+    /** 实际生效的额外打击次数上限：优先读配置，配置尚未加载时用常量兜底。 */
+    public static int maxExtraStrikes() {
+        try {
+            int value = com.infinitestats.Config.MAX_EXTRA_STRIKES.get();
+            return value >= 1 ? value : MAX_EXTRA_STRIKES;
+        } catch (Throwable ignored) {
+            return MAX_EXTRA_STRIKES;
+        }
+    }
 
     /** 「额外打击」每次打击的伤害比例（默认 0.2 = 20%），配置尚未加载时回退到默认值。 */
     public static double extraStrikeDamageRatio() {
@@ -544,7 +561,7 @@ public class AttackHandler implements StatEffectHandler {
     public static int extraStrikeCount(PlayerStats stats) {
         float value = stats.getStatValue("extra_strike");
         if (!(value > 0) || !Float.isFinite(value)) return 0;
-        return Math.min(MAX_EXTRA_STRIKES, (int) value);
+        return Math.min(maxExtraStrikes(), (int) value);
     }
 
     /**
@@ -591,14 +608,14 @@ public class AttackHandler implements StatEffectHandler {
         List<LivingEntity> nearby = player.level().getEntitiesOfClass(LivingEntity.class, area,
                 e -> e.isAlive() && e != origin && e != player && !e.isAlliedTo(player));
 
-        float dmg = baseDamage * 0.5f;
+        float dmg = (float) (baseDamage * com.infinitestats.Config.SCOPE_ATTACK_DAMAGE_RATIO.get());
         for (LivingEntity e : nearby) {
             applyDirectDamage(player, e, dmg);
         }
     }
 
     /**
-     * 应用排斥：每 tick 把周围的生物与飞行中的弹射物推开。
+     * 应用排斥：每 tick 把周围的敌对生物（及其射出的弹射物）推开。
      * <p>
      * 行为对齐 ProjectE 的 SWRG 护盾（{@code WorldHelper#repelEntitiesSWRG}）：
      * 作用范围是以玩家为中心的立方体，推力沿"玩家 → 目标"方向，大小为
@@ -606,10 +623,13 @@ public class AttackHandler implements StatEffectHandler {
      * 与距离无关的恒定推力（约 0.65 单位/tick），所以生物一进入范围就会被弹飞出去，
      * 而不是被稳稳地挡在边缘。
      * <p>
-     * 两处与 ProjectE 的差异：
+     * 三处与 ProjectE 的差异：
      * 1. 半径由属性点数缩放（每点 +0.5 格），ProjectE 是固定 5 格；
      * 2. 额外乘以目标的击退抗性系数（与 {@code Entity#push(Entity)} 一致），
-     *    否则百抗生物（铁傀儡等）也会被推飞。
+     *    否则百抗生物（铁傀儡等）也会被推飞；
+     * 3. 只推<b>敌对生物</b>（{@link Enemy} 或注册为 {@link MobCategory#MONSTER} 的生物），
+     *    动物 / 村民 / NPC / 其他玩家不再被弹开；飞行中的弹射物只处理敌对生物射出的
+     *    （含无主的发射器陷阱弹射物），玩家自己的弹射物不受影响。
      */
     public static void applyRepulsion(ServerPlayer player, PlayerStats stats, long tickCount) {
         float radius = stats.getStatValue(StatType.fromId("repulsion"));
@@ -626,8 +646,8 @@ public class AttackHandler implements StatEffectHandler {
     }
 
     /**
-     * 排斥的目标筛选，规则同 ProjectE：只推生物（不推玩家）与"未落地"的弹射物，
-     * 且不推自己扔出去的弹射物；旁观者一律不推。
+     * 排斥的目标筛选：只推敌对生物与敌对生物射出的、尚未落地的弹射物；
+     * 旁观者、玩家自己、自己扔出去的弹射物一律不推。
      */
     private static boolean isRepellable(Entity entity, ServerPlayer player) {
         if (entity.isSpectator() || entity == player) return false;
@@ -635,9 +655,23 @@ public class AttackHandler implements StatEffectHandler {
             // 已落地的弹射物（插在地上的箭等）不动
             if (projectile.onGround()) return false;
             Entity owner = projectile.getOwner();
-            return owner == null || !player.getUUID().equals(owner.getUUID());
+            // 无主弹射物（发射器 / 陷阱箭等）视为敌对；玩家自己射出的不推
+            if (owner == null) return true;
+            if (player.getUUID().equals(owner.getUUID())) return false;
+            return isHostile(owner);
         }
-        return entity instanceof Mob;
+        return isHostile(entity);
+    }
+
+    /**
+     * 是否为敌对生物：原版 {@link Enemy}（怪物 / 史莱姆 / 恶魂 / 幻翼等）
+     * 或注册在 {@link MobCategory#MONSTER} 分类下的模组生物。
+     * 中立生物（末影人、僵尸猪灵等）原版即实现 {@link Enemy}，因此同样会被推开。
+     */
+    private static boolean isHostile(Entity entity) {
+        if (!(entity instanceof Mob mob)) return false;
+        if (mob instanceof Enemy) return true;
+        return mob.getType().getCategory() == MobCategory.MONSTER;
     }
 
     /**

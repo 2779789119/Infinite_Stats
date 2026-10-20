@@ -73,6 +73,16 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
      */
     private static final int MAX_CRAFTS_PER_CLICK = 64;
 
+    /** 当前生效的单次点击合成上限（配置项 Modules.maxCraftsPerClick）。 */
+    private static int maxCraftsPerClick() {
+        try {
+            int value = com.infinitestats.Config.MAX_CRAFTS_PER_CLICK.get();
+            return Math.max(1, value);
+        } catch (Throwable ignored) {
+            return MAX_CRAFTS_PER_CLICK;
+        }
+    }
+
     public PortableCraftingMenu(int windowId, Inventory inv) {
         super(ModMenuTypes.PORTABLE_CRAFTING_MENU.get(), windowId);
         this.player = inv.player;
@@ -225,7 +235,7 @@ public class PortableCraftingMenu extends AbstractContainerMenu {
             craftBudgetTick = now;
             craftsMadeThisTick = 0;
         }
-        if (craftsMadeThisTick >= MAX_CRAFTS_PER_CLICK) return false;
+        if (craftsMadeThisTick >= maxCraftsPerClick()) return false;
         craftsMadeThisTick++;
         return true;
     }

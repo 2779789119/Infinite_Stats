@@ -80,11 +80,27 @@ public class OreVisionConfig {
 
     // ======================== 字段 ========================
 
-    /** 扫描半径（方块）。 */
-    private int range = 24;
+    /** 扫描半径（方块）。默认值来自服务端配置，配置未加载时回退到 24。 */
+    private int range = defaultRange();
 
-    /** 单次最多描边多少格矿石。 */
-    private int maxBlocks = 1500;
+    /** 单次最多描边多少格矿石。默认值来自服务端配置，配置未加载时回退到 1500。 */
+    private int maxBlocks = defaultMaxBlocks();
+
+    private static int defaultRange() {
+        try {
+            return com.infinitestats.Config.ORE_VISION_DEFAULT_RANGE.get();
+        } catch (Throwable ignored) {
+            return 24;
+        }
+    }
+
+    private static int defaultMaxBlocks() {
+        try {
+            return com.infinitestats.Config.ORE_VISION_MAX_BLOCKS.get();
+        } catch (Throwable ignored) {
+            return 1500;
+        }
+    }
 
     /** true = 必须潜行才显示（免得平时一直挂着满屏边框）。 */
     private boolean requireSneak = false;

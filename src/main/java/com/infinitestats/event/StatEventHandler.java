@@ -173,14 +173,18 @@ public final class StatEventHandler {
         }
 
         // 击杀获得经验 + 击杀回蓝
-        if (event.getSource().getEntity() instanceof ServerPlayer player) {
+        // 默认只认玩家本人造成的击杀；配置打开后，召唤物 / 宠物造成的击杀也算在主人头上。
+        ServerPlayer killer = Config.XP_PER_KILL_COUNT_SUMMONS.get()
+                ? getPlayerDamageOwner(event.getSource())
+                : (event.getSource().getEntity() instanceof ServerPlayer direct ? direct : null);
+        if (killer != null) {
             var target = event.getEntity();
             long baseXp = (long) Config.XP_PER_KILL_BASE.get()
                     + (long) (target.getMaxHealth() * Config.XP_PER_KILL_HEALTH_FACTOR.get());
 
-            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            killer.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
                 long xp = UtilityHandler.applyXpGainBonus(stats, baseXp);
-                addXpAndSync(player, stats, xp);
+                addXpAndSync(killer, stats, xp);
             });
         }
     }
@@ -282,7 +286,8 @@ public final class StatEventHandler {
         if (!(event.getContainer() instanceof MerchantMenu menu)) return;
 
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-            float rate = Math.min(0.9f, Math.max(0f, stats.getStatValue("trade_discount")));
+            float rate = Math.min(Config.VILLAGER_DISCOUNT_CAP.get().floatValue(),
+                    Math.max(0f, stats.getStatValue("trade_discount")));
             MerchantOffers offers = menu.getOffers();
             for (int i = 0; i < offers.size(); i++) {
                 applyTradeDiscount(offers.get(i), rate);
@@ -490,7 +495,8 @@ public final class StatEventHandler {
 
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             // 双倍掉落
-            float doubleLootChance = stats.getStatValue(StatType.fromId("double_loot"));
+            float doubleLootChance = Math.min(stats.getStatValue(StatType.fromId("double_loot")),
+                    Config.DOUBLE_LOOT_CAP.get().floatValue());
             if (doubleLootChance > 0 && player.getRandom().nextFloat() < doubleLootChance) {
                 // 先复制一份再遍历，防止 ConcurrentModificationException
                 java.util.List<ItemEntity> copies = new java.util.ArrayList<>();
@@ -1155,7 +1161,7 @@ public final class StatEventHandler {
                 if (executeDmg > 0) {
                     LivingEntity target = event.getEntity();
                     float hpPct = target.getHealth() / target.getMaxHealth();
-                    if (hpPct < 0.3f) {
+                    if (hpPct < Config.EXECUTE_THRESHOLD.get().floatValue()) {
                         executeBonus = (1.0f - hpPct) * executeDmg * target.getMaxHealth();
                         event.setAmount(event.getAmount() + executeBonus);
                     }
@@ -1382,11 +1388,15 @@ public final class StatEventHandler {
                 t.printStackTrace();
             }
             try {
-                // 被动经验 - 每玩家独立计数器
-                stats.incrementPassiveTickCounter();
-                if (stats.getPassiveTickCounter() >= Config.PASSIVE_XP_INTERVAL.get()) {
+                // 被动经验 - 每玩家独立计数器（总开关关闭时只重置计数，避免重新开启后立刻结算一次）
+                if (Config.PASSIVE_XP_ENABLED.get()) {
+                    stats.incrementPassiveTickCounter();
+                    if (stats.getPassiveTickCounter() >= Config.PASSIVE_XP_INTERVAL.get()) {
+                        stats.resetPassiveTickCounter();
+                        addXpAndSync(player, stats, Config.PASSIVE_XP_AMOUNT.get());
+                    }
+                } else {
                     stats.resetPassiveTickCounter();
-                    addXpAndSync(player, stats, Config.PASSIVE_XP_AMOUNT.get());
                 }
             } catch (Throwable t) {
                 t.printStackTrace();

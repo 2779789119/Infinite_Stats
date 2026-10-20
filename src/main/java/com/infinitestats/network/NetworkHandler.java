@@ -2962,8 +2962,17 @@ public final class NetworkHandler {
         }
     }
 
-    /** 生物面板「改生物」的距离基数（格）。 */
+    /** 生物面板「改生物」的距离基数兜底值（格）。 */
     private static final double EDIT_RANGE_BASE = 16.0D;
+
+    /** 当前生效的距离基数（配置项 Modules.entityPanelEditRange）。 */
+    private static double editRangeBase() {
+        try {
+            return Config.ENTITY_PANEL_EDIT_RANGE.get();
+        } catch (Throwable ignored) {
+            return EDIT_RANGE_BASE;
+        }
+    }
 
     /** 诊断开关：{@code -Dinfinitestats.debugEntityPanel=true} 时，每次「改不动」都往日志打一行原因。 */
     private static final boolean DEBUG_ENTITY_PANEL =
@@ -2995,7 +3004,7 @@ public final class NetworkHandler {
                 .map(stats -> stats.isToggleActive(EntityPanelWand.STAT_ID))
                 .orElse(false);
 
-        double reach = EDIT_RANGE_BASE;
+        double reach = editRangeBase();
         AttributeInstance reachAttribute = player.getAttribute(
                 net.minecraftforge.common.ForgeMod.ENTITY_REACH.get());
         if (reachAttribute != null) reach = Math.max(reach, reachAttribute.getValue() + 4.0D);

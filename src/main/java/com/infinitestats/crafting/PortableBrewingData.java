@@ -57,8 +57,18 @@ public class PortableBrewingData implements Container, ContainerData {
     /** 原版「一份烈焰粉 = 20 轮」的读数，这里只用于把界面燃料条画满。 */
     private static final int INFINITE_FUEL_READING = 20;
 
-    /** 一轮酿造的时长（tick，与原版一致）。 */
+    /** 一轮酿造的时长兜底值（tick，与原版一致）。 */
     private static final int BREW_TIME = 400;
+
+    /** 当前生效的一轮酿造时长（配置项 Modules.portableBrewTime）。 */
+    private static int brewTime() {
+        try {
+            int value = com.infinitestats.Config.PORTABLE_BREW_TIME.get();
+            return Math.max(1, value);
+        } catch (Throwable ignored) {
+            return BREW_TIME;
+        }
+    }
 
     /** 原版的「酿造完成」世界事件（音效 + 粒子）。 */
     private static final int BREW_COMPLETED_EVENT = 1035;
@@ -96,7 +106,7 @@ public class PortableBrewingData implements Container, ContainerData {
             }
         } else if (brewable) {
             // 无限燃料：直接开酿，不需要烈焰粉、也不扣任何燃料
-            brewTime = BREW_TIME;
+            brewTime = brewTime();
             ingredient = ingredientStack.getItem();
         }
     }

@@ -72,8 +72,27 @@ public final class PortableInfuser {
      */
     private static final int REPAIR_DURABILITY_PER_LEVEL = 25;
 
+    /** 当前生效的修复换算值（配置项 Modules.infuserRepairDurabilityPerLevel）。 */
+    private static int repairDurabilityPerLevel() {
+        try {
+            int value = com.infinitestats.Config.INFUSER_REPAIR_DURABILITY_PER_LEVEL.get();
+            return Math.max(1, value);
+        } catch (Throwable ignored) {
+            return REPAIR_DURABILITY_PER_LEVEL;
+        }
+    }
+
     /** 经验回收的返还比例：按「重新买回来要多少」折算，留出损耗，避免倒卖刷经验。 */
     private static final double RECYCLE_REFUND_RATIO = 0.6D;
+
+    /** 当前生效的回收返还比例（配置项 Modules.infuserRecycleRefundRatio）。 */
+    private static double recycleRefundRatio() {
+        try {
+            return com.infinitestats.Config.INFUSER_RECYCLE_REFUND_RATIO.get();
+        } catch (Throwable ignored) {
+            return RECYCLE_REFUND_RATIO;
+        }
+    }
 
     /**
      * 各稀有度的「每级基础价」（单位：经验等级 或 属性点数）。
@@ -89,6 +108,16 @@ public final class PortableInfuser {
 
     /** 仅限宝藏的附魔（经验修补、冰霜行者、灵魂疾行等）加价倍率。 */
     private static final int TREASURE_MULTIPLIER = 2;
+
+    /** 当前生效的宝藏附魔加价倍率（配置项 Modules.infuserTreasureMultiplier）。 */
+    private static int treasureMultiplier() {
+        try {
+            int value = com.infinitestats.Config.INFUSER_TREASURE_MULTIPLIER.get();
+            return Math.max(1, value);
+        } catch (Throwable ignored) {
+            return TREASURE_MULTIPLIER;
+        }
+    }
 
     private PortableInfuser() {}
 
@@ -169,7 +198,7 @@ public final class PortableInfuser {
     public static int costOf(Enchantment enchantment, int level) {
         if (enchantment == null || level <= 0) return 0;
         long price = (long) basePrice(enchantment) * level;
-        if (enchantment.isTreasureOnly()) price *= TREASURE_MULTIPLIER;
+        if (enchantment.isTreasureOnly()) price *= treasureMultiplier();
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1L, price));
     }
 
@@ -293,7 +322,7 @@ public final class PortableInfuser {
     /** 修满所需花费。 */
     public static int repairCost(ItemStack stack) {
         if (!canRepair(stack)) return 0;
-        int perLevel = Math.max(1, stack.getMaxDamage() / REPAIR_DURABILITY_PER_LEVEL);
+        int perLevel = Math.max(1, stack.getMaxDamage() / repairDurabilityPerLevel());
         return Math.max(1, (stack.getDamageValue() + perLevel - 1) / perLevel);
     }
 
@@ -330,7 +359,7 @@ public final class PortableInfuser {
         for (Map.Entry<Enchantment, Integer> entry : map.entrySet()) {
             sum += costOf(entry.getKey(), entry.getValue());
         }
-        return Math.max(1, (int) Math.floor(sum * RECYCLE_REFUND_RATIO));
+        return Math.max(1, (int) Math.floor(sum * recycleRefundRatio()));
     }
 
     /**

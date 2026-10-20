@@ -422,13 +422,24 @@ public class PlayerStats {
     public boolean addExperience(long amount) {
         if (amount <= 0) return false;
 
+        // 等级上限：满级后既不累积经验也不升级（配置项 Progression.maxPlayerLevel）
+        long levelCap = Config.MAX_PLAYER_LEVEL.get();
+        if (levelCap < 1) levelCap = 1;
+        if (level >= levelCap) {
+            return false;
+        }
+
         experience += amount;
         boolean leveledUp = false;
 
-        while (experience >= getXpForNextLevel()) {
+        while (level < levelCap && experience >= getXpForNextLevel()) {
             experience -= getXpForNextLevel();
             level++;
             leveledUp = true;
+        }
+        // 刚好顶到上限时把余下经验丢掉，避免「满级但经验条还在涨」
+        if (level >= levelCap) {
+            experience = 0;
         }
 
         // 升级后重新计算可用点数，避免与已分配点数产生漂移
