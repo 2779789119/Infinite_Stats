@@ -19,6 +19,7 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.food.FoodData;
 import net.minecraft.world.item.ItemStack;
@@ -39,7 +40,9 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.level.BlockEvent;
 
+import java.lang.reflect.Method;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 功能类属性处理器
@@ -585,8 +588,10 @@ public class UtilityHandler implements StatEffectHandler {
         if (!veinMiner && !autoSmelt) return;
 
         ItemStack tool = player.getMainHandItem();
-        // 「自动冶炼」与「掉落直接进背包」都需要自己掌管掉落，因此都会接管这一批方块
-        boolean takeover = autoSmelt || cfg.isCollectDrops();
+        // 「自动冶炼」与「掉落直接进背包」都需要自己掌管掉落，因此都会接管这一批方块。
+        // 例外是自带破坏逻辑的方块（幸运方块 / 随机矿石）：接管会跳过它们的随机奖励，见 hasCustomBreakBehavior。
+        boolean wantsTakeover = autoSmelt || cfg.isCollectDrops();
+        boolean takeover = wantsTakeover && !hasCustomBreakBehavior(state);
 
         CHAINING.set(Boolean.TRUE);
         try {
@@ -612,10 +617,15 @@ public class UtilityHandler implements StatEffectHandler {
                 if (cfg.isProtectTool() && current.isDamageableItem()
                         && current.getDamageValue() >= current.getMaxDamage() - 1) break;
 
-                if (takeover) {
+                if (wantsTakeover) {
                     BlockState targetState = level.getBlockState(target);
                     if (targetState.isAir()) continue;
-                    breakBlock(player, level, target, targetState, current, false, 0, cfg, autoSmelt);
+                    if (hasCustomBreakBehavior(targetState)) {
+                        // 幸运方块 / 随机矿石：交回原版，随机奖励才会触发
+                        if (!player.gameMode.destroyBlock(target)) continue;
+                    } else {
+                        breakBlock(player, level, target, targetState, current, false, 0, cfg, autoSmelt);
+                    }
                 } else {
                     // 走完整原版流程：其他模组的破坏事件与保护、统计、耐久、经验都由原版负责
                     if (!player.gameMode.destroyBlock(target)) continue;
@@ -683,6 +693,57 @@ public class UtilityHandler implements StatEffectHandler {
 
     private static boolean hasSilkTouch(ItemStack tool) {
         return EnchantmentHelper.getItemEnchantmentLevel(Enchantments.SILK_TOUCH, tool) > 0;
+    }
+
+    /** 「方块是否自带破坏逻辑」的检测结果缓存：方块类 → 是否必须交回原版流程。 */
+    private static final Map<Class<?>, Boolean> CUSTOM_BREAK_CACHE = new ConcurrentHashMap<>();
+
+    /**
+     * 方块是否自带「破坏时才触发」的逻辑（幸运方块 / Integrated Lucky Blocks / 随机矿石一类）。
+     * <p>
+     * 这类方块的效果写在 {@code onDestroyedByPlayer} / {@code playerWillDestroy} / {@code playerDestroy} 里
+     * （少数走实例 {@code getDrops}），而接管模式是先用 {@code Block.getDrops} 取掉落、
+     * 再 {@code level.destroyBlock} 移除方块，这几步都不会走到它们 ——
+     * 表现就是「开了自动冶炼，幸运方块挖掉却什么都不会发生，只掉方块本身」。
+     * 所以这类方块一律交回 {@code player.gameMode.destroyBlock} 的原版流程
+     * （代价是这一格不吃自动冶炼 / 掉落入包，换取方块自己的随机奖励正常触发）。
+     * <p>
+     * 只对模组方块做反射：原版与本模组方块直接返回 {@code false}；普通模组矿石（只靠 loot table 出货）
+     * 依旧会被接管，自动冶炼对它们仍然生效。
+     */
+    private static boolean hasCustomBreakBehavior(BlockState state) {
+        return CUSTOM_BREAK_CACHE.computeIfAbsent(state.getBlock().getClass(), UtilityHandler::detectCustomBreakBehavior);
+    }
+
+    /** 1.20.1 中「破坏方块时由方块自己执行」的钩子（任一被模组重写即视为必须交回原版）。 */
+    private static final List<String> CUSTOM_BREAK_HOOKS =
+            List.of("onDestroyedByPlayer", "playerWillDestroy", "playerDestroy", "getDrops");
+
+    private static boolean detectCustomBreakBehavior(Class<?> type) {
+        String pkg = type.getPackageName();
+        if (pkg.startsWith("net.minecraft.") || pkg.startsWith("com.infinitestats")) return false;
+
+        // 按方法名匹配而不是按精确签名：不同版本这些钩子的参数表略有出入（例如 onDestroyedByPlayer 的 FluidState），
+        // 名字在 1.20.1 里是唯一的，按名字找不会漏检，也不会因签名对不上而静默失效。
+        for (Method method : type.getMethods()) {
+            if (CUSTOM_BREAK_HOOKS.contains(method.getName()) && isOverriddenByMod(method)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 方法是否被模组自己重写（而不是原版 {@code Block} 的实现或 Forge 在 {@code IForgeBlock} 接口上给的默认实现）。
+     * <p>
+     * {@code onDestroyedByPlayer} 在 Forge 里是接口 default 方法，未重写时 {@code getDeclaringClass()}
+     * 拿到的是接口而不是 {@code Block} —— 直接比较 {@code Block.class} 会把所有模组方块都误判成「有自定义逻辑」，
+     * 自动冶炼对模组矿石就整个失效了。
+     */
+    private static boolean isOverriddenByMod(Method method) {
+        Class<?> declaring = method.getDeclaringClass();
+        if (declaring == Block.class || declaring.isInterface()) return false;
+        return !declaring.getName().startsWith("net.minecraftforge.");
     }
 
     /**

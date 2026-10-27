@@ -787,50 +787,53 @@ public class StatsScreen extends PanelScreen {
     /** 页脚导航行：从主面板一键打开其它独立面板。 */
     private void addPanelNavButtons() {
         int navY = GUI_HEIGHT - FOOTER_H + 4;
-        // 入口与功能的对应关系：在「功能开关」里被关闭的功能，其入口一并隐藏（列表自动收拢）
+        // 入口与功能的对应关系：在「功能开关」里被关闭的功能、或作者在配置里隐藏的面板，
+        // 其入口一并隐藏（列表自动收拢）
         int btnW = 40, gap = 3;
         List<Component> labels = new ArrayList<>();
         List<Runnable> actions = new ArrayList<>();
-        addNav(labels, actions, "fixed_point_teleport",
+        addNav(labels, actions, "waypoint", "fixed_point_teleport",
                 Component.translatable("gui.infinitestats.nav.waypoint"),
                 () -> { if (minecraft != null) minecraft.setScreen(new WaypointScreen()); });
-        addNav(labels, actions, "cross_dimension_teleport",
+        addNav(labels, actions, "crossdim", "cross_dimension_teleport",
                 Component.translatable("gui.infinitestats.nav.crossdim"),
                 () -> { if (minecraft != null) minecraft.setScreen(new CrossDimScreen()); });
-        addNav(labels, actions, null,
+        addNav(labels, actions, "filter", null,
                 Component.translatable("gui.infinitestats.nav.filter"),
                 this::openDebuffFilter);
-        addNav(labels, actions, null,
+        addNav(labels, actions, "emc", null,
                 Component.translatable("gui.infinitestats.nav.emc"),
                 () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket()));
-        addNav(labels, actions, null,
+        addNav(labels, actions, "achievements", null,
                 Component.translatable("gui.infinitestats.nav.achievement"),
                 () -> { if (minecraft != null) minecraft.setScreen(new AchievementManagerScreen()); });
-        addNav(labels, actions, null,
+        addNav(labels, actions, "item_editor", null,
                 Component.translatable("gui.infinitestats.nav.item_editor"),
                 () -> { if (minecraft != null) minecraft.setScreen(new ItemEditorScreen()); });
-        addNav(labels, actions, null,
+        addNav(labels, actions, "hud", null,
                 Component.translatable("gui.infinitestats.nav.hud"),
                 () -> { if (minecraft != null) minecraft.setScreen(new HudEditScreen()); });
         // 随身工具：原先分开摆的 5 个入口合并成一个面板，面板内再按各属性的解锁状态逐项启用
-        addNav(labels, actions, null,
+        addNav(labels, actions, "tools", null,
                 Component.translatable("gui.infinitestats.nav.tools"),
                 () -> { if (minecraft != null) minecraft.setScreen(new PortableToolsScreen()); });
         // 天气：打开独立面板逐档选择（原先是在这里点一次切一档）
-        addNav(labels, actions, "weather_control",
+        addNav(labels, actions, "weather", "weather_control",
                 Component.translatable("gui.infinitestats.nav.weather"),
                 () -> { if (minecraft != null) minecraft.setScreen(new WeatherScreen()); });
-        addNav(labels, actions, "chunk_loader",
+        addNav(labels, actions, "chunk_loader", "chunk_loader",
                 Component.translatable("gui.infinitestats.nav.chunk_loader"),
                 () -> { if (minecraft != null) minecraft.setScreen(new ChunkLoaderScreen()); });
         // 连锁挖掘：匹配方式 / 上限 / 代价 / 名单集中在一页（未解锁或已关闭时入口不显示）
-        addNav(labels, actions, "vein_miner",
+        addNav(labels, actions, "vein_miner", "vein_miner",
                 Component.translatable("gui.infinitestats.nav.vein_miner"),
                 () -> { if (minecraft != null) minecraft.setScreen(new VeinMinerSettingsScreen(this)); });
         // 矿透：半径 / 上限 / 矿物种类筛选（未解锁或已关闭时入口不显示）
-        addNav(labels, actions, "ore_vision",
+        addNav(labels, actions, "ore_vision", "ore_vision",
                 Component.translatable("gui.infinitestats.nav.ore_vision"),
                 () -> { if (minecraft != null) minecraft.setScreen(new OreVisionSettingsScreen(this)); });
+
+        if (labels.isEmpty()) return; // 全被隐藏 / 未解锁时不要画空行
 
         // 入口变多后按可用宽度收窄，避免挤到面板外
         int maxNavW = GUI_WIDTH - 16;
@@ -848,9 +851,15 @@ public class StatsScreen extends PanelScreen {
         }
     }
 
-    /** 添加一个页脚入口；statId 对应功能被「功能开关」关闭时直接跳过。 */
+    /**
+     * 添加一个页脚入口。
+     *
+     * @param panelId 面板 id（配置 {@code GUI.hideXxxPanel} 开关打开时该入口不显示）
+     * @param statId  对应属性 id（在「功能开关」里被关闭时该入口不显示，可为 null）
+     */
     private void addNav(List<Component> labels, List<Runnable> actions,
-                        String statId, Component label, Runnable action) {
+                        String panelId, String statId, Component label, Runnable action) {
+        if (Config.isPanelHidden(panelId)) return;
         if (statId != null && isFeatureDisabled(statId)) return;
         labels.add(label);
         actions.add(action);

@@ -74,6 +74,7 @@ import net.minecraftforge.event.entity.player.ArrowLooseEvent;
 import net.minecraftforge.event.entity.player.AttackEntityEvent;
 import net.minecraftforge.event.entity.player.PlayerContainerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.event.entity.player.PlayerXpEvent;
 import net.minecraftforge.event.entity.living.MobEffectEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.level.BlockEvent;
@@ -187,6 +188,33 @@ public final class StatEventHandler {
                 addXpAndSync(killer, stats, xp);
             });
         }
+    }
+
+    // ========== 原版经验加成 ==========
+
+    /**
+     * 「经验获取加成」同时放大原版经验。
+     * <p>
+     * 原版所有主动发经验的路径（经验球拾取、熔炉取出、村民交易、经验瓶……）最终都收敛到
+     * {@code Player#giveExperiencePoints}，Forge 在该方法入口 post {@link PlayerXpEvent.XpChange}
+     * 并允许改写 {@code amount}（{@code p_36291_ = event.getAmount()}），所以只在这一处拦一次就够，
+     * 不必再单独处理 {@code ExperienceOrb} 或拾取事件。
+     * <p>
+     * 只增不减：属性允许负向加点（倍率 &lt; 1），但原版经验被本模组削掉没有玩法收益，
+     * 负向时保持原值（击杀给的模组经验仍按原逻辑吃负向加成）。
+     */
+    @SubscribeEvent
+    public static void onPlayerXpChange(PlayerXpEvent.XpChange event) {
+        int amount = event.getAmount();
+        if (amount <= 0) return;
+        if (!Config.XP_GAIN_AFFECT_VANILLA.get()) return;
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            long boosted = UtilityHandler.applyXpGainBonus(stats, amount);
+            if (boosted > amount) {
+                event.setAmount((int) Math.min(boosted, Integer.MAX_VALUE));
+            }
+        });
     }
 
     // ========== 死亡不掉落 ==========
@@ -1543,8 +1571,10 @@ public final class StatEventHandler {
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             // 首次登录：把整合包作者预设的「开局默认禁用」属性写入本玩家（只执行一次）
             stats.applyDefaultDisabledStatsIfNeeded();
-            // 重新计算可用点数，修复旧存档可能为负的问题
+            // 按等级 / 已分配 / 额外授予重算可用点数（额外授予已持久化，指令加的点不会被抹掉），
+            // 再用 sanitize 把旧存档里残留的负数夹回 0
             stats.recalculateAvailablePoints();
+            stats.sanitizeAvailablePoints();
             NetworkHandler.syncToClient(player);
             HandlerRegistry.loginAll(player, stats);
         });

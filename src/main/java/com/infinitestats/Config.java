@@ -98,6 +98,33 @@ public final class Config {
         }
     }
 
+    /**
+     * 面板 id → 「隐藏该面板入口」的开关（配置 {@code GUI.hideXxxPanel}）。
+     * <p>
+     * 开关打开后，该面板不再出现在属性面板的页脚导航行里，对应快捷键 / 客户端指令也不再打开它；
+     * 面板里的功能本身照旧（要连效果一起关，用 {@code /infstats feature <属性 id> off}）。
+     */
+    private static final java.util.Map<String, ForgeConfigSpec.BooleanValue> HIDDEN_PANEL_SWITCHES
+            = new java.util.LinkedHashMap<>();
+
+    /** 该面板入口是否被作者隐藏（未知 id / 配置未加载一律视为不隐藏）。 */
+    public static boolean isPanelHidden(String panelId) {
+        if (panelId == null) return false;
+        ForgeConfigSpec.BooleanValue value = HIDDEN_PANEL_SWITCHES.get(panelId);
+        if (value == null) return false;
+        try {
+            Boolean hidden = value.get();
+            return hidden != null && hidden;
+        } catch (Throwable notLoaded) {
+            return false;
+        }
+    }
+
+    /** 登记一个「隐藏面板入口」开关，id → 开关表，供 {@link #isPanelHidden} 查询。 */
+    private static void registerHidePanel(String panelId, ForgeConfigSpec.BooleanValue value) {
+        HIDDEN_PANEL_SWITCHES.put(panelId, value);
+    }
+
     // ========== 兼容性设置 ==========
 
     public static ForgeConfigSpec.BooleanValue ENABLE_ATTRIBUTE_DISCOVERY;
@@ -282,6 +309,8 @@ public final class Config {
     public static ForgeConfigSpec.DoubleValue PROJECTILE_TRACKING_CONE_COS;
     /** 经验加成属性的总倍率上限（0 = 不设上限）。 */
     public static ForgeConfigSpec.DoubleValue XP_GAIN_CAP;
+    /** 「经验加成」是否同时放大原版经验值（经验球 / 熔炉 / 交易等）。 */
+    public static ForgeConfigSpec.BooleanValue XP_GAIN_AFFECT_VANILLA;
 
     // ========== 各功能模块阈值 / 执行间隔 ==========
 
@@ -338,8 +367,6 @@ public final class Config {
     public static ForgeConfigSpec.BooleanValue PASSIVE_XP_ENABLED;
     /** 击杀经验是否也计入「你的召唤物 / 宠物造成的击杀」。 */
     public static ForgeConfigSpec.BooleanValue XP_PER_KILL_COUNT_SUMMONS;
-    /** 玩家等级上限（达到后经验不再累积、也不再升级）。 */
-    public static ForgeConfigSpec.LongValue MAX_PLAYER_LEVEL;
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
@@ -451,6 +478,48 @@ public final class Config {
                          "/infstats feature <id> on 逐步开放。玩家自己不能编辑这份列表。",
                          "属性 id 可用 /infstats feature 命令的 Tab 补全查看。")
                 .defineList("disabledStats", List.<String>of(), o -> o instanceof String);
+        // ---- 面板入口开关 ----
+        // 一套「一个面板一个开关」的写法：配置界面里全是勾选框，不用手输任何 id。
+        // 打开后该面板从页脚导航行消失、对应快捷键 / 客户端指令也不再打开它；
+        // 面板里的功能与数据不受影响（要连效果一起关，用 /infstats feature <属性 id> off）。
+        registerHidePanel("waypoint",
+                builder.comment("隐藏「传送点」面板入口（页脚按钮与 Y 键一起失效）。")
+                        .define("hideWaypointPanel", false));
+        registerHidePanel("crossdim",
+                builder.comment("隐藏「跨维度」面板入口（页脚按钮）。")
+                        .define("hideCrossdimPanel", false));
+        registerHidePanel("filter",
+                builder.comment("隐藏「过滤」（负面效果过滤）面板入口（页脚按钮）。")
+                        .define("hideFilterPanel", false));
+        registerHidePanel("emc",
+                builder.comment("隐藏「EMC」转化桌入口（页脚按钮与 V 键一起失效）。",
+                        "服务端也会拒绝开桌请求，装了这个配置的整合包连改包都打不开。")
+                        .define("hideEmcPanel", false));
+        registerHidePanel("achievements",
+                builder.comment("隐藏「成就管理器」入口（页脚按钮、U 键与 /infstats achievements 一起失效）。")
+                        .define("hideAchievementsPanel", false));
+        registerHidePanel("item_editor",
+                builder.comment("隐藏「物品编辑器」入口（页脚按钮与 O 键一起失效）。")
+                        .define("hideItemEditorPanel", false));
+        registerHidePanel("hud",
+                builder.comment("隐藏「HUD 编辑」面板入口（页脚按钮与 /infstats hud edit 一起失效）。",
+                        "HUD 本身的显示 / 隐藏（H 键）是玩家个人偏好，不受这一项影响。")
+                        .define("hideHudPanel", false));
+        registerHidePanel("tools",
+                builder.comment("隐藏「随身工具」面板入口（页脚按钮与 G 键一起失效）。")
+                        .define("hideToolsPanel", false));
+        registerHidePanel("weather",
+                builder.comment("隐藏「天气」面板入口（页脚按钮）。")
+                        .define("hideWeatherPanel", false));
+        registerHidePanel("chunk_loader",
+                builder.comment("隐藏「强加载」面板入口（页脚按钮）。")
+                        .define("hideChunkLoaderPanel", false));
+        registerHidePanel("vein_miner",
+                builder.comment("隐藏「连锁挖掘」设置面板入口（页脚按钮）。")
+                        .define("hideVeinMinerPanel", false));
+        registerHidePanel("ore_vision",
+                builder.comment("隐藏「矿透」设置面板入口（页脚按钮）。")
+                        .define("hideOreVisionPanel", false));
         builder.pop();
 
         // 兼容性设置
@@ -725,8 +794,15 @@ public final class Config {
                 .comment("弹射物追踪的视野锥余弦阈值：1.0 = 只追正前方，0.0 = 180° 全追，默认 0.5（约 ±60°）。")
                 .defineInRange("projectileTrackingConeCos", 0.5D, -1.0D, 1.0D);
         XP_GAIN_CAP = builder
-                .comment("「经验加成」属性的总倍率上限（1.0 = 不加成；0 = 不设上限）。默认 0。")
+                .comment("「经验加成」属性的总倍率上限（1.0 = 不加成；0 = 不设上限）。默认 0。",
+                        "模组经验与原版经验共用这一个上限。")
                 .defineInRange("xpGainCap", 0.0D, 0.0D, 1000.0D);
+        XP_GAIN_AFFECT_VANILLA = builder
+                .comment("「经验加成」是否同时放大原版经验值。",
+                        "原版经验的所有入口（经验球拾取、熔炉取出、村民交易、经验瓶等）最终都会走 Player#giveExperiencePoints，",
+                        "这里在该统一入口处按同一个倍率放大（只增不减：倍率为负向时不削减原版经验）。",
+                        "true（默认）= 一并放大；false = 只放大击杀获得的模组经验（1.72.0 之前的行为）。")
+                .define("xpGainAffectVanilla", true);
         builder.pop();
 
         // ===== 各功能模块的执行间隔 / 阈值 =====
@@ -811,9 +887,6 @@ public final class Config {
                 .comment("击杀经验是否也计入「你的召唤物 / 宠物造成的击杀」（含铁傀儡、召唤物、驯服宠物等）。",
                         "false（默认）= 只有玩家本人直接造成的击杀才给经验，与原行为一致。")
                 .define("xpPerKillCountSummons", false);
-        MAX_PLAYER_LEVEL = builder
-                .comment("玩家等级上限。达到上限后经验不再累积（不再升级）。默认 1000000。")
-                .defineInRange("maxPlayerLevel", 1_000_000L, 1L, 1_000_000_000L);
         builder.pop();
 
         SPEC = builder.build();

@@ -1024,6 +1024,8 @@ public final class NetworkHandler {
             ctx.get().enqueueWork(() -> {
                 ServerPlayer player = ctx.get().getSender();
                 if (player == null || !Config.EMC_ENABLED.get()) return;
+                // 作者把 EMC 面板隐藏后，服务端也不再受理开桌请求（客户端另有入口拦截）
+                if (Config.isPanelHidden("emc")) return;
                 NetworkHooks.openScreen(player,
                         new SimpleMenuProvider(
                                 (id, inv, p) -> new EmcMenu(id, inv),

@@ -226,6 +226,7 @@
 | `PassiveEffects.projectileTrackingRange` | `64` | 弹射物追踪扫描半径（8–256） |
 | `GUI.showHiddenStats` | `false` | 是否显示隐藏属性（如无敌） |
 | `GUI.featureDisableMode` | `keep` | 功能开关「关掉时」的执行模式 |
+| `GUI.hide*Panel` | `false` | 12 个面板入口开关（传送点 / 跨维度 / 过滤 / EMC / 成就 / 物品编辑器 / HUD / 随身工具 / 天气 / 强加载 / 连锁 / 矿透），配置界面里勾选即可 |
 | `Compatibility.enableAttributeDiscovery` | `true` | 自动发现其它模组属性（需重启） |
 | `EMC.emcEnabled` | `true` | 是否启用 EMC 系统 |
 | `EMC.emcLossRate` | `0.0` | EMC 转换损耗率（0 = 无损耗） |
@@ -250,7 +251,6 @@
 | `CreateStress.infiniteStressCapacity` | `1000000000` | 「无限应力」（机械动力）把动力网络产能改写成的数值（SU）；调小 = 给无限应力设上限，超出的大网络仍会超载 |
 | `Progression.passiveXpEnabled` | `true` | 被动经验总开关（关掉后在线玩家不再每秒获得经验） |
 | `Progression.xpPerKillCountSummons` | `false` | 击杀经验是否计入召唤物 / 宠物造成的击杀 |
-| `Progression.maxPlayerLevel` | `1000000` | 玩家等级上限（满级后经验不再累积） |
 | `Combat.*` | 见文件 | 21 项战斗结算细节：暴击基础倍率 / 暴击率·闪避率·格挡率·减伤·反伤·双倍掉落上限、吸血上限、范围吸血半径与比例、额外打击次数、范围攻击比例、处决阈值、村民折扣上限、冷却缩减上限、自动修复量、追踪视野锥、经验加成上限 |
 | `Modules.*` | 见文件 | 23 项模块间隔与阈值：磁铁 / 追踪 / 免饥饿 / 自动修复 / 属性重写 / 移动状态的执行间隔、自动跨越高度、无敌回血与护盾刷新、钓鱼视线与咬钩、酿造时长、单次合成上限、附魔台修复与回收、魔力池、自动学习扫描、生物面板距离、矿石透视、连锁消耗 |
 | `Stats.<属性id>_perPoint` | 各属性原值 | **每个内置属性**的每点收益（开关型属性没有此项） |

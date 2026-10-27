@@ -29,6 +29,14 @@ public class PlayerStats {
     private long level = 1;
     private long experience = 0;
     private long availablePoints = 0;
+    /**
+     * 「额外授予」的点数（指令 / 任务奖励等）。
+     * <p>
+     * 可用点数 = 等级产出 + 额外授予 − 已分配 − 熔炉 / 工作台升级开销。
+     * 必须单独记账：以前指令直接改 availablePoints，登录与升级时一旦重算就被等级公式覆盖，
+     * 表现出来就是「加了点数，退出存档再进来又没了（甚至被已分配点数顶成负数）」。
+     */
+    private long grantedPoints = 0;
     private long lastReviveTime = 0;
     private long reviveInvulnUntilTick = 0;
     private float shieldAbsorption = 0;
@@ -407,8 +415,38 @@ public class PlayerStats {
         return availablePoints;
     }
 
+    /** 「额外授予」的点数（指令 / 任务奖励），升级与登录重算时会一并计入。 */
+    public long getGrantedPoints() {
+        return grantedPoints;
+    }
+
+    /**
+     * 把可用点数设为指定值（负数按 0 处理）。
+     * <p>
+     * 差额会记进「额外授予」，因此不只在当前生效，之后升级 / 登录重算也不会被抹掉。
+     */
     public void setAvailablePoints(long value) {
-        this.availablePoints = value;
+        this.availablePoints = Math.max(0L, value);
+        syncGrantedToAvailable();
+    }
+
+    /** 在当前可用点数上增减（差记入「额外授予」，重算后依然有效）。 */
+    public void addAvailablePoints(long delta) {
+        if (delta == 0L) return;
+        long target;
+        try {
+            target = Math.addExact(availablePoints, delta);
+        } catch (ArithmeticException overflow) {
+            target = delta > 0L ? Long.MAX_VALUE : 0L;
+        }
+        setAvailablePoints(target);
+    }
+
+    /** 旧存档里可能存着历史 bug 造成的负数点数，读档 / 登录时夹回 0。 */
+    public void sanitizeAvailablePoints() {
+        if (availablePoints < 0L) {
+            setAvailablePoints(0L);
+        }
     }
 
     public long getXpForNextLevel() {
@@ -417,29 +455,23 @@ public class PlayerStats {
 
     /**
      * 添加经验值，自动升级
+     * <p>
+     * <b>等级不设上限</b>（这是本模组的核心设定）：经验一直累积、等级一直上涨。
+     * 每级所需经验 = {@code baseXpPerLevel + (等级-1) * xpPerLevelIncrement}，随等级线性增长，
+     * 撑到 {@code long} 溢出所需的经验量远超可获得的量级，因此不需要额外封顶。
+     *
      * @return 是否升级了
      */
     public boolean addExperience(long amount) {
         if (amount <= 0) return false;
 
-        // 等级上限：满级后既不累积经验也不升级（配置项 Progression.maxPlayerLevel）
-        long levelCap = Config.MAX_PLAYER_LEVEL.get();
-        if (levelCap < 1) levelCap = 1;
-        if (level >= levelCap) {
-            return false;
-        }
-
         experience += amount;
         boolean leveledUp = false;
 
-        while (level < levelCap && experience >= getXpForNextLevel()) {
+        while (experience >= getXpForNextLevel()) {
             experience -= getXpForNextLevel();
             level++;
             leveledUp = true;
-        }
-        // 刚好顶到上限时把余下经验丢掉，避免「满级但经验条还在涨」
-        if (level >= levelCap) {
-            experience = 0;
         }
 
         // 升级后重新计算可用点数，避免与已分配点数产生漂移
@@ -455,11 +487,28 @@ public class PlayerStats {
      * 正常游戏过程中不会为负，因为 addPoints / removePoints 都已禁止透支
      */
     public void recalculateAvailablePoints() {
-        long totalEarned = (level - 1) * (long) Config.POINTS_PER_LEVEL.get();
-        long totalAllocated = getTotalAllocatedPoints();
+        this.availablePoints = getBaseEarnedPoints() + grantedPoints - getSpentPoints();
+    }
+
+    /** 等级带来的点数产出（不含「额外授予」）。 */
+    private long getBaseEarnedPoints() {
+        long gainedLevels = Math.max(0L, level - 1L);
+        return gainedLevels * (long) Config.POINTS_PER_LEVEL.get();
+    }
+
+    /** 已消耗的点数：已分配属性 + 随身熔炉加速 / 随身工作台倍率的升级开销。 */
+    private long getSpentPoints() {
         long upgrades = (long) furnaceData.getSpeedLevel() * Config.FURNACE_SPEED_COST.get()
-                + (getCraftingMultiplier() - 1) * Config.CRAFTING_MULTIPLIER_COST.get();
-        this.availablePoints = totalEarned - totalAllocated - upgrades;
+                + (getCraftingMultiplier() - 1L) * Config.CRAFTING_MULTIPLIER_COST.get();
+        return getTotalAllocatedPoints() + upgrades;
+    }
+
+    /**
+     * 反推「额外授予」，使重算结果与当前可用点数一致。
+     * 用于只有 availablePoints 的入口：旧存档读档、快照恢复、以及指令写入。
+     */
+    private void syncGrantedToAvailable() {
+        grantedPoints = availablePoints + getSpentPoints() - getBaseEarnedPoints();
     }
 
     // ========== 复活 ==========
@@ -1218,6 +1267,7 @@ public class PlayerStats {
         tag.putLong("level", level);
         tag.putLong("experience", experience);
         tag.putLong("availablePoints", availablePoints);
+        tag.putLong("grantedPoints", grantedPoints);
         tag.putLong("lastReviveTime", lastReviveTime);
         tag.putLong("reviveInvulnUntilTick", reviveInvulnUntilTick);
         tag.putFloat("shieldAbsorption", shieldAbsorption);
@@ -1512,6 +1562,14 @@ public class PlayerStats {
         }
         defaultDisabledApplied = tag.contains("defaultDisabledApplied") && tag.getBoolean("defaultDisabledApplied");
 
+        // 「额外授予」点数：必须放在所有字段（已分配点数 / 熔炉等级 / 工作台倍率）读完之后。
+        // 旧存档没有这个键 → 按存下来的可用点数反推，保证读档后数值不变，
+        // 也不至于在登录 / 升级重算时被等级公式抹掉。
+        if (tag.contains("grantedPoints")) {
+            grantedPoints = tag.getLong("grantedPoints");
+        } else {
+            syncGrantedToAvailable();
+        }
 
         invalidateCache();
     }
@@ -1523,6 +1581,7 @@ public class PlayerStats {
         this.level = other.level;
         this.experience = other.experience;
         this.availablePoints = other.availablePoints;
+        this.grantedPoints = other.grantedPoints;
         this.lastReviveTime = other.lastReviveTime;
         this.reviveInvulnUntilTick = other.reviveInvulnUntilTick;
         this.passiveTickCounter = other.passiveTickCounter;
@@ -1611,6 +1670,8 @@ public class PlayerStats {
         this.level = snapshot.level;
         this.experience = snapshot.experience;
         this.availablePoints = snapshot.availablePoints;
+        // 快照只带可用点数，恢复后反推「额外授予」，避免下一次重算把它抹掉
+        syncGrantedToAvailable();
         this.lastReviveTime = snapshot.lastReviveTime;
         this.reviveInvulnUntilTick = snapshot.reviveInvulnUntilTick;
         this.passiveTickCounter = snapshot.passiveTickCounter;

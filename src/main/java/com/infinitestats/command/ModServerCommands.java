@@ -615,24 +615,16 @@ public final class ModServerCommands {
             PlayerStats stats = target.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
             if (stats == null) continue;
 
-            long before = stats.getAvailablePoints();
-            long after;
+            // 写入走 PlayerStats 的「额外授予」记账：差额会落进 NBT，
+            // 因此退出存档再进来（登录重算）或之后升级都不会被等级公式覆盖。
             if (absolute) {
-                after = Math.max(0L, amount);
+                stats.setAvailablePoints(amount);
             } else {
-                try {
-                    after = Math.addExact(before, amount);
-                } catch (ArithmeticException overflow) {
-                    // 溢出时夹到边界，宁可给满也不要把点数变成负数
-                    after = amount > 0 ? Long.MAX_VALUE : 0L;
-                }
-                if (after < 0L) after = 0L;
+                stats.addAvailablePoints(amount);
             }
-
-            stats.setAvailablePoints(after);
             NetworkHandler.syncToClient(target);
 
-            final long newValue = after;
+            final long newValue = stats.getAvailablePoints();
             final String shown = absolute
                     ? String.valueOf(newValue)
                     : (amount >= 0 ? "+" + amount : String.valueOf(amount));

@@ -273,14 +273,20 @@ tasks.register('checkLang') {
     group = 'verification'
     description = 'Check every Config.java config key has a zh_cn / en_us translation'
     def configJava = layout.projectDirectory.file('src/main/java/com/infinitestats/Config.java')
+    def statJava = layout.projectDirectory.file('src/main/java/com/infinitestats/stats/StatType.java')
     def langDir = layout.projectDirectory.dir('src/main/resources/assets/infinitestats/lang')
     inputs.file(configJava)
+    inputs.file(statJava)
     inputs.files(fileTree(langDir) { include '*.json' })
 
     doLast {
         def text = configJava.asFile.getText('UTF-8')
         def groups = new ArrayDeque()
+        // 字面键：define*("key", ...)
         def entries = []
+        // 拼接键：define*(变量 + "_suffix", ...) —— 键按 StatType 的内置属性表批量生成，
+        // 这里只记下 [分组, 后缀]，等下用属性表展开成具体键名
+        def dynamicEntries = []
         text.eachLine { line ->
             def push = line =~ /builder\.push\("([^"]+)"\)/
             if (push.find()) {
@@ -296,13 +302,52 @@ tasks.register('checkLang') {
             def defined = line =~ /\.(defineInRange|defineList|defineEnum|define)\("([^"]+)"/
             if (defined.find()) {
                 entries << [groups.isEmpty() ? 'ROOT' : groups.peek(), defined.group(2)]
+                return
+            }
+            def joined = line =~ /\.(defineInRange|defineList|defineEnum|define)\(\s*[A-Za-z_][A-Za-z0-9_.]*\s*\+\s*"([^"]+)"/
+            if (joined.find()) {
+                dynamicEntries << [groups.isEmpty() ? 'ROOT' : groups.peek(), joined.group(2)]
+            }
+        }
+
+        // 内置属性表：create("id") 到下一个 create 之间出现 .toggle() 即为开关型
+        // （开关型没有「每点数值」配置项，只生成 _maxPoints）
+        def statText = statJava.asFile.getText('UTF-8')
+        def builtinStats = []
+        def statMatcher = statText =~ /create\("([a-z0-9_]+)"\)/
+        def lastId = null
+        def lastStart = -1
+        while (statMatcher.find()) {
+            if (lastId != null) {
+                builtinStats << [lastId, statText.substring(lastStart, statMatcher.start()).contains('.toggle()')]
+            }
+            lastId = statMatcher.group(1)
+            lastStart = statMatcher.start()
+        }
+        if (lastId != null) {
+            builtinStats << [lastId, statText.substring(lastStart).contains('.toggle()')]
+        }
+        if (!dynamicEntries.isEmpty() && builtinStats.isEmpty()) {
+            throw new GradleException('Config.java 里有按属性表批量生成的配置键，'
+                    + '但没能从 StatType.java 解析出内置属性（create("id") 的写法变了？）')
+        }
+
+        def dynamicKeys = []
+        dynamicEntries.unique().each { e ->
+            builtinStats.each { s ->
+                if (e[1] == '_perPoint' && s[1]) {
+                    return
+                }
+                dynamicKeys << 'config.infinitestats.' + e[0] + '.' + s[0] + e[1]
             }
         }
 
         def missing = []
+        def allGroups = (entries.collect { it[0] } + dynamicEntries.collect { it[0] }).unique()
+        def allKeys = entries.collect { 'config.infinitestats.' + it[0] + '.' + it[1] } + dynamicKeys
         ['zh_cn', 'en_us'].each { lang ->
             def json = new groovy.json.JsonSlurper().parse(new File(langDir.asFile, "${lang}.json"))
-            entries.collect { it[0] }.unique().each { group ->
+            allGroups.each { group ->
                 // 注意：这里必须用 String 拼接，不能写成 "…${group}"——
                 // GString 的 equals 与 String 不同，Map.containsKey(GString) 会永远匹配不到
                 def key = 'config.infinitestats.category.' + group
@@ -310,8 +355,7 @@ tasks.register('checkLang') {
                     missing << (lang + ': ' + key)
                 }
             }
-            entries.each { e ->
-                def key = 'config.infinitestats.' + e[0] + '.' + e[1]
+            allKeys.each { key ->
                 if (!json.containsKey(key)) {
                     missing << (lang + ': ' + key)
                 }
@@ -322,7 +366,7 @@ tasks.register('checkLang') {
             throw new GradleException("Missing translation(s) for config keys (${missing.size()}):\n  "
                     + missing.unique().join("\n  "))
         }
-        logger.lifecycle("checkLang: ${entries.size()} config keys OK (zh_cn / en_us)")
+        logger.lifecycle("checkLang: ${allKeys.size()} config keys OK (zh_cn / en_us)")
     }
 }
 

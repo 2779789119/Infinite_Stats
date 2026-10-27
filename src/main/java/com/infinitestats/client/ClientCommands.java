@@ -1,6 +1,7 @@
 package com.infinitestats.client;
 
 import com.infinitestats.InfiniteStats;
+import com.infinitestats.Config;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.minecraft.client.Minecraft;
@@ -155,17 +156,25 @@ public final class ClientCommands {
     private static int toggleEditHud(CommandSourceStack source) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.screen instanceof HudEditScreen) {
-            // 已经在编辑界面 → 关闭
+            // 已经在编辑界面 → 关闭（面板被隐藏时，已打开的界面仍允许退出）
             mc.setScreen(null);
             source.sendSuccess(() -> Component.translatable("message.infinitestats.hud_edit_exit"), false);
-        } else {
-            // 打开编辑界面
-            mc.setScreen(new HudEditScreen());
+            return 1;
         }
+        if (Config.isPanelHidden("hud")) {
+            source.sendFailure(Component.translatable("message.infinitestats.panel_hidden"));
+            return 0;
+        }
+        // 打开编辑界面
+        mc.setScreen(new HudEditScreen());
         return 1;
     }
 
     private static int openAchievementManager(CommandSourceStack source) {
+        if (Config.isPanelHidden("achievements")) {
+            source.sendFailure(Component.translatable("message.infinitestats.panel_hidden"));
+            return 0;
+        }
         Minecraft mc = Minecraft.getInstance();
         mc.setScreen(new AchievementManagerScreen());
         return 1;

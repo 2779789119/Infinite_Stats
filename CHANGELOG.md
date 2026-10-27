@@ -1,5 +1,249 @@
 # 更新日志 (Changelog)
 
+## [1.72.1] - 2026-10-26
+
+### 🐛 修复：`/infstats points add` 加的点数读档后丢失（还会变成负数）
+
+- **问题**：指令把点数直接写进「可用点数」，但登录时（以及每次升级、调随身熔炉 / 工作台档位时）都会
+  按 `等级产出 − 已分配 − 升级开销` **整体重算**可用点数，指令加的那部分瞬间被覆盖。
+  若玩家把这批点数投入了属性，重算后 `产出 − 已分配` 还是负的，于是面板显示负数，看起来完全没加。
+- **现在**：新增一份持久化的「额外授予」记账（`grantedPoints`），公式变成
+  `等级产出 + 额外授予 − 已分配 − 升级开销`。指令加点记进「额外授予」，
+  登录 / 升级 / 熔炉与工作台调档重算时都会一并计入，不会再被抹掉。
+- **旧存档兼容**：老存档没有 `grantedPoints` 字段时，读档会按存下来的可用点数反推，数值保持不变；
+  已经因该 bug 变成负数的存档，登录时自动夹回 0（不会把透支的负数带进新版本）。
+- 顺手把随身附魔台付点 / 退款也改成走同一套记账（行为不变，只是更一致）。
+- 版本号 `1.72.0 → 1.72.1`（纯 bug 修复，新增一个存档字段，无协议变更）。
+
+## [1.72.0] - 2026-10-25
+
+### ✨ 「经验获取加成」现在也放大原版经验
+
+- **问题**：1.72.0 之前，`xp_gain` 只作用于本模组自己的经验（击杀结算里 `applyXpGainBonus` 那一处）。
+  原版经验（打怪掉的经验球、熔炉取出、村民交易、经验瓶）完全不受影响，属性描述却只写「击杀生物获得」，
+  玩家很容易以为点了没效果。
+- **现在**：原版所有主动发经验的路径最终都会走 `Player#giveExperiencePoints`，Forge 在该入口 post
+  `PlayerXpEvent.XpChange` 并允许改写 `amount`，因此在这里按同一个倍率放大：
+  经验球拾取、熔炉取出、村民交易、经验瓶、`/xp` 命令等全部一并生效。
+- **只增不减**：属性允许负向加点（倍率 < 1），但负向时不会削减原版经验，保持原值；
+  击杀给的模组经验仍按原逻辑吃负向加成。普通经验球（1 点）在低倍率下取整后仍为 1，属正常现象。
+- **新增配置**：`[Combat] xpGainAffectVanilla`（默认 `true`）。设为 `false` 回到 1.72.0 之前的行为
+  （只放大模组经验）。`xpGainCap` 的上限同时约束模组经验与原版经验。
+- 中英两份 `lang` 同步新增配置条目并改写 `xp_gain` 的属性描述（`checkLang` 覆盖）。
+- 版本号 `1.71.1 → 1.72.0`（新增行为 + 新增配置项，无协议 / 存档字段变更）。
+
+## [1.71.1] - 2026-10-24
+
+### 🔁 面板隐藏改成 12 个独立开关（不再手输 id）
+
+- **问题**：1.71.0 的 `GUI.hiddenPanels` 是一张「面板 id 字符串列表」，作者得先记住
+  `item_editor` / `chunk_loader` 这些拼写再手动敲进配置，写错一个字母就静默不生效，配置界面里也只能敲文本。
+- **现在**：拆成 **12 个独立开关**，配置界面里全是勾选框，点一下就行：
+
+  | 开关（`[GUI]` 分组） | 隐藏的面板 | 一并失效的入口 |
+  |---|---|---|
+  | `hideWaypointPanel` | 传送点 | 页脚按钮、Y 键 |
+  | `hideCrossdimPanel` | 跨维度传送 | 页脚按钮 |
+  | `hideFilterPanel` | 效果过滤 | 页脚按钮 |
+  | `hideEmcPanel` | EMC 转化桌 | 页脚按钮、V 键、服务端开桌请求 |
+  | `hideAchievementsPanel` | 成就管理器 | 页脚按钮、U 键、`/infstats achievements` |
+  | `hideItemEditorPanel` | 物品编辑器 | 页脚按钮、O 键 |
+  | `hideHudPanel` | HUD 编辑 | 页脚按钮、`/infstats hud edit` |
+  | `hideToolsPanel` | 随身工具 | 页脚按钮、G 键 |
+  | `hideWeatherPanel` | 天气 | 页脚按钮 |
+  | `hideChunkLoaderPanel` | 强加载 | 页脚按钮 |
+  | `hideVeinMinerPanel` | 连锁挖掘设置 | 页脚按钮 |
+  | `hideOreVisionPanel` | 矿透设置 | 页脚按钮 |
+
+- **行为与 1.71.0 完全一致**：只藏入口（页脚导航行自动收拢、全藏完不画空行），
+  快捷键命中时动作栏提示「该面板已被整合包作者隐藏」；面板里的功能 / 属性效果 / 存档数据一概不动。
+- **配置项变动**：移除 `GUI.hiddenPanels`（旧文件里残留的 `hiddenPanels = [...]` 不再生效，
+  启动日志会提示未知键，可手动删掉），中英两份 `lang` 同步换成 12 条新条目（`checkLang` 覆盖）。
+- 版本号 `1.71.0 → 1.71.1`（仅配置面形态变动，无协议 / 存档字段变更）。
+
+## [1.71.0] - 2026-10-24
+
+### 🧩 新增配置 `GUI.hiddenPanels`：面板入口可以藏起来了
+
+- **需求**：以前只有「功能开关」关掉的属性会连带隐藏页脚入口，物品编辑器 / 成就管理器 / EMC 这些
+  **没有对应属性**的面板，整合包作者无论如何都藏不掉。
+- **现在**：`GUI` 分组新增 `hiddenPanels` 字符串列表，写进去的面板 id 会**从属性面板的页脚导航行里消失**，
+  列表自动收拢排布（全部藏完时不再画空行）。
+- **可用 id（与页脚入口、快捷键一一对应）**：
+
+  | id | 面板 | 入口 |
+  |---|---|---|
+  | `waypoint` | 传送点面板 | 页脚 `传送点` / Y 键 |
+  | `crossdim` | 跨维度传送面板 | 页脚 `跨维度` |
+  | `filter` | 负面效果过滤面板 | 页脚 `过滤` |
+  | `emc` | EMC 转化桌 | 页脚 `EMC` / V 键 |
+  | `achievements` | 成就管理器 | 页脚 `成就` / U 键 |
+  | `item_editor` | 物品编辑器 | 页脚 `物品` / O 键 |
+  | `hud` | HUD 编辑面板 | 页脚 `HUD` / `/infstats hud edit` |
+  | `tools` | 随身工具面板 | 页脚 `随身工具` / G 键 |
+  | `weather` | 天气面板 | 页脚 `天气` |
+  | `chunk_loader` | 强加载面板 | 页脚 `强加载` |
+  | `vein_miner` | 连锁挖掘设置 | 页脚 `连锁` |
+  | `ore_vision` | 矿透设置 | 页脚 `矿透` |
+
+- **快捷键 / 指令也一并拦住**：光藏按钮等于没藏 —— 按 O / U / V / Y / G 仍能直接开面板，
+  `/infstats achievements`、`/infstats hud edit` 也照旧。所以：
+  - 客户端按键处理逐个查隐藏表，命中时**不打开面板**，只在动作栏提示一句「该面板已被整合包作者隐藏」
+    （完全没反应最容易让人以为模组坏了）；
+  - `/infstats achievements`、`/infstats hud edit` 被隐藏时返回失败并给同样的提示
+    （`hud edit` 在**已经打开编辑界面时仍允许退出**，不会把人卡在里面）；
+  - EMC 是**服务端**开的容器菜单，所以服务端在 `EmcOpenPacket` 里同样查一次隐藏表 ——
+    客户端改包 / 老版本客户端塞请求也开不了。
+- **只藏入口，不动功能**：面板里的功能、属性效果、存档数据一概不变（例如藏掉物品编辑器不影响手上物品）。
+  要连效果一起关，仍然是 `/infstats feature <属性 id> off`。
+- **id 写错不会被静默吞掉**：未知 id 一律忽略（不报错、不影响加载），但配置加载时会打一行日志
+  列出写错的 id 与全部合法 id，免得作者以为已经藏好了。
+- **不受本项控制**：属性主面板（P 键）本身是页脚导航的宿主，没有加进列表；
+  「生物面板」由 `EntityPanel.allowEntityEditing` 与 `entity_panel` 功能开关管；HUD 显示开关（H 键）是玩家个人偏好。
+- 配置项需要译文（`checkLang` 会把缺翻译变成构建失败），中英两份 `lang` 已同步补齐配置项名与提示语。
+- 版本号 `1.70.10 → 1.71.0`（新增配置项，无协议 / 存档字段变更）。
+
+## [1.70.10] - 2026-10-24
+
+### 🐞 修复「无限灵魂能量」在旧版诡厄巫法（Goety）上完全不生效
+
+- **现象**：装了 Goety `2.5.36.1` 的整合包里，解锁 `goety_infinite_soul` 后灵魂能量照常被消耗，
+  属性形同未解锁；换到 `2.5.58.4` 却一切正常。
+- **根因**：Goety 跨版本改过灵魂图腾 setter 的大小写 —— 旧版是 `ITotem#setSoulsamount(ItemStack, int)`，
+  新版是 `setSoulsAmount`。本模组的反射解析是**一整个 try 块**，`getMethod("setSoulsAmount", ...)`
+  在旧版抛 `NoSuchMethodException` 后直接置 `unavailable = true` 整体短路，于是连**没变过**的
+  Arca 池（`SEHelper#getSEActive` / `#increaseSESouls`）一起失效 —— 两条补灵魂的路全断。
+- **修法**：
+  - 新增 `findMethod(Class, String, Class...)`：先精确匹配，再忽略大小写扫一遍**同名同参**的方法，
+    兼容 `setSoulsamount` / `setSoulsAmount` 这类命名漂移；
+  - 反射解析拆成 **Arca 池**、**灵魂图腾池**两个独立段，各自维护 `arcaReady` / `totemReady`：
+    图腾池解析失败不再拖死 Arca 池，反之亦然；两套都取不到才彻底退化回原版行为；
+  - `sendSEUpdatePacket` 降级为可选成员（缺失只影响 HUD 即时刷新，服务端灵魂数值照样补满）。
+- 版本号 `1.70.9 → 1.70.10`（纯兼容层修复，无协议 / 存档字段变更；已解锁的玩家无需重新加点）。
+
+## [1.70.9] - 2026-10-23
+
+### 🔓 恢复「等级无上限」
+
+- **问题**：1.70.0 开放配置时顺手给 `[Progression]` 加了个 `maxPlayerLevel`（默认 100 万），
+  `PlayerStats#addExperience` 里据此封顶 —— 到顶后经验不再累积、`experience` 被清零，
+  HUD / 面板上表现为「等级停住、经验条一直 0%」。这与本模组「无限加点」的核心设定冲突，
+  属于当初加配置项时的越界改动。
+- **现在**：删掉等级上限判断，**等级重新无上限**：
+  - `addExperience` 只在 `amount <= 0` 时提前返回，之后照常累积经验并连续升级；
+  - 每级所需经验仍是 `baseXpPerLevel + (等级-1) * xpPerLevelIncrement`（线性增长），
+    属性点数总量 = `(等级-1) * pointsPerLevel` 也随等级一起放开，不再有隐藏天花板。
+- **配置项变动**：移除 `Progression.maxPlayerLevel`，同时删掉中英两份 `lang` 里的对应条目。
+  旧配置文件里残留的 `maxPlayerLevel = 1000000` **不再生效**，可手动删掉（不删也只是一行冗余，
+  启动日志会提示未知键，不会影响加载）。`[Progression]` 其余两项（`passiveXpEnabled`、
+  `xpPerKillCountSummons`）保持不变。
+- 版本号 `1.70.8 → 1.70.9`（仅服务端升级逻辑与配置面变动，无协议 / 存档字段变更）。
+
+## [1.70.8] - 2026-10-23
+
+### 🐞 修复「真伤太高时实体直接消失、无掉落」
+
+- **现象**：真伤堆到能一击秒杀时，怪物**没有任何死亡动画就消失，且不掉落物品 / 经验**；
+  伤害没那么高（打不死）时一切正常。
+- **根因**：`applyUnavoidableTrueDamage` 里判断「`setHealth` 是否被锁血拦住」的条件写错了。
+  `setHealth` 把血量 clamp 到 `[0, maxHealth]`，校验却拿**未 clamp 的 `hp - amount`** 比较：
+  致死伤害时右边是负数，`0 > 负数` **恒真**，于是每一次高伤秒杀都会多走一遍 `hurtAsFallback`。
+  而 `hurt()` 的第一行就是 `ForgeHooks.onLivingAttack(...)`（在 `isDeadOrDying()` 判断之前），
+  第三方模组的免死 / 复活 / 掉落保护逻辑会在一个 0 血、马上要被强杀的实体上执行；
+  随后 `forceKill` 仍然 `remove(KILLED)`，结果就是「直接清除实体、无掉落」。
+- **修法**：校验改成与 clamp 之后的期望值比较
+  （`double expected = Math.max(0.0, hp - amount)`，`target.getHealth() > expected + 1e-4`）。
+  - 致死真伤：`expected = 0`、实际血量 `0` → 不再误触发兜底，直接 `forceKill` 走正常 `die` 结算；
+  - 锁血 Boss：`setHealth` 无效、血量仍远高于 `expected` → 兜底照旧生效；
+  - 非致死：行为完全不变。
+- **顺带加固**：`settleDeathRewardsManually` 里 `killedEntity` 与 `dropAllDeathLoot` 拆成独立
+  `try/catch` —— `killedEntity` 会触发成就 / 统计 / 第三方钩子，它抛异常时不能再把后面的
+  掉落一起吃掉（那也是一条「实体被移除但没掉落」的路）。失败上报抽成 `reportManualDropFailure`。
+- 版本号 `1.70.7 → 1.70.8`。
+
+## [1.70.7] - 2026-10-23
+
+### 🐞 真伤强制收尾时补发 `LivingDeathEvent`
+
+- **现象**：1.68.3 补上了「死亡被复活词条拦下」时的掉落（`dropAllDeathLoot`），但只覆盖了
+  战利品表 / 装备 / 经验 / `LivingDropsEvent`。**在 `LivingDeathEvent` 里直接发物品的模组**
+  （典型：给击杀者塞特殊掉落的遗物类模组）依然拿不到东西。
+- **原因**：Forge 的事件总线在事件被取消后，不再分发给 `receiveCanceled = false` 的监听器。
+  第一次 `die()` 里的死亡事件被复活类模组 `setCanceled(true)` 之后，排在它后面的监听器
+  全部被跳过；手动补结算不会重新发事件，自然也补不到它们。
+- **修法**：`settleDeathRewardsManually` 在 `killedEntity` 之后、`dropAllDeathLoot` 之前，
+  补发一次 `LivingDeathEvent`（`MinecraftForge.EVENT_BUS.post(new LivingDeathEvent(target, source))`）。
+  - 用 `REPLAYING_DEATH`（ThreadLocal）限制单层，防止监听器里反过来 `hurt` / `die` 造成嵌套重放。
+  - 补发失败包在 `try/catch (Throwable)` 里，异常不会冒泡到事件总线，也不会吃掉后面的掉落结算。
+  - 排查日志新增 `replay-death` 行（目标名、类名、当前血量、姿态）。
+- **已知局限（设计取舍）**：如果取消者在补发时依然取消（无冷却的无限复活），排在它后面的
+  监听器仍然收不到 —— 补发只能覆盖「一次性 / 有冷却」的复活实现；同时优先级高于取消者的
+  监听器会执行两次，复活类模组会被二次触发（可能再扣一次复活次数或再播一次死亡播报）。
+  这是「真伤击杀不接受别家拦截」的代价。
+- 版本号 `1.70.6 → 1.70.7`。
+
+## [1.70.6] - 2026-10-21
+
+### 🌈 「矿透」兼容光影（Oculus / Iris / OptiFine shaders）
+
+- **问题**：开着光影时矿透的线框**整片消失**，关掉光影立刻恢复。原因不在深度测试，而在时序：
+  光影把世界画进自己的缓冲，等 `LevelRenderer#renderLevel` 收尾时用 final pass **整屏合成**
+  一次 —— 矿透原先画在 `AFTER_TRANSLUCENT_BLOCKS`，画完就被这次合成覆盖掉了。
+  换阶段也没用：`AFTER_LEVEL` 同样在合成之前。
+- **现在**：检测到光影启用时，改到**合成之后**的 HUD 阶段（`RenderGuiEvent.Pre`）再画一遍：
+  把世界渲染那一份**透视投影矩阵 + 相机 pose + 相机坐标**临时装回管线（同时把 modelview 复位成
+  单位阵），顶点走的还是同一个 `renderLineBox`，所以位置、颜色、穿透效果与不开光影时逐像素一致；
+  画完投影 / modelview / 着色器颜色全部原样还原，不影响其它 GUI。
+- **光影判断**：纯反射，不新增编译期依赖 —— 先问 Iris / Oculus 的 `IrisApi#isShaderPackInUse()`，
+  再兜底问 OptiFine 的 `Config#isShaders()`；两个都取不到就是「没开光影」，走原来的画法。
+  注意判的是「光影包有没有启用」而不是「装没装光影模组」：装了但没开光影包时仍是原版渲染路径，
+  没必要绕道。
+- **没开光影时行为零变化**：世界阶段那条路一条语句没动（只是把 GL 状态设置抽成了公共方法）。
+  另外「需潜行激活」「属性未解锁」这类可见性判断由两条路径共用，不会出现「没潜行也在 HUD 上描边」。
+- 顺带修掉一个潜在打架：HUD 阶段借用的 `Tesselator` builder 与 `GuiGraphics` 是同一个，
+  绘制前先 `endBatch()` 提交屏幕上还没 flush 的顶点（例如已打开界面里的内容），避免被 `begin()` 丢弃。
+- 版本号 `1.70.5 → 1.70.6`（纯客户端渲染路径，无协议 / 存档字段变更）。
+
+## [1.70.5] - 2026-10-21
+
+### 🌐 补齐「属性逐项调参」配置界面的译文
+
+- **现象**：配置界面里 `Stats` 这一页整页都是原始键名 —— 分类标题显示
+  `config.infinitestats.category.Stats`，190 个条目显示
+  `config.infinitestats.Stats.attack_damage_perPoint` 这样的键，管理员看不出哪一项管什么属性。
+- **原因**：其它分组都是 `define*("字面键名")`，只有 `Stats` 是由 `StatType.tuningDefaults()`
+  循环拼出来的（`id + "_perPoint"` / `id + "_maxPoints"`），这些键从来没写进语言文件；
+  旧的 `checkLang` 只认字面键名，所以一直静默漏过。
+- **补齐**：新增分类标题 `config.infinitestats.category.Stats`（`属性逐项调参` / `Stat Tuning`）
+  与 190 条条目译文（中英各一份）：113 个内置属性里，77 个普通属性是
+  「<属性名> 每点数值 / <属性名> 点数上限」，36 个开关型属性只有「<属性名> 解锁点数」。
+- **校验也补上了**：`checkLang` 现在会识别 `define*(变量 + "_后缀")` 这种拼接写法，
+  从 `StatType.java` 的 `create("id")` 列表展开成具体键名（`create(...)` 到下一项之间出现
+  `.toggle()` 的视为开关型，不要求 `_perPoint`）；解析不到属性表时直接让构建失败，
+  避免以后再出现「整页原始键名」。缺键时依旧报 `zh_cn: config.infinitestats.Stats.xxx`。
+- 顺带确认：`Stats` 分组只覆盖**内置属性**，其它模组自动发现的 `attr.*` 属性不在这张表里，
+  不会在配置界面冒出未翻译的条目。
+- 版本号 `1.70.4 → 1.70.5`（纯资源与构建脚本，无协议 / 存档字段变更）。
+
+## [1.70.4] - 2026-10-21
+
+### 🐛 「自动冶炼」开启后幸运方块 / 随机矿石失效
+
+- **现象**：开启「自动冶炼」后去挖幸运方块（Lucky Block / Integrated Lucky Blocks）或随机矿石
+  （Randomium 等），方块能被挖掉，但随机奖励完全不触发，只掉方块本身；关掉自动冶炼就正常。
+- **原因**：自动冶炼为了能往掉落里额外塞成品，会取消原版挖掘事件、由本模组接管破坏：
+  先用 `Block.getDrops` 自己算掉落，再 `level.destroyBlock` 移除方块。而这类方块的效果写在
+  `onDestroyedByPlayer` / `playerWillDestroy` / `playerDestroy` 或实例 `getDrops` 里，
+  接管流程一个都调不到，于是「挖了没反应」。
+- **修复**：新增 `UtilityHandler#hasCustomBreakBehavior` —— 破坏前按方块类反射检查上述钩子
+  是否被模组重写；被重写就把这一格交回 `player.gameMode.destroyBlock` 的原版流程
+  （主方块与连锁方块各自判定），方块自己的随机奖励照常触发。
+  - 原版方块与本模组方块直接跳过检测；Forge 在 `IForgeBlock` 上的 default 实现不算「重写」，
+    所以普通模组矿石（只靠战利品表出货）照旧吃自动冶炼。
+  - 代价：这类方块的这一格不再额外产出成品、也不会被「掉落直接进背包」收走 —— 换方块机制正常。
+  - 检测结果按方块类缓存（`ConcurrentHashMap`），不会每次挖掘都反射一遍。
+- 版本号 `1.70.3 → 1.70.4`（纯服务端逻辑，无协议 / 存档字段变更）。
+
 ## [1.70.3] - 2026-10-20
 
 ### 🔧 「冷却缩减」满额（100%）清理范围补上 Curios 饰品栏

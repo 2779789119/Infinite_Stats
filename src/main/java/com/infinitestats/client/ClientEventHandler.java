@@ -1,6 +1,7 @@
 package com.infinitestats.client;
 
 import com.infinitestats.InfiniteStats;
+import com.infinitestats.Config;
 import com.infinitestats.emc.EmcMenu;
 import com.infinitestats.emc.ModMenuTypes;
 import com.infinitestats.crafting.PortableCraftingMenu;
@@ -130,32 +131,51 @@ public final class ClientEventHandler {
         // 打开物品编辑器
         while (ClientSetup.OPEN_ITEM_EDITOR_KEY.consumeClick()) {
             if (mc.screen != null) break;
+            if (!panelAvailable(mc, "item_editor")) break;
             mc.setScreen(new ItemEditorScreen());
         }
 
         // 打开 EMC 转化桌
         while (ClientSetup.OPEN_EMC_KEY.consumeClick()) {
             if (mc.screen != null) break;
+            if (!panelAvailable(mc, "emc")) break;
             NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket());
         }
 
         // 打开成就管理器
         while (ClientSetup.OPEN_ACHIEVEMENTS_KEY.consumeClick()) {
             if (mc.screen != null) break;
+            if (!panelAvailable(mc, "achievements")) break;
             mc.setScreen(new AchievementManagerScreen());
         }
 
         // 打开传送点面板
         while (ClientSetup.OPEN_WAYPOINT_KEY.consumeClick()) {
             if (mc.screen != null) break;
+            if (!panelAvailable(mc, "waypoint")) break;
             mc.setScreen(new WaypointScreen());
         }
 
         // 打开随身工具面板
         while (ClientSetup.OPEN_TOOLS_KEY.consumeClick()) {
             if (mc.screen != null) break;
+            if (!panelAvailable(mc, "tools")) break;
             mc.setScreen(new PortableToolsScreen());
         }
+    }
+
+    /**
+     * 面板被整合包作者在配置里隐藏时提示一句并返回 false。
+     * <p>
+     * 快捷键按了完全没反应最容易让人以为是模组坏了，所以这里留一条动作栏提示。
+     */
+    static boolean panelAvailable(Minecraft mc, String panelId) {
+        if (!Config.isPanelHidden(panelId)) return true;
+        if (mc.player != null) {
+            mc.player.displayClientMessage(
+                    Component.translatable("message.infinitestats.panel_hidden"), true);
+        }
+        return false;
     }
 
     // ========== 客户端强制维持夜视（彻底绕过任何模组拦截） ==========

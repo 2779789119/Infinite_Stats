@@ -393,7 +393,7 @@ public final class PortableInfuser {
     private static void pay(ServerPlayer player, PlayerStats stats, Payment payment, long cost) {
         if (cost <= 0L) return;
         if (payment == Payment.POINTS) {
-            if (stats != null) stats.setAvailablePoints(stats.getAvailablePoints() - cost);
+            if (stats != null) stats.addAvailablePoints(-cost);
         } else if (!player.isCreative()) {
             // 等级上限是 int 上限，这里再夹一道，避免天文数字转 int 时符号翻掉变成「白送等级」
             player.giveExperienceLevels((int) -Math.min(cost, Integer.MAX_VALUE));
@@ -404,7 +404,7 @@ public final class PortableInfuser {
     public static void refund(ServerPlayer player, PlayerStats stats, Payment payment, long amount) {
         if (amount <= 0L) return;
         if (payment == Payment.POINTS) {
-            if (stats != null) stats.setAvailablePoints(stats.getAvailablePoints() + amount);
+            if (stats != null) stats.addAvailablePoints(amount);
         } else {
             player.giveExperienceLevels((int) amount);
         }

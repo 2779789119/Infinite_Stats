@@ -26,6 +26,8 @@ import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.entity.living.LivingDeathEvent;
 
 import java.util.List;
 import java.util.UUID;
@@ -49,6 +51,15 @@ public class AttackHandler implements StatEffectHandler {
     /** 与 StatEventHandler 共用同一个排查开关：-Dinfinitestats.debugTrueDamage=true */
     private static final boolean DEBUG_TRUE_DAMAGE =
             Boolean.getBoolean("infinitestats.debugTrueDamage");
+
+    /**
+     * 「重放死亡事件」的防重入标记。
+     * <p>
+     * 重放会再次触发所有监听器；如果某个监听器在事件里反过来调用 {@code hurt} / {@code die}，
+     * 就会形成嵌套重放。用这个标记把重放限制在单层。
+     */
+    private static final ThreadLocal<Boolean> REPLAYING_DEATH =
+            ThreadLocal.withInitial(() -> false);
 
     /**
      * 判断伤害来源是否为本模组的"直接伤害"，用于防止范围/真实伤害二次
@@ -347,12 +358,19 @@ public class AttackHandler implements StatEffectHandler {
             return;
         }
 
-        target.setHealth((float) Math.max(0.0, hp - amount));
+        // 期望血量：伤害高于当前血量时直接 clamp 到 0，下面的校验必须拿这个值来比。
+        double expected = Math.max(0.0, hp - amount);
+        target.setHealth((float) expected);
         // 校验直接扣血是否真的生效：个别模组的 Boss 会锁血 / 在 setHealth 上做手脚
         // （实测 LegendaryMonsters 的坠落圣骑：setHealth 之后血量纹丝不动，而 hurt() 照常结算）。
         // 这时退回正规伤害流程 —— 本模组的 direct_damage 带 bypasses_invulnerability，
         // 能跳过那类「在 hurt() 里钳上限」的实现。
-        if (target.getHealth() > hp - amount + 1.0E-4) {
+        // <p>
+        // 必须与 clamp 之后的 expected 比较：直接拿 hp - amount 比时，致死伤害的右边是负数，
+        // 条件恒真 —— 每一次高伤秒杀都会多绕一遍 hurt()，在已经 0 血的目标上触发第三方
+        // LivingAttackEvent 的免死 / 复活 / 掉落保护逻辑，随后又被 forceKill 强杀移除，
+        // 表现就是「真伤一高，实体直接消失且没有掉落」。
+        if (target.getHealth() > expected + 1.0E-4) {
             hurtAsFallback(target, amount, attacker);
         }
         if (target.getHealth() <= 0.0F) {
@@ -425,26 +443,81 @@ public class AttackHandler implements StatEffectHandler {
      * {@link LivingEntityAccessor} 暴露；它内部已经包含 {@code dropExperience()} 与
      * {@code ForgeHooks.onLivingDrops}，所以只调这一个就够。掉落是否按玩家击杀 roll
      * 取决于 {@code lastHurtByPlayerTime}，调用前已由 {@link #forceKill} 设好。
+     * <p>
+     * 但 {@code LivingDropsEvent} 覆盖不到「在 {@code LivingDeathEvent} 里直接发物品」的模组，
+     * 所以掉落之前还要补发一次死亡事件，见 {@link #replayLivingDeath}。
      */
     private static void settleDeathRewardsManually(LivingEntity target, ServerPlayer attacker,
                                                    DamageSource source) {
+        // 与 die() 的顺序保持一致：先记击杀统计 / 成就，再结算掉落。
+        // 每一步单独兜异常 —— killedEntity 会触发成就 / 统计 / 第三方钩子，那里抛异常
+        // 不能把后面的掉落一起吃掉（否则又是一条「实体被移除但没掉落」的路）。
         try {
             if (target.level() instanceof ServerLevel serverLevel) {
-                // 与 die() 的顺序保持一致：先记击杀统计 / 成就，再结算掉落
                 attacker.killedEntity(serverLevel, target);
             }
+        } catch (Throwable t) {
+            reportManualDropFailure(target, t);
+        }
+        // 第一次 die() 里的事件被取消后，排在取消者之后的监听器没收到过死亡通知；
+        // 补发一次，让「在 LivingDeathEvent 里发特殊掉落」的模组也有机会执行。
+        replayLivingDeath(target, source);
+        try {
             ((LivingEntityAccessor) target).infinitestats$dropAllDeathLoot(source);
         } catch (Throwable t) {
-            // 异常绝不能冒泡到 Forge 事件总线（详见 StatEventHandler.onLivingHurt 的同类处理）
-            System.err.println("[infinitestats] 真伤击杀补掉落失败（已抑制）：target="
-                    + target.getName().getString() + " class=" + target.getClass().getName());
-            t.printStackTrace();
+            reportManualDropFailure(target, t);
         }
         if (DEBUG_TRUE_DAMAGE) {
             System.out.println("[InfiniteStats][TrueDamage] manual-drops target="
                     + target.getName().getString()
                     + " class=" + target.getClass().getSimpleName()
                     + " hp=" + target.getHealth());
+        }
+    }
+
+    /** 补结算某一步失败时的统一上报：只打日志，绝不冒泡到 Forge 事件总线。 */
+    private static void reportManualDropFailure(LivingEntity target, Throwable t) {
+        System.err.println("[infinitestats] 真伤击杀补结算失败（已抑制）：target="
+                + target.getName().getString() + " class=" + target.getClass().getName());
+        t.printStackTrace();
+    }
+
+    /**
+     * 死亡已被第三方取消时，补发一次 {@code LivingDeathEvent}。
+     * <p>
+     * 为什么必须补：Forge 的事件总线在事件被取消后，不再分发给
+     * {@code receiveCanceled = false} 的监听器。第一次 {@code die()} 里的死亡事件被复活类模组
+     * 取消后，排在它后面的监听器全部被跳过 —— 手动补 {@code dropAllDeathLoot} 只能覆盖
+     * 战利品表 / 装备 / 经验 / {@code LivingDropsEvent}，覆盖不到「在死亡事件里直接发物品」的模组
+     * （典型：某些遗物模组在 {@code LivingDeathEvent} 里给击杀者塞特殊掉落）。
+     * <p>
+     * <b>局限</b>：如果取消者在补发时依然取消（无冷却、无限次复活），排在它后面的监听器仍然
+     * 收不到 —— 补发只能覆盖「一次性 / 有冷却」的复活实现。<b>副作用</b>：优先级高于取消者的
+     * 监听器会执行两次，复活类模组会被二次触发（可能再扣一次复活次数、再播一次死亡播报）。
+     * 这是「真伤击杀不接受别家拦截」明确选择的代价。
+     * <p>
+     * 用 {@link #REPLAYING_DEATH} 限制单层，避免监听器里反过来 {@code hurt} / {@code die}
+     * 造成的嵌套重放。
+     */
+    private static void replayLivingDeath(LivingEntity target, DamageSource source) {
+        if (REPLAYING_DEATH.get()) return;
+        REPLAYING_DEATH.set(true);
+        try {
+            MinecraftForge.EVENT_BUS.post(new LivingDeathEvent(target, source));
+        } catch (Throwable t) {
+            // 同上：异常不能冒泡到 Forge 事件总线，更不能因此吃掉后面的掉落结算
+            System.err.println("[infinitestats] 真伤击杀补发 LivingDeathEvent 失败（已抑制）：target="
+                    + target.getName().getString() + " class=" + target.getClass().getName());
+            t.printStackTrace();
+        } finally {
+            REPLAYING_DEATH.set(false);
+        }
+        if (DEBUG_TRUE_DAMAGE) {
+            System.out.println("[InfiniteStats][TrueDamage] replay-death target="
+                    + target.getName().getString()
+                    + " class=" + target.getClass().getSimpleName()
+                    + " hp=" + target.getHealth()
+                    + " pose=" + target.getPose());
         }
     }
 
