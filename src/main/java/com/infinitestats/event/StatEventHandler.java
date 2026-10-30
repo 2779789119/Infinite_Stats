@@ -24,6 +24,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.InteractionResult;
@@ -37,6 +38,7 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.AbstractArrow;
+import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.inventory.MerchantMenu;
 import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.item.trading.MerchantOffers;
@@ -59,9 +61,11 @@ import net.minecraftforge.common.TierSortingRegistry;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
+import net.minecraftforge.event.entity.ProjectileImpactEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingDropsEvent;
 import net.minecraftforge.event.entity.living.LivingEntityUseItemEvent;
@@ -154,6 +158,21 @@ public final class StatEventHandler {
                             true
                     );
                     HandlerRegistry.loginAll(player, stats);
+                    NetworkHandler.syncToClient(player);
+                    return;
+                }
+                // 致死格挡：伤害绕过 hurt() 管线直接落地（外部 setHealth(0) + die、本模组真伤对玩家）
+                // 时，前面几层判定根本不会被调用，只能在这里补一次。成功后血量恢复到本 tick 开始前的快照，
+                // 死亡事件取消，不消耗自动复活冷却。
+                byte lethalAvoid = DefenseHandler.tryLethalAvoid(player, stats, event.getSource());
+                if (lethalAvoid != DefenseHandler.AVOID_NONE) {
+                    event.setCanceled(true);
+                    player.displayClientMessage(
+                            net.minecraft.network.chat.Component.translatable(lethalAvoid == DefenseHandler.AVOID_DODGE
+                                    ? "message.infinitestats.dodged"
+                                    : "message.infinitestats.blocked"),
+                            true
+                    );
                     NetworkHandler.syncToClient(player);
                     return;
                 }
@@ -564,6 +583,46 @@ public final class StatEventHandler {
      * {@code onLivingHurt} 里保留了同样的清零作为兜底（覆盖下一次攻击），两处配合下
      * 玩家的每一击都能全额生效。
      */
+    /**
+     * 弹射物命中玩家：闪避成功时取消命中，让弹射物<b>继续飞</b>。
+     * <p>
+     * 这是「不要判定为击中」的关键一步：原版在 {@code hurt()} 返回 false 时仍然会让箭插在身上并消失
+     * （{@code AbstractArrow.onHitEntity} 的收尾与 {@code hurt} 的返回值无关），画面上就是
+     * 「明明闪避了却中了一箭」。取消 {@code ProjectileImpactEvent} 会让 {@code onHitEntity}
+     * 完全不执行，箭原样穿过去。
+     * <p>
+     * 只拦 {@code AVOID_DODGE}：格挡的语义是「打中了但被挡下」，箭该消失；未触发任何判定的情况
+     * 正常命中。判定结果与后续的 {@code LivingAttackEvent} 共用同一份缓存（键都是弹射物实体），
+     * 所以一次命中只会 roll 一次。
+     */
+    @SubscribeEvent
+    public static void onProjectileImpact(ProjectileImpactEvent event) {
+        if (!(event.getRayTraceResult() instanceof EntityHitResult hit)) return;
+        if (!(hit.getEntity() instanceof ServerPlayer player)) return;
+        Projectile projectile = event.getProjectile();
+        if (projectile.level().isClientSide) return;
+        if (projectile.getOwner() == player) return;
+
+        boolean dodged = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .map(stats -> DefenseHandler.tryAvoidProjectile(player, stats, projectile) == DefenseHandler.AVOID_DODGE)
+                .orElse(false);
+        if (!dodged) return;
+
+        event.setCanceled(true);
+        player.displayClientMessage(
+                net.minecraft.network.chat.Component.translatable("message.infinitestats.dodged"), true);
+
+        // 把弹射物推过玩家：否则它下一 tick 还卡在碰撞箱里，同一发箭会连续触发命中判定。
+        Vec3 motion = projectile.getDeltaMovement();
+        double length = motion.length();
+        if (length > 1.0E-4) {
+            projectile.setPos(
+                    player.getX() + motion.x / length * 1.5,
+                    player.getY() + player.getBbHeight() * 0.5,
+                    player.getZ() + motion.z / length * 1.5);
+        }
+    }
+
     @SubscribeEvent(priority = EventPriority.HIGHEST)
     public static void onLivingAttack(LivingAttackEvent event) {
         LivingEntity target = event.getEntity();
@@ -624,17 +683,17 @@ public final class StatEventHandler {
         // 检查免疫
         if (DefenseHandler.isImmune(stats, source, player)) return true;
 
-        // 闪避
-        if (DefenseHandler.handleDodge(player, stats)) {
+        // 闪避 / 格挡：一次判定、结果缓存，后续的事件层与弹射物命中层复用同一个结果。
+        // 顺序是「先闪避、后格挡」—— 闪避的语义是「攻击根本不存在」，所以优先。
+        byte avoid = DefenseHandler.tryAvoid(player, stats, source);
+        if (avoid == DefenseHandler.AVOID_DODGE) {
             player.displayClientMessage(
                     net.minecraft.network.chat.Component.translatable("message.infinitestats.dodged"),
                     true
             );
             return true;
         }
-
-        // 格挡
-        if (DefenseHandler.handleBlock(player, stats)) {
+        if (avoid == DefenseHandler.AVOID_BLOCK) {
             player.displayClientMessage(
                     net.minecraft.network.chat.Component.translatable("message.infinitestats.blocked"),
                     true
@@ -1282,6 +1341,23 @@ public final class StatEventHandler {
         // 真伤是独立扣血，照常落地 —— 别家的闪避 / 无敌 / 限伤不能吞掉它。
         final boolean mainDamageResolved = !event.isCanceled();
 
+        // 格挡兜底：个别实现会绕过 LivingAttackEvent 直接进 actuallyHurt，走到这里才第一次有机会判定。
+        // 正常路径下攻击层已经判定过，这里命中缓存直接复用结果，不会重复 roll（否则格挡率虚高）。
+        if (mainDamageResolved && event.getAmount() > 0 && event.getEntity() instanceof ServerPlayer blockedPlayer) {
+            byte avoid = blockedPlayer.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                    .map(stats -> DefenseHandler.tryAvoid(blockedPlayer, stats, event.getSource()))
+                    .orElse(DefenseHandler.AVOID_NONE);
+            if (avoid != DefenseHandler.AVOID_NONE) {
+                event.setAmount(0);
+                event.setCanceled(true);
+                blockedPlayer.displayClientMessage(
+                        net.minecraft.network.chat.Component.translatable(avoid == DefenseHandler.AVOID_DODGE
+                                ? "message.infinitestats.dodged"
+                                : "message.infinitestats.blocked"), true);
+                return;
+            }
+        }
+
         // 致死伤害预拦截：这一下会打死玩家时直接复活并把伤害清零，玩家不会进入死亡流程。
         // 必须放在真伤结算之前 —— 真伤是直接 setHealth 扣血，等落地后再拦就只剩一具 0 血尸体了。
         // 覆盖范围比死亡事件更广：/kill、绕过无敌的伤害、以及其它模组挂在 die 上的逻辑
@@ -1395,6 +1471,27 @@ public final class StatEventHandler {
 
     // ========== 玩家Tick事件 ==========
 
+    /**
+     * 服务端 tick 末尾再兜一次零血。
+     * <p>
+     * 玩家 tick 结束后，仍可能有模组在 {@code ServerTickEvent.END} 里把血量清零（处决类模组的
+     * 每 tick 强制执行就挂在这个阶段）。这里同样挂在 END 的最末优先级再拉一次，
+     * 与玩家 tick 那处形成双保险 —— 两个时机总有一个能覆盖到。
+     */
+    @SubscribeEvent(priority = EventPriority.LOWEST)
+    public static void onServerTickZeroHealth(TickEvent.ServerTickEvent event) {
+        if (event.phase != TickEvent.Phase.END) return;
+        MinecraftServer server = net.minecraftforge.server.ServerLifecycleHooks.getCurrentServer();
+        if (server == null) return;
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                if (DefenseHandler.preventZeroHealth(player, stats)) {
+                    NetworkHandler.syncToClient(player);
+                }
+            });
+        }
+    }
+
     @SubscribeEvent
     public static void onPlayerTick(TickEvent.PlayerTickEvent event) {
         if (event.phase != TickEvent.Phase.END || event.player.level().isClientSide) return;
@@ -1406,6 +1503,16 @@ public final class StatEventHandler {
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             try {
                 HandlerRegistry.tickAll(player, stats, tickCount);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+            try {
+                // 零血兜底：处决类伤害直接 setHealth(0)，且会在死亡事件上以 LOWEST 优先级
+                // setCanceled(false) 撤销我们的拦截 —— 事件层没有剩余手段，只能在每 tick 结束时
+                // 用血量快照拉回来（详见 DefenseHandler#preventZeroHealth）。
+                if (DefenseHandler.preventZeroHealth(player, stats)) {
+                    NetworkHandler.syncToClient(player);
+                }
             } catch (Throwable t) {
                 t.printStackTrace();
             }

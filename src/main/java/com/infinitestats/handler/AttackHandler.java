@@ -343,6 +343,13 @@ public class AttackHandler implements StatEffectHandler {
         DamageSource source = attacker.damageSources().playerAttack(attacker);
 
         if (target instanceof ServerPlayer victim) {
+            // 格挡：真伤是直接 setHealth 扣血、完全不走 hurt() 的实现，攻击层的格挡判定接不到，
+            // 必须在这里补一次。挡住就直接返回 —— 血量一点不动，也不会调用 die。
+            byte avoid = victim.getCapability(com.infinitestats.stats.PlayerStatsProvider.PLAYER_STATS)
+                    .map(stats -> DefenseHandler.tryAvoid(victim, stats, source))
+                    .orElse(DefenseHandler.AVOID_NONE);
+            if (avoid != DefenseHandler.AVOID_NONE) return;
+
             // 真伤穿盾：按「不扣吸收护盾」的口径判致死，否则有盾挡着也会白耗一次复活冷却。
             boolean revived = victim.getCapability(com.infinitestats.stats.PlayerStatsProvider.PLAYER_STATS)
                     .map(stats -> DefenseHandler.handleLethalDamage(

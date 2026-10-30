@@ -1,5 +1,6 @@
 package com.infinitestats.client;
 
+import com.infinitestats.compat.CuriosBridge;
 import com.infinitestats.compat.PinyinSearchBridge;
 import com.infinitestats.compat.SlashBladeCompat;
 import com.infinitestats.network.EditItemPacket;
@@ -166,6 +167,20 @@ public class ItemEditorScreen extends PanelScreen {
             attrs.add(new AttrEntry(c.getString("AttributeName"),
                     c.getInt("Operation"), c.getDouble("Amount"), slot, c.copy()));
         }
+
+        // 饰品属性单独一段（Slot 已被改写成 curio / curio:<槽位类型>），合并进同一个列表编辑
+        ListTag curio = ItemEditUtil.readCurioAttributes(stack, curioSlotTypes());
+        for (int i = 0; i < curio.size(); i++) {
+            CompoundTag c = curio.getCompound(i);
+            attrs.add(new AttrEntry(c.getString("AttributeName"),
+                    c.getInt("Operation"), c.getDouble("Amount"), c.getString("Slot"), c.copy()));
+        }
+    }
+
+    /** 当前可用的饰品槽位类型（Curios 未加载时为空表）。 */
+    static Set<String> curioSlotTypes() {
+        List<String> ids = CuriosBridge.slotTypeIds();
+        return ids.isEmpty() ? Collections.emptySet() : new HashSet<>(ids);
     }
 
     // ======================== 初始化 ========================
@@ -786,15 +801,23 @@ public class ItemEditorScreen extends PanelScreen {
             }
         }
         ListTag at = null;
+        ListTag ct = null;
         if (attrsChanged) {
             at = new ListTag();
+            ct = new ListTag();
+            Set<String> curioTypes = curioSlotTypes();
             for (AttrEntry a : attrs) {
-                CompoundTag entry = a.original().copy();
-                ItemEditUtil.updateAttribute(entry, a.op(), a.amount(), a.slot());
-                at.add(entry);
+                if (ItemEditUtil.isCurioSlot(a.slot())) {
+                    // 饰品属性写 Curios 自己的列表，一条按槽位类型展开成多条
+                    ct.addAll(ItemEditUtil.curioSaveEntries(a.original(), a.op(), a.amount(), a.slot(), curioTypes));
+                } else {
+                    CompoundTag entry = a.original().copy();
+                    ItemEditUtil.updateAttribute(entry, a.op(), a.amount(), a.slot());
+                    at.add(entry);
+                }
             }
         }
-        NetworkHandler.CHANNEL.sendToServer(new EditItemPacket(selectedSlot, itemId, expected, en, at));
+        NetworkHandler.CHANNEL.sendToServer(new EditItemPacket(selectedSlot, itemId, expected, en, at, ct));
         // 保存结果由服务端提示；再次编辑重新读取服务端已同步的物品。
         onClose();
     }
@@ -848,7 +871,19 @@ public class ItemEditorScreen extends PanelScreen {
         return id;
     }
 
-    private String slotLabel(String id) {
+    /** 槽位 ID → 显示名（含 Curios 饰品槽位）。 */
+    static String slotLabel(String id) {
+        if (id == null || id.isEmpty()) return SLOT_LABELS[0];
+        if (ItemEditUtil.CURIO_SLOT.equals(id)) {
+            return Component.translatable("screen.infinitestats.item_editor.slot_curio").getString();
+        }
+        if (ItemEditUtil.isCurioSpecificSlot(id)) {
+            String type = id.substring(ItemEditUtil.CURIO_PREFIX.length());
+            String key = "curios.identifier." + type;
+            String name = Component.translatable(key).getString();
+            if (name.equals(key)) name = type;
+            return Component.translatable("screen.infinitestats.item_editor.slot_curio_named", name).getString();
+        }
         int i = indexOf(SLOT_IDS, id);
         return i >= 0 ? SLOT_LABELS[i] : id;
     }

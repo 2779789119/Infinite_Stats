@@ -302,6 +302,10 @@ public class StatsScreen extends PanelScreen {
         super.init();
         recalcPanelPosition();
         cachedStats = getPlayerStats();
+        // 当前选中的分类被作者在配置里隐藏时，回退到第一个可见分类
+        if (Config.isCategoryHidden(selectedCategory)) {
+            selectedCategory = visibleCategories()[0];
+        }
         buildCategoryMap();
         updateMaxScroll();
         rebuildAllWidgets();
@@ -490,6 +494,8 @@ public class StatsScreen extends PanelScreen {
         String search = searchBox != null ? searchBox.getValue().toLowerCase().trim() : "";
 
         for (StatCategory cat : StatCategory.values()) {
+            // 被作者隐藏的分类：整组不参与列表构建（标签页、搜索、收藏都看不到）
+            if (Config.isCategoryHidden(cat)) continue;
             List<StatType> list = new ArrayList<>();
             for (StatType stat : StatType.ALL_STATS) {
                 if (stat.getCategory() == cat) {
@@ -620,9 +626,24 @@ public class StatsScreen extends PanelScreen {
         if (depositFilterBtn != null) addRenderableWidget(depositFilterBtn);
     }
 
+    /**
+     * 可见（未被作者在配置里隐藏）的属性分类。
+     * <p>
+     * 全部被隐藏时兜底返回「攻击」，避免顶部标签栏整块空掉、界面没法操作。
+     */
+    private static StatCategory[] visibleCategories() {
+        List<StatCategory> list = new ArrayList<>();
+        for (StatCategory cat : StatCategory.values()) {
+            if (!Config.isCategoryHidden(cat)) list.add(cat);
+        }
+        return list.isEmpty()
+                ? new StatCategory[]{StatCategory.ATTACK}
+                : list.toArray(new StatCategory[0]);
+    }
+
     private void addCategoryTabs() {
-        int tabWidth = GUI_WIDTH / StatCategory.values().length;
-        StatCategory[] cats = StatCategory.values();
+        StatCategory[] cats = visibleCategories();
+        int tabWidth = GUI_WIDTH / cats.length;
         for (int i = 0; i < cats.length; i++) {
             final StatCategory cat = cats[i];
             int tx = i * tabWidth;
@@ -1658,7 +1679,7 @@ public class StatsScreen extends PanelScreen {
         }
 
         if (keyCode >= GLFW.GLFW_KEY_1 && keyCode <= GLFW.GLFW_KEY_9) {
-            StatCategory[] cats = StatCategory.values();
+            StatCategory[] cats = visibleCategories();
             int index = keyCode - GLFW.GLFW_KEY_1;
             if (index < cats.length) {
                 selectCategory(cats[index]);

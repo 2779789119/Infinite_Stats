@@ -42,6 +42,28 @@ public class PlayerStats {
     private float shieldAbsorption = 0;
 
     /**
+     * 上一 tick 结束时的生命值快照。
+     * <p>
+     * 只在「致死格挡」里用到：伤害完全绕过 {@code hurt()} 管线（外部直接 {@code setHealth(0)} + {@code die()}）
+     * 时，玩家的血量已经是 0，光取消死亡事件只能让他卡在 0 血，必须恢复到这一击落地前的数值。
+     * 常规伤害走攻击 / 伤害事件就拦住了，用不到快照。
+     */
+    private float lastKnownHealth = -1;
+
+    /**
+     * 闪避 / 格挡决策缓存：同一次伤害会依次经过 {@code LivingAttackEvent} / {@code LivingDamageEvent}
+     * / {@code LivingDeathEvent} 多层，若每层都 roll 一次，实际触发率会变成 {@code 1-(1-p)^n}。
+     * 这里按<b>攻击来源实例</b>缓存判定结果（伤害源本身，或弹射物实体 —— 两者在整条飞行 / 命中流程里
+     * 是同一个对象），保证「一次攻击只判定一次」。
+     * <p>
+     * 取值：{@code 0} = 未闪避也未格挡，{@code 1} = 闪避，{@code 2} = 格挡。
+     * <p>
+     * 缓存按 tick 失效：{@code avoidDecisionTick} 变化时整表清空，避免长期持有引用。
+     */
+    private final Map<Object, Byte> avoidDecisions = new IdentityHashMap<>();
+    private long avoidDecisionTick = Long.MIN_VALUE;
+
+    /**
      * 已经移除的属性 id。
      * 旧存档里投入这些属性的点数，在加载时全额退还到可用点数（见 {@link #deserializeNBT}），
      * 避免整合包升级后玩家凭空损失点数（属性定义删掉后 {@code StatType.fromId} 会返回 null，
@@ -536,6 +558,40 @@ public class PlayerStats {
 
     public void setShieldAbsorption(float value) {
         shieldAbsorption = Math.max(0, value);
+    }
+
+    // ========== 格挡 ==========
+
+    /** 最后一个 tick 结束时的血量；负值表示尚未采样。 */
+    public float getLastKnownHealth() {
+        return lastKnownHealth;
+    }
+
+    public void setLastKnownHealth(float value) {
+        lastKnownHealth = value;
+    }
+
+    /**
+     * 查询某次攻击在本 tick 是否已经判定过闪避 / 格挡。
+     *
+     * @return {@code null} = 还没判过（需要 roll）；否则是上一次的判定结果
+     */
+    public Byte getAvoidDecision(Object source, long tick) {
+        syncAvoidDecisionTick(tick);
+        return avoidDecisions.get(source);
+    }
+
+    /** 记录某次攻击在本 tick 的判定结果（0 = 无，1 = 闪避，2 = 格挡）。 */
+    public void putAvoidDecision(Object source, long tick, byte result) {
+        syncAvoidDecisionTick(tick);
+        avoidDecisions.put(source, result);
+    }
+
+    private void syncAvoidDecisionTick(long tick) {
+        if (avoidDecisionTick != tick) {
+            avoidDecisions.clear();
+            avoidDecisionTick = tick;
+        }
     }
 
     // ========== 被动经验计数器 ==========

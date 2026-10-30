@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -40,8 +41,84 @@ public final class CuriosBridge {
 
     private static Boolean loaded;
     private static boolean warnOnce;
+    /** 已注册的饰品槽位类型 ID（按 Curios 的 order 排序）；空结果不缓存，等同步完成后再取。 */
+    private static List<String> slotTypeIds;
+    /**
+     * Curios 内置的默认槽位类型（对应 jar 里 data/curios/curios/slots/*.json）。
+     * 槽位表要等 datapack 同步到客户端才完整，读不到时按这份兜底展开，写多了 Curios 也会忽略。
+     */
+    private static final List<String> DEFAULT_SLOT_TYPES =
+            List.of("curio", "necklace", "ring", "head", "back", "belt", "body", "charm", "hands", "bracelet");
 
     private CuriosBridge() {
+    }
+
+    /**
+     * Curios 已注册的饰品槽位类型标识（如 {@code ring} / {@code necklace} / {@code belt}）。
+     * <p>
+     * 物品编辑器要用它把「饰品」属性展开成每个槽位一条 —— Curios 5.x 只认
+     * {@code CurioAttributeModifiers} 里 {@code Slot} 与槽位类型标识**完全相等**的条目，
+     * 原版 {@code AttributeModifiers} 的 {@code Slot} 对它无效。
+     *
+     * @return 槽位类型 ID 列表；Curios 未加载时为 {@link List#of()}（空表），
+     *         已加载但槽位表还没同步时退回 Curios 内置的那几个默认类型
+     */
+    public static List<String> slotTypeIds() {
+        if (!isLoaded()) return List.of();
+        if (slotTypeIds != null && !slotTypeIds.isEmpty()) return slotTypeIds;
+
+        List<String> ids = new ArrayList<>();
+        try {
+            Class<?> api = Class.forName(API_CLASS);
+            Object helper = api.getMethod("getSlotHelper").invoke(null);
+            if (helper != null) {
+                Class<?> helperIface = Class.forName("top.theillusivec4.curios.api.type.util.ISlotHelper");
+                Class<?> typeIface = Class.forName("top.theillusivec4.curios.api.type.ISlotType");
+                Object raw = helperIface.getMethod("getSlotTypes").invoke(helper);
+                Method getIdentifier = typeIface.getMethod("getIdentifier");
+                Method getOrder = typeIface.getMethod("getOrder");
+                List<Object> types = new ArrayList<>();
+                if (raw instanceof java.util.Collection<?> c) types.addAll(c);
+                // 按 Curios 自己的 order 排，界面上的顺序才和饰品栏一致
+                types.sort(Comparator.comparingInt(t -> {
+                    try {
+                        return (int) getOrder.invoke(t);
+                    } catch (Throwable ignored) {
+                        return 0;
+                    }
+                }));
+                for (Object type : types) {
+                    Object id = getIdentifier.invoke(type);
+                    if (id != null && !String.valueOf(id).isBlank()) ids.add(String.valueOf(id));
+                }
+            }
+        } catch (Throwable t) {
+            warn("读取 Curios 饰品槽位类型失败，编辑器改用 Curios 内置的默认槽位", t);
+        }
+        // 槽位表还没同步到客户端时不能就这么算空，否则「饰品」只会写进一个通用槽位
+        if (ids.isEmpty()) ids.addAll(DEFAULT_SLOT_TYPES);
+        if (!ids.isEmpty()) slotTypeIds = ids;
+        return ids;
+    }
+
+    /**
+     * 物品是否被 Curios 认作饰品（有 curio capability）。
+     * <p>
+     * 只有这类物品才会被 Curios 在饰品栏里处理：属性生效、tooltip 里出现「佩戴X时：」都以此为前提。
+     * 往非饰品物品上写 {@code CurioAttributeModifiers} 不会有任何效果。
+     */
+    public static boolean isCurioItem(ItemStack stack) {
+        if (!isLoaded() || stack.isEmpty()) return false;
+        try {
+            Class<?> api = Class.forName(API_CLASS);
+            Object raw = api.getMethod("getCurio", ItemStack.class).invoke(null, stack);
+            if (raw == null) return false;
+            Object optional = raw.getClass().getName().contains("LazyOptional")
+                    ? raw.getClass().getMethod("resolve").invoke(raw) : raw;
+            return optional != null && (boolean) optional.getClass().getMethod("isPresent").invoke(optional);
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** Curios 是否已加载。 */

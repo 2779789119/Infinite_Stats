@@ -45,6 +45,12 @@ public class DefenseHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
+        // 血量快照：供「致死格挡」恢复用（伤害完全绕过 hurt() 时血量已经被写成 0，
+        // 只能恢复到这一 tick 开始前的数值）。必须放在所有会改血量的逻辑之前。
+        if (!player.isDeadOrDying() && player.getHealth() > 0) {
+            stats.setLastKnownHealth(player.getHealth());
+        }
+
         // 掉出世界兜底：放在最前。等人受伤时往往已经在虚空底部，甚至已被原版移除，
         // 所以这里按坐标提前拉回（早于原版 -128 的掉出世界伤害）。
         if (handleVoidEscape(player, stats)) {
@@ -463,30 +469,125 @@ public class DefenseHandler implements StatEffectHandler {
         }
     }
 
+    // ======================== 闪避 / 格挡 ========================
+
+    /** 既没闪避也没格挡。 */
+    public static final byte AVOID_NONE = 0;
+    /** 闪避成功：这次攻击视为<b>未命中</b>。 */
+    public static final byte AVOID_DODGE = 1;
+    /** 格挡成功：这次攻击命中了，但被完全挡下。 */
+    public static final byte AVOID_BLOCK = 2;
+
     /**
-     * 处理格挡逻辑
-     * @return true表示格挡成功，取消伤害
+     * 一次攻击的去重键。
+     * <p>
+     * 取「直接来源实体」而不是 {@code DamageSource} 本身：弹射物的命中会先经过
+     * {@code ProjectileImpactEvent}（那里只有弹射物实体，伤害源还没创建），
+     * 再到 {@code LivingAttackEvent}（那里能拿到同一个弹射物）。用实体做键才能让这两层共用一次判定，
+     * 否则闪避会被判定两次、实际概率翻倍。
+     * <p>
+     * 近战时「直接来源」是攻击者本人：同一 tick 内同一攻击者的多段伤害（主伤害 + 范围波及）
+     * 共用一次判定，一次闪避全部落空。
      */
-    public static boolean handleBlock(ServerPlayer player, PlayerStats stats) {
-        float blockChance = Math.min(stats.getStatValue(StatType.fromId("block_chance")),
-                Config.BLOCK_CHANCE_CAP.get().floatValue());
-        if (blockChance > 0 && player.getRandom().nextFloat() < blockChance) {
-            return true;
-        }
-        return false;
+    private static Object avoidKey(net.minecraft.world.damagesource.DamageSource source) {
+        net.minecraft.world.entity.Entity direct = source.getDirectEntity();
+        return direct != null ? direct : source;
     }
 
     /**
-     * 处理闪避逻辑
-     * @return true表示闪避成功，取消伤害
+     * 统一闪避 / 格挡判定入口。
+     * <p>
+     * 顺序：<b>先闪避，后格挡</b>。闪避的语义更强（攻击根本不存在），所以先判；
+     * 闪避没触发才轮到格挡。同一次攻击在本 tick 内只判定一次，多层事件（攻击 / 伤害 / 死亡 /
+     * 弹射物命中）复用同一个结果。
+     *
+     * @return {@link #AVOID_NONE} / {@link #AVOID_DODGE} / {@link #AVOID_BLOCK}
      */
-    public static boolean handleDodge(ServerPlayer player, PlayerStats stats) {
+    public static byte tryAvoid(ServerPlayer player, PlayerStats stats,
+                                net.minecraft.world.damagesource.DamageSource source) {
+        return tryAvoid(player, stats, avoidKey(source));
+    }
+
+    /** 弹射物命中阶段用：此时还没有伤害源，直接以弹射物实体作为去重键。 */
+    public static byte tryAvoidProjectile(ServerPlayer player, PlayerStats stats,
+                                          net.minecraft.world.entity.Entity projectile) {
+        return tryAvoid(player, stats, projectile);
+    }
+
+    private static byte tryAvoid(ServerPlayer player, PlayerStats stats, Object key) {
+        long tick = player.tickCount;
+        Byte decided = stats.getAvoidDecision(key, tick);
+        if (decided != null) return decided;
+
+        byte result = AVOID_NONE;
         float dodgeChance = Math.min(stats.getStatValue(StatType.fromId("dodge_chance")),
                 Config.DODGE_CHANCE_CAP.get().floatValue());
         if (dodgeChance > 0 && player.getRandom().nextFloat() < dodgeChance) {
-            return true;
+            result = AVOID_DODGE;
+        } else {
+            float blockChance = Math.min(stats.getStatValue(StatType.fromId("block_chance")),
+                    Config.BLOCK_CHANCE_CAP.get().floatValue());
+            if (blockChance > 0 && player.getRandom().nextFloat() < blockChance) {
+                result = AVOID_BLOCK;
+            }
         }
-        return false;
+        stats.putAvoidDecision(key, tick, result);
+        return result;
+    }
+
+    /**
+     * 零血兜底：血量已经归零、但死亡流程还没真正开始（{@code dead} 仍为 false）时，
+     * 用上一 tick 的血量快照拉回来。
+     * <p>
+     * 为什么需要绕开事件：有些处决实现直接 {@code setHealth(0)} 并反复清零，而它们在
+     * {@code LivingDeathEvent} 上以 LOWEST 优先级 {@code setCanceled(false)}，
+     * 会把任何模组的「取消死亡」撤销掉 —— 事件层没有剩余手段。
+     * <p>
+     * 只处理「血量为 0 且尚未 dead」的状态：一旦 {@code dead} 为 true（死亡动画已开始），
+     * 说明原版流程已经落地，再拉回来会和重生 / 掉落 / 统计打架。
+     *
+     * @return true = 做过恢复，调用方负责同步给客户端
+     */
+    public static boolean preventZeroHealth(ServerPlayer player, PlayerStats stats) {
+        if (player.isRemoved()) return false;
+        // Pose.DYING 由 die() 设置，是「死亡流程已经真正开始」的可靠标志；
+        // 只看血量会把「被外部清零但还没死」的情况一起排除掉。
+        if (player.getPose() == net.minecraft.world.entity.Pose.DYING) return false;
+        if (player.getHealth() > 0) return false;
+
+        float restore = stats.getLastKnownHealth();
+        if (!(restore > 0) || !Float.isFinite(restore)) {
+            restore = Math.max(1.0f, player.getMaxHealth() * 0.5f);
+        }
+        player.setHealth(Math.min(player.getMaxHealth(), Math.max(1.0f, restore)));
+        player.deathTime = 0;
+        player.setAirSupply(player.getMaxAirSupply());
+        return true;
+    }
+
+    /**
+     * 致死闪避 / 格挡：死亡事件里的最后一道判定。
+     * <p>
+     * 走到这里说明这次伤害完全绕过了 {@code hurt()} 管线（外部直接 {@code setHealth(0)} + {@code die()}，
+     * 或本模组真伤对玩家的直接扣血），前面几层都接不住。成功后把血量恢复到本 tick 开始前的快照，
+     * 并取消死亡事件。
+     * <p>
+     * 与「自动复活」的区别：这一层不消耗复活冷却 —— 它挡的是「伤害」，不是「死亡」。
+     *
+     * @return {@link #AVOID_NONE} = 没拦住；否则已经恢复血量，调用方必须取消死亡事件
+     */
+    public static byte tryLethalAvoid(ServerPlayer player, PlayerStats stats,
+                                      net.minecraft.world.damagesource.DamageSource source) {
+        byte result = tryAvoid(player, stats, source);
+        if (result == AVOID_NONE) return AVOID_NONE;
+
+        float restore = stats.getLastKnownHealth();
+        if (!(restore > 0) || !Float.isFinite(restore)) restore = 1.0f;
+        player.setHealth(Math.min(player.getMaxHealth(), Math.max(1.0f, restore)));
+        player.deathTime = 0;
+        player.setAirSupply(player.getMaxAirSupply());
+        player.fallDistance = 0;
+        return result;
     }
 
     /**

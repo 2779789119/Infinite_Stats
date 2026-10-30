@@ -1,6 +1,8 @@
 package com.infinitestats.client;
 
+import com.infinitestats.compat.CuriosBridge;
 import com.infinitestats.compat.PinyinSearchBridge;
+import com.infinitestats.util.ItemEditUtil;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
@@ -208,12 +210,13 @@ public class ItemEditSelectScreen extends PanelScreen {
             addRenderableWidget(opCycle);
 
             // x 从「返回」按钮右侧起排，二者此前 x 相同导致完全重叠
-            slotCycle = CycleButton.<String>builder(Component::literal)
-                    .withValues(ItemEditorScreen.SLOT_LABELS)
-                    .withInitialValue(ItemEditorScreen.SLOT_LABELS[
-                            editingAttr != null
-                                    ? Math.max(0, ItemEditorScreen.indexOf(ItemEditorScreen.SLOT_IDS, editingAttr.slot()))
-                                    : 0])
+            // 值直接用槽位 ID：饰品槽位要按 Curios 的槽位类型本地化，不能再靠标签下标反查
+            List<String> slotOptions = slotOptions();
+            String slotPreset = editingAttr != null && slotOptions.contains(editingAttr.slot())
+                    ? editingAttr.slot() : slotOptions.get(0);
+            slotCycle = CycleButton.<String>builder(v -> Component.literal(ItemEditorScreen.slotLabel(v)))
+                    .withValues(slotOptions)
+                    .withInitialValue(slotPreset)
                     .create(leftPos + EditorUi.GAP + BTN_BACK_W + EditorUi.GAP, topPos + ROW2_Y,
                             100, INPUT_H,
                             Component.translatable("screen.infinitestats.item_editor.slot"), (b, v) -> {});
@@ -243,6 +246,24 @@ public class ItemEditSelectScreen extends PanelScreen {
 
     private static int clampOp(int op) {
         return Math.max(0, Math.min(ItemEditorScreen.OP_LABELS.length - 1, op));
+    }
+
+    /**
+     * 槽位下拉：原版装备槽 + 「饰品」（全部饰品槽位）+ Curios 已注册的具体饰品槽位。
+     * <p>
+     * Curios 只认与槽位类型标识完全相等的 {@code Slot}，所以「全部」要在写入时展开成每个槽位一条，
+     * 具体槽位则直接对应一个类型；这里把两种都列出来，玩家不必自己猜饰品属于哪一类。
+     */
+    private static List<String> slotOptions() {
+        // 「饰品」紧跟「任意」，否则要点十几次循环才轮得到
+        List<String> options = new ArrayList<>();
+        options.add(ItemEditorScreen.SLOT_IDS[0]);
+        options.add(ItemEditUtil.CURIO_SLOT);
+        for (int i = 1; i < ItemEditorScreen.SLOT_IDS.length; i++) options.add(ItemEditorScreen.SLOT_IDS[i]);
+        for (String id : CuriosBridge.slotTypeIds()) {
+            options.add(ItemEditUtil.CURIO_PREFIX + id);
+        }
+        return options;
     }
 
     // ======================== 绘制 ========================
@@ -414,8 +435,7 @@ public class ItemEditSelectScreen extends PanelScreen {
         String id = selected.rl.toString();
         if (isAttr) {
             int op = clampOp(ItemEditorScreen.indexOf(ItemEditorScreen.OP_LABELS, opCycle.getValue()));
-            int si = Math.max(0, ItemEditorScreen.indexOf(ItemEditorScreen.SLOT_LABELS, slotCycle.getValue()));
-            String slot = ItemEditorScreen.SLOT_IDS[Math.min(si, ItemEditorScreen.SLOT_IDS.length - 1)];
+            String slot = slotCycle.getValue();
             if (editingAttr != null) parent.replaceAttr(editingAttr, id, op, val, slot);
             else parent.addAttr(id, op, val, slot);
         } else {

@@ -125,6 +125,34 @@ public final class Config {
         HIDDEN_PANEL_SWITCHES.put(panelId, value);
     }
 
+    /**
+     * 属性分类（分组）id → 「隐藏该分组」的开关（配置 {@code GUI.hideXxxCategory}）。
+     * <p>
+     * 开关打开后，该分类的标签页不再出现在属性面板顶部，分类里的属性也不会被列出
+     * （搜索、收藏都不显示）；已经加过点的属性效果照旧生效，点数不返还。
+     * 这纯粹是给整合包作者做界面减法用的。
+     */
+    private static final java.util.Map<String, ForgeConfigSpec.BooleanValue> HIDDEN_CATEGORY_SWITCHES
+            = new java.util.LinkedHashMap<>();
+
+    /** 该属性分类是否被作者隐藏（未知分类 / 配置未加载一律视为不隐藏）。 */
+    public static boolean isCategoryHidden(com.infinitestats.stats.StatCategory category) {
+        if (category == null) return false;
+        ForgeConfigSpec.BooleanValue value = HIDDEN_CATEGORY_SWITCHES.get(category.getName());
+        if (value == null) return false;
+        try {
+            Boolean hidden = value.get();
+            return hidden != null && hidden;
+        } catch (Throwable notLoaded) {
+            return false;
+        }
+    }
+
+    /** 登记一个「隐藏属性分类」开关，分类 id → 开关表，供 {@link #isCategoryHidden} 查询。 */
+    private static void registerHideCategory(String categoryId, ForgeConfigSpec.BooleanValue value) {
+        HIDDEN_CATEGORY_SWITCHES.put(categoryId, value);
+    }
+
     // ========== 兼容性设置 ==========
 
     public static ForgeConfigSpec.BooleanValue ENABLE_ATTRIBUTE_DISCOVERY;
@@ -465,6 +493,24 @@ public final class Config {
                          "设为 true 后打开 GUI 即可看到隐藏属性。",
                          "修改后关闭并重新打开属性面板即可生效，无需重启。")
                 .define("showHiddenStats", false);
+        // ---- 属性分类（分组）隐藏开关 ----
+        // 隐藏后该分类的标签页连同分类里的属性一起从面板消失（搜索、收藏也搜不到），
+        // 已加点的属性效果照旧生效、点数不返还；想看回来把开关关掉、重开面板即可。
+        registerHideCategory("attack",
+                builder.comment("隐藏「攻击」分类（顶部标签页与其中的属性一起不显示）。")
+                        .define("hideAttackCategory", false));
+        registerHideCategory("defense",
+                builder.comment("隐藏「防御」分类（顶部标签页与其中的属性一起不显示）。")
+                        .define("hideDefenseCategory", false));
+        registerHideCategory("mobility",
+                builder.comment("隐藏「机动」分类（顶部标签页与其中的属性一起不显示）。")
+                        .define("hideMobilityCategory", false));
+        registerHideCategory("utility",
+                builder.comment("隐藏「实用」分类（顶部标签页与其中的属性一起不显示）。")
+                        .define("hideUtilityCategory", false));
+        registerHideCategory("external",
+                builder.comment("隐藏「外部属性」分类（其他模组属性的标签页一起不显示）。")
+                        .define("hideExternalCategory", false));
         FEATURE_DISABLE_MODE = builder
                 .comment("某个属性被「禁用」时的执行模式 —— 全局设置，对所有人一致。",
                          "keep   = 整条失效，保留已投入的点数（默认）；",
