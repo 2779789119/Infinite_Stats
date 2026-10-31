@@ -17,8 +17,9 @@ import java.util.Set;
  * {@link TaczCameraRecoilMixin} / {@link SbwGunDataMixin} / {@link SbwGunItemMixin} /
  * {@link SbwClientEventHandlerMixin} / {@link SbwVehicleMixin} /
  * {@link SbwVehicleEnergyStorageMixin} / {@link CreateKineticNetworkMixin} /
- * {@link CreateKineticBlockEntityMixin}）的目标类分别在 {@code com.tacz.*}、
- * {@code com.atsuishio.superbwarfare.*} 与 {@code com.simibubi.create.*} 下。
+ * {@link CreateKineticBlockEntityMixin} / {@link SevenfoldBladeCombatMixin}）的目标类分别在
+ * {@code com.tacz.*}、{@code com.atsuishio.superbwarfare.*}、{@code com.simibubi.create.*}
+ * 与 {@code cn.blockforge.generated.sevenfoldblade.*} 下。
  * 对应模组没装时这些类根本不存在，Mixin 会在应用阶段抛
  * {@code ClassMetadataNotFoundException}，在 required 配置里这会直接让游戏起不来 ——
  * 而「本模组无需任何前置」是明确承诺，绝不能让一个可选联动把整包拖崩。
@@ -39,7 +40,8 @@ public class InfiniteStatsMixinPlugin implements IMixinConfigPlugin {
     private static final Map<String, String> GATED_PACKAGES = Map.of(
             "com.tacz.", "tacz",
             "com.atsuishio.superbwarfare.", "superbwarfare",
-            "com.simibubi.create.", "create"
+            "com.simibubi.create.", "create",
+            "cn.blockforge.generated.sevenfoldblade.", "sevenfold_blade"
     );
 
     @Override

@@ -13,6 +13,7 @@
     "EntityMoveRelativeMixin",
     "FishingHookAccessor",
     "LivingEntityAccessor",
+    "PlayerDieMixin",
     "EnchantmentMixin",
     "EnchantmentHelperMixin",
     "TaczGunScriptApiMixin",
@@ -22,7 +23,8 @@
     "SbwVehicleMixin",
     "SbwVehicleEnergyStorageMixin",
     "CreateKineticNetworkMixin",
-    "CreateKineticBlockEntityMixin"
+    "CreateKineticBlockEntityMixin",
+    "SevenfoldBladeCombatMixin"
   ],
   "client": [
     "AnvilScreenMixin",
