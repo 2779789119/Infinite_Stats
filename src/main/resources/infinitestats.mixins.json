@@ -1,0 +1,37 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.infinitestats.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "infinitestats.refmap.json",
+  "plugin": "com.infinitestats.mixin.InfiniteStatsMixinPlugin",
+  "mixins": [
+    "ItemCombinerMenuAccessor",
+    "MerchantMenuAccessor",
+    "AnvilMenuMixin",
+    "AnimalMixin",
+    "EntityMoveRelativeMixin",
+    "FishingHookAccessor",
+    "LivingEntityAccessor",
+    "PlayerDieMixin",
+    "EnchantmentMixin",
+    "EnchantmentHelperMixin",
+    "TaczGunScriptApiMixin",
+    "TaczGunItemMixin",
+    "SbwGunDataMixin",
+    "SbwGunItemMixin",
+    "SbwVehicleMixin",
+    "SbwVehicleEnergyStorageMixin",
+    "CreateKineticNetworkMixin",
+    "CreateKineticBlockEntityMixin",
+    "SevenfoldBladeCombatMixin"
+  ],
+  "client": [
+    "AnvilScreenMixin",
+    "TaczCameraRecoilMixin",
+    "SbwClientEventHandlerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

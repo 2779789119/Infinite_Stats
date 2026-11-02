@@ -1,0 +1,207 @@
+buildscript {
+    repositories {
+        maven { url = 'https://maven.minecraftforge.net' }
+        mavenCentral()
+    }
+    dependencies {
+        classpath group: 'net.minecraftforge.gradle', name: 'ForgeGradle', version: '6.0.+', changing: true
+    }
+}
+
+plugins {
+    // Mixin（用于接管 AnvilMenu 的「过于昂贵」门槛与最终消耗计算）
+    id 'org.spongepowered.mixin' version '0.7.+' apply false
+}
+
+apply plugin: 'net.minecraftforge.gradle'
+apply plugin: 'org.spongepowered.mixin'
+apply plugin: 'eclipse'
+
+version = "${mod_version}"
+group = 'com.infinitestats'
+archivesBaseName = "infinite_stats-无限加点"
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+sourceSets {
+    gameTest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+    }
+    // 第三方模组联动的「编译期存根」（源码在 src/compatApiStub/java）：
+    // Mixin 注解处理器要求 @Mixin 的目标类必须出现在编译期类路径上，否则报
+    // "Mixin target ... could not be found" 直接让构建失败；而 TACZ / Superb Warfare 对本模组
+    // 只是「装了才生效」的可选运行时联动 —— 把对方几十 MB 的 jar 塞进仓库不合适，
+    // 也会随对方升级变味。所以这里只把「被注入 / 被反射用到的成员」编译成空壳。
+    // 存根的产物不会进 jar，运行时也永远不会被加载。
+    compatApiStub {
+        java.srcDir 'src/compatApiStub/java'
+        compileClasspath = configurations.compileClasspath
+    }
+    main.compileClasspath += sourceSets.compatApiStub.output
+}
+
+println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
+
+minecraft {
+    mappings channel: "${mappings_channel}", version: "${mappings_version}"
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            // Mixin 调试运行：refmap 里存的是 SRG 名，dev 环境需要按映射反查回 official 名
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        client {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        server {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            args '--nogui'
+        }
+
+        gameTestServer {
+            workingDirectory project.file('.modmind/gametest')
+            property 'forge.enabledGameTestNamespaces', mod_id
+            mods {
+                "${mod_id}" {
+                    source sourceSets.gameTest
+                }
+            }
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        // JEI
+        url "https://maven.blamejared.com/"
+    }
+    maven {
+        // Cloth Config API（配置界面控件库）
+        url "https://maven.shedaniel.me/"
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    // JEI（仅编译期需要 API；运行时由整合包内的 JEI 提供）
+    compileOnly fg.deobf("mezz.jei:jei-${minecraft_version}-common-api:${jei_version}")
+    compileOnly fg.deobf("mezz.jei:jei-${minecraft_version}-forge-api:${jei_version}")
+    runtimeOnly fg.deobf("mezz.jei:jei-${minecraft_version}-forge:${jei_version}")
+
+    // Cloth Config API（用来画模组列表 →「Config」按钮打开的配置界面）
+    compileOnly fg.deobf("me.shedaniel.cloth:cloth-config-forge:${cloth_config_version}")
+    runtimeOnly fg.deobf("me.shedaniel.cloth:cloth-config-forge:${cloth_config_version}")
+
+    // Mixin 注解处理器：生成 refmap（把 official 名映射成生产环境的 SRG 名）
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+}
+
+// ============================================================
+// Mixin 配置
+// ============================================================
+mixin {
+    add sourceSets.main, "${mod_id}.refmap.json"
+    config "${mod_id}.mixins.json"
+}
+
+// refmap 由 Mixin 注解处理器在 compileJava 里生成（写到 build/tmp/compileJava/${mod_id}.refmap.json），
+// 但 Gradle 并不知道它是本任务的产物。开了 org.gradle.caching=true 后，缓存恢复只会还原
+// **已声明**的输出；不声明的话 refmap 会丢，jar 里没有 refmap → 生产环境 Mixin 无法把
+// official 名转成 SRG 名，注入全部 Critical injection failure，启动即崩。
+tasks.named('compileJava', JavaCompile).configure {
+    dependsOn tasks.named('compileCompatApiStubJava')
+    outputs.file(layout.buildDirectory.file("tmp/compileJava/${mod_id}.refmap.json"))
+}
+
+// ============================================================
+// 打包：命名规则 英文名称-中文名称-模组版本-模组加载器-游戏版本
+//   infinite_stats-无限加点-<版本>-Forge-1.19.2.jar
+// ============================================================
+def artifactBaseName = "infinite_stats-无限加点-${mod_version}-Forge-${minecraft_version}"
+tasks.named('jar', Jar).configure {
+    archiveFileName = "${artifactBaseName}.jar"
+    // 兜底校验：refmap 没进 jar 就直接让构建失败。
+    doLast {
+        def refmapName = "${mod_id}.refmap.json"
+        def present = new java.util.zip.ZipFile(archiveFile.get().asFile).withCloseable {
+            it.getEntry(refmapName) != null
+        }
+        if (!present) {
+            throw new GradleException("jar 中缺少 ${refmapName}：Mixin 在生产环境无法重映射成员名，注入会全部失败。")
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+def utf8Properties = new Properties()
+file('gradle.properties').withInputStream { stream ->
+    utf8Properties.load(new InputStreamReader(stream, 'UTF-8'))
+}
+def modAuthors = utf8Properties.getProperty('mod_authors', mod_authors)
+// gradle.properties 是 ISO-8859-1 读入的，含中文的 mod_name / mod_description 直接展开会变乱码
+def modName = utf8Properties.getProperty('mod_name', mod_name)
+def modDescription = utf8Properties.getProperty('mod_description', mod_description)
+
+tasks.named('processResources', ProcessResources).configure {
+    filteringCharset = 'UTF-8'
+    var replaceProperties = [
+            minecraft_version: minecraft_version,
+            forge_version    : forge_version,
+            mod_id           : mod_id,
+            mod_name         : modName,
+            mod_version      : mod_version,
+            mod_authors      : modAuthors,
+            mod_description  : modDescription,
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/mods.toml']) {
+        expand replaceProperties
+    }
+}
+
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+                "Specification-Title"     : mod_id,
+                "Specification-Vendor"    : modAuthors,
+                "Specification-Version"   : "1",
+                "Implementation-Title"    : project.name,
+                "Implementation-Version"  : project.jar.archiveVersion,
+                "Implementation-Vendor"   : modAuthors,
+                "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+}
+
+jar.finalizedBy('reobfJar')
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    // 迁移期要一次看全错误：javac 默认只报 100 条
+    options.compilerArgs += ['-Xmaxerrs', '1000']
+}
+
+tasks.register('prepareGameTestStructures', Copy) {
+    from 'src/gameTest/resources/gameteststructures'
+    into '.modmind/gametest/gameteststructures'
+}
+
+tasks.matching { it.name == 'runGameTestServer' }.configureEach {
+    dependsOn 'prepareGameTestStructures'
+}

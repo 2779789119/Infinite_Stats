@@ -1,0 +1,33 @@
+# Build outputs
+bin/
+build/
+dist/
+out/
+.gradle/
+run/
+run-*/
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
+*.tmp
+copy_to_mods.bat
+*.class
+
+# Agent/IDE tool data (session records, snapshots — not project source)
+.modmind/
+.codebuddy/
+
+# Compiled / generated caches
+*.jar.bak

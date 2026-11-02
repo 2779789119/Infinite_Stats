@@ -1,0 +1,2081 @@
+package com.infinitestats.client;
+
+import com.infinitestats.Config;
+import com.infinitestats.compat.PinyinSearchBridge;
+import com.infinitestats.network.NetworkHandler;
+import com.infinitestats.stats.PlayerStats;
+import com.infinitestats.stats.PlayerStatsProvider;
+import net.minecraft.client.gui.components.EditBox;
+import com.infinitestats.stats.StatCategory;
+import com.infinitestats.stats.StatType;
+import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.Minecraft;
+import com.infinitestats.client.gfx.InfGuiGraphics;
+import net.minecraft.client.gui.components.Button;
+import com.infinitestats.client.widget.Btn;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.ai.attributes.Attribute;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.RangedAttribute;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import org.lwjgl.glfw.GLFW;
+
+import java.util.*;
+
+/**
+ * 无限属性系统 GUI — v5.0 全面重构
+ * <p>
+ * 新增：属性图标系统、拨动开关（Toggle型）、增强提示框、类别点数统计、
+ * 点击音效、自动保存设置、法力条优化。
+ * 所有 GUI 元素统一跟随缩放，右键拖动，Ctrl+滚轮缩放，中键重置。
+ */
+public class StatsScreen extends PanelScreen {
+
+    // ======================== 布局常量（面板坐标系，未缩放） ========================
+
+    private static final int GUI_WIDTH = 440;
+    private static final int GUI_HEIGHT = 376;
+    private static final int HEADER_H = 76;
+    private static final int TAB_H = 30;
+    private static final int CARD_H = 30;
+    private static final int CARD_GAP = 2;
+    private static final int MAX_VISIBLE = 6;
+    private static final int FOOTER_H = 58;
+    private static final int SCROLLBAR_W = 6;
+    private static final int BTN_W = 24;
+    private static final int BTN_H = 18;
+    private static final int ICON_SIZE = 16;
+    private static final int TOGGLE_W = 28;
+    private static final int TOGGLE_H = 14;
+
+    // ======================== 颜色常量 ========================
+
+    private static final int BG_PANEL = 0xE81A1A2E;
+    private static final int BG_CARD = 0x50252535;
+    private static final int BG_CARD_HOVER = 0x80353550;
+    private static final int BG_BTN_PLUS = 0xFF1A5334;
+    private static final int BG_BTN_PLUS_HOVER = 0xFF2D8A4E;
+    private static final int BG_BTN_MINUS = 0xFF4A1A2E;
+    private static final int BG_BTN_MINUS_HOVER = 0xFF8A2D4E;
+    private static final int BG_TAB = 0x50252535;
+    private static final int BG_TAB_SELECTED = 0x80252540;
+    private static final int BG_XP_BAR = 0x50252535;
+    private static final int BG_XP_FILL = 0xFF4ADE80;
+    private static final int BG_SCROLLBAR_TRACK = 0x30151520;
+    private static final int BG_SCROLLBAR = 0x80555570;
+    private static final int BG_SCROLLBAR_HOVER = 0xB08888A0;
+
+    private static final int TEXT_PRIMARY = 0xFFE2E8F0;
+    private static final int TEXT_SECONDARY = 0xFF94A3B8;
+    private static final int TEXT_GOLD = 0xFFFFD166;
+    private static final int TEXT_ACTIVE = 0xFF4ADE80;
+    private static final int TEXT_NEGATIVE = 0xFFF87171; // 负属性值红色警示
+    private static final int TEXT_LEVEL = 0xFF60A5FA;
+    private static final int TEXT_POINTS = 0xFFFFD166;
+    private static final int TEXT_POINTS_ZERO = 0xFF64748B;
+    private static final int TEXT_POINTS_NEGATIVE = 0xFFF87171; // 可用点数为负也红色
+    private static final int TEXT_BUTTON = 0xFFFFFFFF;
+    private static final int TEXT_HINT = 0xFF64748B;
+    private static final int TEXT_TOGGLE_ON = 0xFF4ADE80;
+    private static final int TEXT_TOGGLE_OFF = 0xFF64748B;
+
+    // ======================== 状态 ========================
+
+    @Override
+    protected int panelW() {
+        return GUI_WIDTH;
+    }
+
+    @Override
+    protected int panelH() {
+        return GUI_HEIGHT;
+    }
+    private int contentTop, contentHeight;
+    private StatCategory selectedCategory = StatCategory.ATTACK;
+    private PlayerStats cachedStats;
+    private int scrollOffset;
+    private int maxScroll;
+    private int addAmountIndex; // 0..4 → x1,x10,x100,x1000,x10000
+    private boolean maxMode; // true=一次加满
+    private boolean scrollbarDragging;
+    private int scrollbarDragStartY;
+    private int scrollbarDragStartOffset;
+
+    /** 上次播放 click 音效的 tick 数（避免重复） */
+    private long lastSoundTick;
+    /** 当前鼠标悬停的按钮索引（卡片内），用于 tooltip */
+    private int hoveredCardIndex = -1;
+    private int hoveredBtnType = 0; // 0=none, 1=minus, 2=plus, 3=toggle
+
+    private final List<Button> dynamicButtons = new ArrayList<>();
+    private final Map<StatCategory, List<StatType>> categoryStats = new EnumMap<>(StatCategory.class);
+
+    // ═══════ 外部属性折叠分组 ═══════
+
+    /** 显示列表条目 — 可能是分组头或属性卡片 */
+    private static class DisplayEntry {
+        final boolean isHeader;
+        final String namespace;
+        final int groupSize;
+        final StatType stat;
+        private DisplayEntry(boolean isHeader, String namespace, int groupSize, StatType stat) {
+            this.isHeader = isHeader;
+            this.namespace = namespace;
+            this.groupSize = groupSize;
+            this.stat = stat;
+        }
+        static DisplayEntry header(String ns, int size) { return new DisplayEntry(true, ns, size, null); }
+        static DisplayEntry statCard(StatType s) { return new DisplayEntry(false, null, 0, s); }
+    }
+
+    private final Map<String, List<StatType>> externalGroups = new LinkedHashMap<>();
+    private final List<DisplayEntry> externalDisplayList = new ArrayList<>();
+    private final Set<String> collapsedExternalGroups = new HashSet<>();
+
+    // ═══════ 搜索与收藏 ═══════
+    private EditBox searchBox;
+    private Button favoritesBtn;
+    private boolean favoritesOnly;
+
+    /** 自动入库的存储优先级按钮（主面板直接调整「先存入哪个存储」） */
+    private Btn depositBtn;
+    /** 自动入库的过滤界面入口按钮（白 / 黑名单） */
+    private Btn depositFilterBtn;
+    /** 上一次已渲染的优先级签名，避免每 tick 重建文案（解锁状态 + 顺序） */
+    private String depositLabelCache;
+
+    private static final String[] ADD_LABELS = {"x1", "x10", "x100", "x1000", "x10000"};
+    private static final long[] ADD_VALUES = {1, 10, 100, 1000, 10000};
+
+    // ======================== 属性图标映射 ========================
+
+    private static final Map<String, ItemStack> STAT_ICONS = new HashMap<>();
+
+    static {
+        // ═══════ 攻击 ═══════
+        icon("attack_damage", Items.DIAMOND_SWORD);
+        icon("attack_speed", Items.GOLDEN_SWORD);
+        icon("crit_chance", Items.IRON_SWORD);
+        icon("crit_damage", Items.NETHERITE_SWORD);
+        icon("armor_penetration", Items.ARROW);
+        icon("knockback_power", Items.PISTON);
+        icon("projectile_damage", Items.BOW);
+        icon("life_steal", Items.GOLDEN_APPLE);
+        icon("life_steal_aoe", Items.ENCHANTED_GOLDEN_APPLE);
+        icon("damage_reflection", Items.SHIELD);
+        icon("execute", Items.WITHER_SKELETON_SKULL);
+        icon("true_damage", Items.NETHERITE_AXE);
+        icon("reduce_max_health", Items.WITHER_ROSE);
+        icon("scope_attack", Items.TRIDENT);
+        icon("repulsion", Items.SLIME_BALL);
+        icon("infinite_arrows", Items.SPECTRAL_ARROW);
+        icon("extra_strike", Items.STONE_SWORD);
+        icon("infinite_ammo", Items.CROSSBOW);
+        icon("no_heat", Items.BLUE_ICE);
+        icon("no_recoil", Items.HEAVY_WEIGHTED_PRESSURE_PLATE);
+
+        // ═══════ 防御 ═══════
+        icon("max_health", Items.RED_BED);
+        icon("armor", Items.DIAMOND_CHESTPLATE);
+        icon("armor_toughness", Items.NETHERITE_CHESTPLATE);
+        icon("health_regen", Items.GLISTERING_MELON_SLICE);
+        icon("damage_reduction", Items.IRON_CHESTPLATE);
+        icon("knockback_resist", Items.ANVIL);
+        icon("fall_resist", Items.FEATHER);
+        icon("fire_immunity", Items.BLAZE_POWDER);
+        icon("projectile_immunity", Items.SPECTRAL_ARROW);
+        icon("explosion_immunity", Items.TNT);
+        icon("suffocation_immunity", Items.SAND);
+        icon("auto_revive", Items.TOTEM_OF_UNDYING);
+        icon("block_chance", Items.SHIELD);
+        icon("absorption_shield", Items.GOLDEN_APPLE);
+        icon("dodge_chance", Items.RABBIT_FOOT);
+        icon("debuff_immunity", Items.MILK_BUCKET);
+        icon("invincibility", Items.END_CRYSTAL);
+
+        // ═══════ 机动 ═══════
+        icon("movement_speed", Items.LEATHER_BOOTS);
+        icon("swim_speed", Items.WATER_BUCKET);
+        icon("jump_height", Items.RABBIT_FOOT);
+        icon("step_height", Items.LADDER);
+        icon("fly_speed", Items.ELYTRA);
+        icon("fly", Items.ELYTRA);
+        icon("no_fall_damage", Items.FEATHER);
+        icon("auto_step", Items.OAK_STAIRS);
+        icon("dash_cooldown", Items.CLOCK);
+
+        // ═══════ 功能 ═══════
+        icon("luck", Items.RABBIT_FOOT);
+        icon("mining_speed", Items.DIAMOND_PICKAXE);
+        icon("reach", Items.STICK);
+        icon("xp_gain", Items.EXPERIENCE_BOTTLE);
+        icon("loot_luck", Items.CHEST);
+        icon("night_vision", Items.GOLDEN_CARROT);
+        icon("water_breathing", Items.PUFFERFISH);
+        icon("no_hunger", Items.COOKED_BEEF);
+        icon("always_eat", Items.APPLE);
+        icon("item_magnet", Items.HOPPER);
+        icon("invisibility", Items.GLASS_BOTTLE);
+        icon("vein_miner", Items.IRON_PICKAXE);
+        icon("ore_vision", Items.SPYGLASS);
+        icon("auto_smelt", Items.FURNACE);
+        icon("xp_magnet", Items.EXPERIENCE_BOTTLE);
+        icon("projectile_tracking", Items.SPECTRAL_ARROW);
+        icon("no_invincibility_frames", Items.BLAZE_ROD);
+        icon("double_loot", Items.CHEST_MINECART);
+        icon("extra_loot_slot", Items.BUNDLE);
+        icon("mining_level", Items.NETHERITE_PICKAXE);
+        icon("entity_reach", Items.LEAD);
+        icon("crafting_bonus", Items.CRAFTING_TABLE);
+        icon("bow_draw_speed", Items.CROSSBOW);
+        icon("use_speed", Items.CLOCK);
+        icon("auto_repair", Items.ANVIL);
+        icon("repair_amount", Items.IRON_INGOT);
+        icon("time_accel", Items.CLOCK);
+        icon("time_accel_radius", Items.COMPASS);
+        icon("cooldown_reduction", Items.ENDER_EYE);
+        icon("cross_dimension_teleport", Items.ENDER_PEARL);
+        icon("fixed_point_teleport", Items.LODESTONE);
+        icon("portable_crafting", Items.CRAFTING_TABLE);
+        icon("portable_furnace", Items.FURNACE);
+        icon("portable_anvil", Items.ANVIL);
+        icon("pe_auto_learn", Items.BOOK);
+        icon("trade_discount", Items.EMERALD);
+        icon("keep_inventory", Items.SHULKER_BOX);
+        icon("auto_deposit", Items.ENDER_CHEST);
+        icon("multi_shot", Items.CROSSBOW);
+        icon("climb_speed", Items.LADDER);
+        icon("multi_jump", Items.RABBIT_FOOT);
+        icon("trade_restock", Items.EMERALD);
+        icon("anvil_cost", Items.ANVIL);
+        icon("keep_xp", Items.EXPERIENCE_BOTTLE);
+        icon("portable_ender_chest", Items.ENDER_CHEST);
+        icon("portable_smithing", Items.SMITHING_TABLE);
+        icon("breed_no_cooldown", Items.WHEAT);
+        icon("instant_grow", Items.GOLDEN_CARROT);
+        icon("auto_fish", Items.FISHING_ROD);
+        icon("instant_bite", Items.TROPICAL_FISH);
+        icon("portable_enchanting", Items.ENCHANTING_TABLE);
+        icon("enchant_limit", Items.ENCHANTED_BOOK);
+        icon("portable_stonecutter", Items.STONECUTTER);
+        icon("portable_loom", Items.LOOM);
+        icon("portable_cartography", Items.CARTOGRAPHY_TABLE);
+        icon("portable_grindstone", Items.GRINDSTONE);
+        icon("weather_control", Items.LIGHTNING_ROD);
+        icon("chunk_loader", Items.BEACON);
+        icon("entity_panel", Items.SPYGLASS);
+        icon("infinite_energy", Items.REDSTONE_BLOCK);
+        icon("sbw_infinite_health", Items.MINECART);
+        icon("goety_infinite_soul", Items.SOUL_LANTERN);
+        icon("create_infinite_stress", Items.PISTON);
+        icon("no_thirst", Items.WATER_BUCKET);
+        icon("no_temperature", Items.CAMPFIRE);
+        icon("infinite_mana", Items.AMETHYST_SHARD);
+    }
+
+    private static void icon(String statId, net.minecraft.world.item.Item item) {
+        STAT_ICONS.put(statId, new ItemStack(item));
+    }
+
+    private static ItemStack getIcon(StatType stat) {
+        ItemStack icon = STAT_ICONS.getOrDefault(stat.getId(), ItemStack.EMPTY);
+        if (icon.isEmpty() && stat.getCategory() == StatCategory.EXTERNAL) {
+            return DEFAULT_EXTERNAL_ICON;
+        }
+        return icon;
+    }
+
+    /** 外部属性的默认图标 */
+    private static final ItemStack DEFAULT_EXTERNAL_ICON = new ItemStack(Items.KNOWLEDGE_BOOK);
+
+    // ======================== 构造与初始化 ========================
+
+    public StatsScreen() {
+        super(Component.translatable("screen.infinitestats.title"));
+    }
+
+    @Override
+    protected void init() {
+        super.init();
+        recalcPanelPosition();
+        cachedStats = getPlayerStats();
+        // 当前选中的分类被作者在配置里隐藏时，回退到第一个可见分类
+        if (Config.isCategoryHidden(selectedCategory)) {
+            selectedCategory = visibleCategories()[0];
+        }
+        buildCategoryMap();
+        updateMaxScroll();
+        rebuildAllWidgets();
+
+        // 搜索框
+        searchBox = new EditBox(font, 0, 0, 0, 0,
+                Component.translatable("screen.infinitestats.search"));
+        searchBox.setMaxLength(30);
+        searchBox.setResponder(s -> {
+            scrollOffset = 0;
+            buildCategoryMap();
+            updateMaxScroll();
+            rebuildAllWidgets();
+        });
+        addRenderableWidget(searchBox);
+
+        // 收藏过滤按钮
+        favoritesBtn = addRenderableWidget(Btn.builder(
+                Component.literal("\u2606"), b -> {
+                    favoritesOnly = !favoritesOnly;
+                    b.setMessage(Component.literal(favoritesOnly ? "\u2605" : "\u2606"));
+                    scrollOffset = 0;
+                    buildCategoryMap();
+                    updateMaxScroll();
+                    rebuildAllWidgets();
+                })
+                .pos(0, 0).size(14, 14).build());
+
+        // 自动入库：存储优先级按钮（与搜索框同一行，点击打开优先级界面逐个调整）
+        // 「功能开关」里关掉自动入库后，这两个入口一并隐藏
+        if (!isFeatureDisabled("auto_deposit")) {
+            depositBtn = addRenderableWidget(new PixelButton(0, 0, 10, 14,
+                    Component.empty(),
+                    0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                    b -> openDepositPriority()));
+
+            // 自动入库：白 / 黑名单过滤入口
+            depositFilterBtn = addRenderableWidget(new PixelButton(0, 0, 10, 14,
+                    Component.translatable("gui.infinitestats.deposit.filter"),
+                    0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                    b -> openDepositFilter()));
+            updateDepositLabel();
+        }
+
+        // 把搜索框和按钮放到正确位置（必须在 addRenderableWidget 之后）
+        repositionSearch();
+    }
+
+    private static final int SEARCH_BAR_H = 16;
+    private static final int STAR_BTN_SIZE = 12;
+
+    /**
+     * 面板内容布局：位置与缩放现在由 {@link PanelScreen} 统一负责
+     * （拖动 = 右键拖、缩放 = Ctrl+滚轮 / 右下角角标），这里只重算内部排版。
+     */
+    private void recalcPanelPosition() {
+        contentTop = HEADER_H + TAB_H + SEARCH_BAR_H + 4;
+        contentHeight = MAX_VISIBLE * (CARD_H + CARD_GAP) - CARD_GAP;
+        repositionSearch();
+    }
+
+    private void repositionSearch() {
+        if (searchBox != null) {
+            // widgets 在 pose.transform 内渲染，坐标须为面板内坐标
+            searchBox.setX(8);
+            searchBox.y = HEADER_H + TAB_H + 1;
+            searchBox.setWidth(120);
+            searchBox.setHeight(14);
+        }
+        if (favoritesBtn != null) {
+            favoritesBtn.x = 132;
+            favoritesBtn.y = HEADER_H + TAB_H + 1;
+        }
+        if (depositBtn != null) {
+            depositBtn.x = 150;
+            depositBtn.y = HEADER_H + TAB_H + 1;
+            depositBtn.setWidth(176);
+        }
+        if (depositFilterBtn != null) {
+            depositFilterBtn.x = 330;
+            depositFilterBtn.y = HEADER_H + TAB_H + 1;
+            depositFilterBtn.setWidth(GUI_WIDTH - SCROLLBAR_W - 8 - 330);
+        }
+    }
+
+    @Override
+    public void tick() {
+        super.tick();
+        cachedStats = getPlayerStats();
+        updateDepositLabel();
+    }
+
+    // ======================== 自动入库优先级 ========================
+
+    /** 刷新优先级 / 过滤按钮的文案与提示（未解锁时显示灰色占位）。 */
+    private void updateDepositLabel() {
+        if (depositBtn == null) return;
+        boolean unlocked = cachedStats != null && cachedStats.isToggleActive("auto_deposit");
+        List<String> order = unlocked ? cachedStats.getEffectiveAutoDepositPriority() : List.of();
+        int filterSize = unlocked ? cachedStats.getAutoDepositFilterList().size() : 0;
+
+        boolean whitelist = unlocked && cachedStats.isAutoDepositUseWhitelist();
+
+        String signature = unlocked + "|" + String.join(",", order) + "|" + filterSize + "|" + whitelist;
+        if (signature.equals(depositLabelCache)) return;
+        depositLabelCache = signature;
+
+        // 过滤入口按钮：名称固定（避免与页脚导航的「过滤」混淆），明细放进浮窗
+        if (depositFilterBtn != null) {
+            depositFilterBtn.setMessage(Component.translatable("gui.infinitestats.deposit.filter"));
+            depositFilterBtn.setTip((unlocked
+                    ? Component.translatable("gui.infinitestats.deposit.filter_tooltip",
+                            Component.translatable(whitelist
+                                    ? "gui.infinitestats.deposit.mode_whitelist"
+                                    : "gui.infinitestats.deposit.mode_blacklist").getString(),
+                            String.valueOf(filterSize))
+                    : Component.translatable("gui.infinitestats.deposit.locked_tip")));
+        }
+
+        if (!unlocked) {
+            depositBtn.setMessage(Component.translatable("gui.infinitestats.deposit.locked"));
+            depositBtn.setTip((
+                    Component.translatable("gui.infinitestats.deposit.locked_tip")));
+            return;
+        }
+
+        StringBuilder orderText = new StringBuilder();
+        StringBuilder orderTip = new StringBuilder();
+        for (int i = 0; i < order.size(); i++) {
+            String name = storageShortName(order.get(i));
+            if (i > 0) {
+                orderText.append(" \u203A ");
+                orderTip.append(" \u2192 ");
+            }
+            orderText.append(name);
+            orderTip.append(name);
+        }
+        depositBtn.setMessage(Component.translatable("gui.infinitestats.deposit.priority", orderText.toString()));
+        depositBtn.setTip((
+                Component.translatable("gui.infinitestats.deposit.tooltip", orderTip.toString())));
+    }
+
+    /** 打开自动入库的白 / 黑名单过滤界面（需已解锁 auto_deposit）。 */
+    private void openDepositFilter() {
+        if (cachedStats == null || !cachedStats.isToggleActive("auto_deposit")) {
+            if (minecraft != null && minecraft.player != null) {
+                minecraft.player.displayClientMessage(
+                        Component.translatable("message.infinitestats.auto_deposit_locked"), true);
+            }
+            return;
+        }
+        playClickSound();
+        if (minecraft != null) minecraft.setScreen(new AutoDepositFilterScreen(this));
+    }
+
+    /** 打开「存储优先级」界面，逐个上移 / 下移各存储的先后顺序（需已解锁 auto_deposit）。 */
+    private void openDepositPriority() {
+        if (cachedStats == null || !cachedStats.isToggleActive("auto_deposit")) {
+            if (minecraft != null && minecraft.player != null) {
+                minecraft.player.displayClientMessage(
+                        Component.translatable("message.infinitestats.auto_deposit_locked"), true);
+            }
+            return;
+        }
+        playClickSound();
+        if (minecraft != null) {
+            minecraft.setScreen(new NetworkPriorityScreen(this, PlayerStats.SCOPE_AUTO_DEPOSIT));
+        }
+    }
+
+    private static String storageShortName(String key) {
+        return Component.translatable("gui.infinitestats.storage." + key).getString();
+    }
+
+    private PlayerStats getPlayerStats() {
+        var player = Minecraft.getInstance().player;
+        if (player != null) {
+            var cap = player.getCapability(PlayerStatsProvider.PLAYER_STATS);
+            if (cap.isPresent()) return cap.orElse(null);
+        }
+        return null;
+    }
+
+    private void buildCategoryMap() {
+        categoryStats.clear();
+        String search = searchBox != null ? searchBox.getValue().toLowerCase().trim() : "";
+
+        for (StatCategory cat : StatCategory.values()) {
+            // 被作者隐藏的分类：整组不参与列表构建（标签页、搜索、收藏都看不到）
+            if (Config.isCategoryHidden(cat)) continue;
+            List<StatType> list = new ArrayList<>();
+            for (StatType stat : StatType.ALL_STATS) {
+                if (stat.getCategory() == cat) {
+                    // 随身工具属性不再列在面板里：解锁 / 关闭都在「随身工具」面板用左键、右键完成
+                    // （showHiddenStats = true 时仍会显示，便于排查）
+                    if ((!stat.isHidden() && !stat.isPortableTool()) || Config.SHOW_HIDDEN_STATS.get()) {
+                        // 「功能开关」里被玩家关闭的属性：面板不显示，也不能加点
+                        if (cachedStats != null && cachedStats.isStatDisabled(stat.getId())) {
+                            continue;
+                        }
+                        if (matchesSearch(stat, search)) {
+                            list.add(stat);
+                        }
+                    }
+                }
+            }
+            // 仅收藏模式：当前分类只保留已收藏的属性
+            if (favoritesOnly && cachedStats != null) {
+                list.removeIf(s -> !cachedStats.isFavorite(s.getId()));
+            }
+            categoryStats.put(cat, list);
+        }
+        // 为 EXTERNAL 分类构建命名空间分组
+        List<StatType> externalStats = categoryStats.get(StatCategory.EXTERNAL);
+        if (externalStats != null && !externalStats.isEmpty()) {
+            externalGroups.clear();
+            for (StatType stat : externalStats) {
+                String ns = extractModNamespace(stat);
+                externalGroups.computeIfAbsent(ns, k -> new ArrayList<>()).add(stat);
+            }
+            buildExternalDisplayList();
+        } else {
+            // 外部属性被全部排除（黑名单 / 关闭发现）时，别把上一轮的列表留在界面上
+            externalGroups.clear();
+            externalDisplayList.clear();
+        }
+    }
+
+    private boolean matchesSearch(StatType stat, String search) {
+        if (search.isEmpty()) return true;
+        String name = getStatDisplayName(stat).toLowerCase();
+        String desc = stat.getDescription() != null ? stat.getDescription().toLowerCase() : "";
+        String attr = stat.getAttributeName() != null ? stat.getAttributeName().toLowerCase() : "";
+        return PinyinSearchBridge.matches(name, search) || PinyinSearchBridge.matches(desc, search)
+                || PinyinSearchBridge.matches(stat.getId().toLowerCase(), search)
+                || (!attr.isEmpty() && PinyinSearchBridge.matches(attr, search));
+    }
+
+    /**
+     * 从外部属性 ID（attr.modid.path）提取模组命名空间
+     */
+    private static String extractModNamespace(StatType stat) {
+        String id = stat.getId();
+        if (id.startsWith("attr.")) {
+            int secondDot = id.indexOf('.', 5);
+            if (secondDot > 0) {
+                return id.substring(5, secondDot);
+            }
+        }
+        return "other";
+    }
+
+    /**
+     * 根据折叠状态重建外部属性显示列表（分组头 + 展开的属性卡片）
+     */
+    private void buildExternalDisplayList() {
+        externalDisplayList.clear();
+        for (Map.Entry<String, List<StatType>> group : externalGroups.entrySet()) {
+            String ns = group.getKey();
+            List<StatType> stats = group.getValue();
+            externalDisplayList.add(DisplayEntry.header(ns, stats.size()));
+            if (!collapsedExternalGroups.contains(ns)) {
+                for (StatType stat : stats) {
+                    externalDisplayList.add(DisplayEntry.statCard(stat));
+                }
+            }
+        }
+    }
+
+    /**
+     * 切换外部属性组的折叠/展开状态
+     */
+    private void toggleExternalGroup(String namespace) {
+        if (collapsedExternalGroups.contains(namespace)) {
+            collapsedExternalGroups.remove(namespace);
+        } else {
+            collapsedExternalGroups.add(namespace);
+        }
+        buildExternalDisplayList();
+        // 保持当前滚动位置，不重置到顶部
+        updateMaxScroll();
+        if (scrollOffset > maxScroll) {
+            scrollOffset = maxScroll;
+        }
+        rebuildAllWidgets();
+    }
+
+    @Override
+    public void onClose() {
+        // 自动保存客户端设置
+        ClientSettings.save();
+        super.onClose();
+    }
+
+    // ======================== 音效 ========================
+
+    private void playClickSound() {
+        if (minecraft == null) return;
+        long now = System.currentTimeMillis();
+        if (now - lastSoundTick < 50) return; // 防抖
+        lastSoundTick = now;
+        minecraft.getSoundManager().play(
+                SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
+    }
+
+    // ======================== Widget 管理（面板坐标系） ========================
+
+    private void rebuildAllWidgets() {
+        clearWidgets();
+        dynamicButtons.clear();
+
+        addCategoryTabs();
+        addStatCardButtons();
+        addBatchModeButtons();
+        addResetButtons();
+        addPanelNavButtons();
+
+        // 恢复常驻组件（clearWidgets 会清掉）
+        if (searchBox != null) addRenderableWidget(searchBox);
+        if (favoritesBtn != null) addRenderableWidget(favoritesBtn);
+        if (depositBtn != null) addRenderableWidget(depositBtn);
+        if (depositFilterBtn != null) addRenderableWidget(depositFilterBtn);
+    }
+
+    /**
+     * 可见（未被作者在配置里隐藏）的属性分类。
+     * <p>
+     * 全部被隐藏时兜底返回「攻击」，避免顶部标签栏整块空掉、界面没法操作。
+     */
+    private static StatCategory[] visibleCategories() {
+        List<StatCategory> list = new ArrayList<>();
+        for (StatCategory cat : StatCategory.values()) {
+            if (!Config.isCategoryHidden(cat)) list.add(cat);
+        }
+        return list.isEmpty()
+                ? new StatCategory[]{StatCategory.ATTACK}
+                : list.toArray(new StatCategory[0]);
+    }
+
+    private void addCategoryTabs() {
+        StatCategory[] cats = visibleCategories();
+        int tabWidth = GUI_WIDTH / cats.length;
+        for (int i = 0; i < cats.length; i++) {
+            final StatCategory cat = cats[i];
+            int tx = i * tabWidth;
+            long pts = getCategoryAllocatedPoints(cat);
+            boolean selected = cat == selectedCategory;
+            Button btn = new TabButton(tx + 3, HEADER_H + 2, tabWidth - 6, TAB_H - 4,
+                    Component.translatable(cat.getTranslationKey()), cat.getIcon(),
+                    pts, cat.getColor(), selected, b -> selectCategory(cat));
+            addRenderableWidget(btn);
+        }
+    }
+
+    private long getCategoryAllocatedPoints(StatCategory cat) {
+        return cachedStats != null ? cachedStats.getCategoryPoints(cat) : 0L;
+    }
+
+    private void addStatCardButtons() {
+        if (selectedCategory == StatCategory.EXTERNAL) {
+            addExternalStatCardButtons();
+            return;
+        }
+
+        List<StatType> stats = categoryStats.get(selectedCategory);
+        if (stats == null || stats.isEmpty()) return;
+
+        for (int i = 0; i < MAX_VISIBLE; i++) {
+            int cardIndex = i + scrollOffset;
+            if (cardIndex >= stats.size()) break;
+
+            StatType stat = stats.get(cardIndex);
+            int cardY = contentTop + i * (CARD_H + CARD_GAP);
+            int btnY = cardY + (CARD_H - BTN_H) / 2;
+            int rightEdge = GUI_WIDTH - SCROLLBAR_W - 8;
+
+            if (stat.isToggle()) {
+                // 拨动开关区域（在右侧）
+                int toggleX = rightEdge - TOGGLE_W - 2;
+                int toggleY = cardY + (CARD_H - TOGGLE_H) / 2;
+                Button toggleBtn = new ToggleSwitchButton(toggleX, toggleY, TOGGLE_W, TOGGLE_H, stat,
+                        b -> toggleStat(stat));
+                addRenderableWidget(toggleBtn);
+                dynamicButtons.add(toggleBtn);
+            } else {
+                int minusX = rightEdge - BTN_W * 2 - 4;
+                int plusX = minusX + BTN_W + 4;
+
+                Button plusBtn = new PixelButton(plusX, btnY, BTN_W, BTN_H,
+                        Component.literal("+"),
+                        BG_BTN_PLUS, BG_BTN_PLUS_HOVER, TEXT_BUTTON,
+                        b -> { playClickSound(); modifyPoints(stat, getBatchAmount(stat, true)); });
+                addRenderableWidget(plusBtn);
+                dynamicButtons.add(plusBtn);
+
+                Button minusBtn = new PixelButton(minusX, btnY, BTN_W, BTN_H,
+                        Component.literal("−"),
+                        BG_BTN_MINUS, BG_BTN_MINUS_HOVER, TEXT_BUTTON,
+                        b -> { playClickSound(); modifyPoints(stat, -getBatchAmount(stat, false)); });
+                addRenderableWidget(minusBtn);
+                dynamicButtons.add(minusBtn);
+            }
+        }
+    }
+
+    private void addExternalStatCardButtons() {
+        if (externalDisplayList.isEmpty()) return;
+
+        for (int i = 0; i < MAX_VISIBLE; i++) {
+            int displayIndex = i + scrollOffset;
+            if (displayIndex >= externalDisplayList.size()) break;
+
+            DisplayEntry entry = externalDisplayList.get(displayIndex);
+            if (entry.isHeader) continue; // 分组头不添加按钮
+
+            StatType stat = entry.stat;
+            int cardY = contentTop + i * (CARD_H + CARD_GAP);
+            int btnY = cardY + (CARD_H - BTN_H) / 2;
+            int rightEdge = GUI_WIDTH - SCROLLBAR_W - 8;
+
+            if (stat.isToggle()) {
+                int toggleX = rightEdge - TOGGLE_W - 2;
+                int toggleY = cardY + (CARD_H - TOGGLE_H) / 2;
+                Button toggleBtn = new ToggleSwitchButton(toggleX, toggleY, TOGGLE_W, TOGGLE_H, stat,
+                        b -> toggleStat(stat));
+                addRenderableWidget(toggleBtn);
+                dynamicButtons.add(toggleBtn);
+            } else {
+                int minusX = rightEdge - BTN_W * 2 - 4;
+                int plusX = minusX + BTN_W + 4;
+
+                Button plusBtn = new PixelButton(plusX, btnY, BTN_W, BTN_H,
+                        Component.literal("+"),
+                        BG_BTN_PLUS, BG_BTN_PLUS_HOVER, TEXT_BUTTON,
+                        b -> { playClickSound(); modifyPoints(stat, getBatchAmount(stat, true)); });
+                addRenderableWidget(plusBtn);
+                dynamicButtons.add(plusBtn);
+
+                Button minusBtn = new PixelButton(minusX, btnY, BTN_W, BTN_H,
+                        Component.literal("−"),
+                        BG_BTN_MINUS, BG_BTN_MINUS_HOVER, TEXT_BUTTON,
+                        b -> { playClickSound(); modifyPoints(stat, -getBatchAmount(stat, false)); });
+                addRenderableWidget(minusBtn);
+                dynamicButtons.add(minusBtn);
+            }
+        }
+    }
+
+    private void addBatchModeButtons() {
+        int footerY = GUI_HEIGHT - FOOTER_H + 26;
+        int btnW = 64, gap = 4;
+
+        // 倍率切换按钮：点击循环 x1 → x10 → x100 → x1000 → x10000（同时关闭 MAX）
+        Button multBtn = new PixelButton(8, footerY, btnW, 14,
+                Component.literal(ADD_LABELS[addAmountIndex]),
+                0x50252535, 0x80353550, TEXT_SECONDARY,
+                b -> {
+                    playClickSound();
+                    addAmountIndex = (addAmountIndex + 1) % ADD_LABELS.length;
+                    maxMode = false;
+                    rebuildAllWidgets();
+                });
+        addRenderableWidget(multBtn);
+
+        // MAX 按钮：与倍率互斥，开启后一次加满
+        Button maxBtn = new PixelButton(8 + btnW + gap, footerY, 48, 14,
+                Component.literal("MAX"),
+                maxMode ? 0xFFB45309 : 0x50252535,
+                maxMode ? 0xFFD97706 : 0x80353550,
+                maxMode ? TEXT_PRIMARY : TEXT_SECONDARY,
+                b -> {
+                    playClickSound();
+                    maxMode = !maxMode;
+                    rebuildAllWidgets();
+                });
+        addRenderableWidget(maxBtn);
+    }
+
+    private void addResetButtons() {
+        int footerY = GUI_HEIGHT - FOOTER_H + 26;
+        int btnWidth = 48;
+
+        Button resetCatBtn = new PixelButton(
+                GUI_WIDTH - SCROLLBAR_W - btnWidth * 2 - 24, footerY,
+                btnWidth, 14,
+                Component.translatable("screen.infinitestats.reset_category"),
+                0x504A2A1A, 0x808A4A2E, TEXT_SECONDARY,
+                b -> { playClickSound(); resetCategory(); });
+        addRenderableWidget(resetCatBtn);
+
+        Button resetAllBtn = new PixelButton(
+                GUI_WIDTH - SCROLLBAR_W - btnWidth - 12, footerY,
+                btnWidth, 14,
+                Component.translatable("screen.infinitestats.reset_all"),
+                0x504A1A1A, 0x808A2E2E, TEXT_SECONDARY,
+                b -> { playClickSound(); resetAll(); });
+        addRenderableWidget(resetAllBtn);
+
+        // 随身工具（工作台 / 熔炉 / 铁砧 / 末影箱 / 锻造台 / 附魔台 / 切石机 …）统一收进
+        // 「随身工具」面板，页脚不再逐个摆放入口，避免按钮越加越多。
+        // 传送点入口只保留页脚导航行里的那个（nav.waypoint），此处不再重复放一个「传送点管理」按钮
+    }
+
+    /** 页脚导航行：从主面板一键打开其它独立面板。 */
+    private void addPanelNavButtons() {
+        int navY = GUI_HEIGHT - FOOTER_H + 4;
+        // 入口与功能的对应关系：在「功能开关」里被关闭的功能、或作者在配置里隐藏的面板，
+        // 其入口一并隐藏（列表自动收拢）
+        int btnW = 40, gap = 3;
+        List<Component> labels = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        addNav(labels, actions, "waypoint", "fixed_point_teleport",
+                Component.translatable("gui.infinitestats.nav.waypoint"),
+                () -> { if (minecraft != null) minecraft.setScreen(new WaypointScreen()); });
+        addNav(labels, actions, "crossdim", "cross_dimension_teleport",
+                Component.translatable("gui.infinitestats.nav.crossdim"),
+                () -> { if (minecraft != null) minecraft.setScreen(new CrossDimScreen()); });
+        addNav(labels, actions, "filter", null,
+                Component.translatable("gui.infinitestats.nav.filter"),
+                this::openDebuffFilter);
+        addNav(labels, actions, "emc", null,
+                Component.translatable("gui.infinitestats.nav.emc"),
+                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket()));
+        addNav(labels, actions, "achievements", null,
+                Component.translatable("gui.infinitestats.nav.achievement"),
+                () -> { if (minecraft != null) minecraft.setScreen(new AchievementManagerScreen()); });
+        addNav(labels, actions, "item_editor", null,
+                Component.translatable("gui.infinitestats.nav.item_editor"),
+                () -> { if (minecraft != null) minecraft.setScreen(new ItemEditorScreen()); });
+        addNav(labels, actions, "hud", null,
+                Component.translatable("gui.infinitestats.nav.hud"),
+                () -> { if (minecraft != null) minecraft.setScreen(new HudEditScreen()); });
+        // 随身工具：原先分开摆的 5 个入口合并成一个面板，面板内再按各属性的解锁状态逐项启用
+        addNav(labels, actions, "tools", null,
+                Component.translatable("gui.infinitestats.nav.tools"),
+                () -> { if (minecraft != null) minecraft.setScreen(new PortableToolsScreen()); });
+        // 天气：打开独立面板逐档选择（原先是在这里点一次切一档）
+        addNav(labels, actions, "weather", "weather_control",
+                Component.translatable("gui.infinitestats.nav.weather"),
+                () -> { if (minecraft != null) minecraft.setScreen(new WeatherScreen()); });
+        addNav(labels, actions, "chunk_loader", "chunk_loader",
+                Component.translatable("gui.infinitestats.nav.chunk_loader"),
+                () -> { if (minecraft != null) minecraft.setScreen(new ChunkLoaderScreen()); });
+        // 连锁挖掘：匹配方式 / 上限 / 代价 / 名单集中在一页（未解锁或已关闭时入口不显示）
+        addNav(labels, actions, "vein_miner", "vein_miner",
+                Component.translatable("gui.infinitestats.nav.vein_miner"),
+                () -> { if (minecraft != null) minecraft.setScreen(new VeinMinerSettingsScreen(this)); });
+        // 矿透：半径 / 上限 / 矿物种类筛选（未解锁或已关闭时入口不显示）
+        addNav(labels, actions, "ore_vision", "ore_vision",
+                Component.translatable("gui.infinitestats.nav.ore_vision"),
+                () -> { if (minecraft != null) minecraft.setScreen(new OreVisionSettingsScreen(this)); });
+
+        if (labels.isEmpty()) return; // 全被隐藏 / 未解锁时不要画空行
+
+        // 入口变多后按可用宽度收窄，避免挤到面板外
+        int maxNavW = GUI_WIDTH - 16;
+        if (labels.size() * btnW + (labels.size() - 1) * gap > maxNavW) {
+            btnW = Math.max(26, (maxNavW - (labels.size() - 1) * gap) / labels.size());
+        }
+        int totalW = labels.size() * btnW + (labels.size() - 1) * gap;
+        int startX = (GUI_WIDTH - totalW) / 2;
+        for (int i = 0; i < labels.size(); i++) {
+            final int idx = i;
+            Button btn = new PixelButton(startX + i * (btnW + gap), navY, btnW, 16,
+                    labels.get(i), 0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                    b -> { playClickSound(); actions.get(idx).run(); });
+            addRenderableWidget(btn);
+        }
+    }
+
+    /**
+     * 添加一个页脚入口。
+     *
+     * @param panelId 面板 id（配置 {@code GUI.hideXxxPanel} 开关打开时该入口不显示）
+     * @param statId  对应属性 id（在「功能开关」里被关闭时该入口不显示，可为 null）
+     */
+    private void addNav(List<Component> labels, List<Runnable> actions,
+                        String panelId, String statId, Component label, Runnable action) {
+        if (Config.isPanelHidden(panelId)) return;
+        if (statId != null && isFeatureDisabled(statId)) return;
+        labels.add(label);
+        actions.add(action);
+    }
+
+    /** 该功能是否已被玩家在「功能开关」里关闭（关闭则不在面板显示入口）。 */
+    private boolean isFeatureDisabled(String statId) {
+        return cachedStats != null && cachedStats.isStatDisabled(statId);
+    }
+
+    private void openDebuffFilter() {
+        if (minecraft != null) {
+            minecraft.setScreen(new DebuffFilterScreen());
+        }
+    }
+
+    // ======================== 交互逻辑 ========================
+
+    private void selectCategory(StatCategory cat) {
+        if (cat == selectedCategory) return;
+        playClickSound();
+        selectedCategory = cat;
+        scrollOffset = 0;
+        updateMaxScroll();
+        rebuildAllWidgets();
+    }
+
+    private void toggleStat(StatType stat) {
+        if (cachedStats == null) return;
+        long current = cachedStats.getStatLevel(stat);
+        if (current >= stat.getMaxLevel()) {
+            // 已激活 → 移除
+            playClickSound();
+            modifyPoints(stat, -stat.getMaxLevel());
+        } else {
+            // 未激活 → 激活：开关型不允许透支点数
+            long needed = stat.getMaxLevel() - current;
+            if (cachedStats.getAvailablePoints() < needed) {
+                if (minecraft.player != null) {
+                    minecraft.player.displayClientMessage(
+                            net.minecraft.network.chat.Component.translatable("message.infinitestats.not_enough_points"),
+                            true);
+                }
+                return;
+            }
+            playClickSound();
+            modifyPoints(stat, needed);
+        }
+    }
+
+    private void resetCategory() {
+        NetworkHandler.CHANNEL.sendToServer(
+                new NetworkHandler.ResetCategoryPacket(selectedCategory.getName()));
+        if (cachedStats != null) {
+            for (StatType stat : StatType.ALL_STATS) {
+                if (stat.getCategory() == selectedCategory) {
+                    cachedStats.resetStat(stat);
+                }
+            }
+        }
+    }
+
+    private void resetAll() {
+        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.ResetAllPacket());
+        if (cachedStats != null) {
+            cachedStats.resetAllPoints();
+        }
+    }
+
+    private void modifyPoints(StatType stat, long amount) {
+        if (cachedStats == null || amount == 0) return;
+
+        // 先用本地副本校验：成功才发送网络包，避免服务器收到无效请求
+        boolean success = amount > 0
+                ? cachedStats.addPoints(stat, amount)
+                : cachedStats.removePoints(stat, -amount);
+
+        if (success) {
+            NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.ModifyStatPacket(stat.getId(), amount));
+        } else {
+            showNotEnoughPoints();
+        }
+    }
+
+    private long getBatchAmount(StatType stat, boolean isAdd) {
+        if (maxMode) { // MAX
+            if (cachedStats == null) return 0L;
+            long level = cachedStats.getStatLevel(stat);
+            long available = cachedStats.getAvailablePoints();
+            if (isAdd) {
+                if (level >= 0) {
+                    // 正值加正：消耗点数，受可用点数和上限约束
+                    long space = (long) stat.getMaxLevel() - level;
+                    return Math.max(0, Math.min(available, space));
+                } else {
+                    // 负值加正：往 0 靠近，返还点数，只需 -level 即可归零
+                    return -level;
+                }
+            } else {
+                if (level > 0) {
+                    // 正值减：往 0 靠近，返还点数，最多减到 0
+                    return level;
+                } else {
+                    // 负值减：远离零点，消耗点数，受可用点数和下限约束
+                    long minLevel = -(long) stat.getMaxLevel();
+                    long space = level - minLevel; // 还能降多少
+                    return Math.max(0, Math.min(available, space));
+                }
+            }
+        }
+        // 非 MAX 模式：如果是消耗操作，受可用点数限制
+        long base = ADD_VALUES[addAmountIndex];
+        if (cachedStats != null) {
+            long level = cachedStats.getStatLevel(stat);
+            long available = cachedStats.getAvailablePoints();
+            if (isAdd && level >= 0) {
+                // 正值加正：消耗点数，不得超过可用点数和上限
+                long space = (long) stat.getMaxLevel() - level;
+                return Math.min(base, Math.min(available, space));
+            } else if (!isAdd && level <= 0) {
+                // 负值减：消耗点数，不得超过可用点数和下限
+                long minLevel = -(long) stat.getMaxLevel();
+                long space = level - minLevel;
+                return Math.min(base, Math.min(available, space));
+            }
+        }
+        return base;
+    }
+
+    private void showNotEnoughPoints() {
+        if (minecraft != null && minecraft.player != null) {
+            minecraft.player.displayClientMessage(
+                    Component.translatable("message.infinitestats.not_enough_points"), true);
+        }
+    }
+
+    /**
+     * 快捷加点逻辑（= 键调用，共用）
+     * current >= 0 时消耗点数，current < 0 时返还点数
+     */
+    private void handleQuickAdd(StatType stat) {
+        if (cachedStats == null) return;
+        long current = cachedStats.getStatLevel(stat);
+        long available = cachedStats.getAvailablePoints();
+        if (current >= 0 && available <= 0) {
+            showNotEnoughPoints();
+            return;
+        }
+        long count;
+        if (maxMode) {
+            if (current < 0) {
+                // 负值加正：往 0 靠近，返还点数，最多加 -current
+                count = -current;
+            } else {
+                // 正值加正：消耗点数，受可用点数和上限约束
+                long space = (long) stat.getMaxLevel() - current;
+                count = Math.min(available, space);
+            }
+        } else {
+            count = ADD_VALUES[addAmountIndex];
+            if (current >= 0) {
+                // 消耗操作：不得超过可用点数和上限
+                long space = (long) stat.getMaxLevel() - current;
+                count = Math.min(count, Math.min(available, space));
+            }
+        }
+        count = Math.max(count, 0L);
+        if (count > 0) {
+            modifyPoints(stat, count);
+            playClickSound();
+        }
+    }
+
+    private void updateMaxScroll() {
+        int size;
+        if (selectedCategory == StatCategory.EXTERNAL) {
+            size = externalDisplayList.size();
+        } else {
+            List<StatType> stats = categoryStats.get(selectedCategory);
+            size = stats != null ? stats.size() : 0;
+        }
+        maxScroll = Math.max(0, size - MAX_VISIBLE);
+        scrollOffset = Mth.clamp(scrollOffset, 0, maxScroll);
+    }
+
+    private void doScroll(int delta) {
+        if (maxScroll <= 0) return;
+        scrollOffset = Mth.clamp(scrollOffset + delta, 0, maxScroll);
+        rebuildAllWidgets();
+    }
+
+    /**
+     * 外部属性列表被服务端替换后重建界面。
+     * <p>
+     * 由 {@link com.infinitestats.network.ExternalStatsSyncPacket} 在登录 / 热重扫后调用：
+     * 客户端手上的 {@link StatType#ALL_STATS} 已经换了一份，这里把分类缓存、分组与按钮全部按新列表重算。
+     */
+    public void reloadExternalStats() {
+        if (minecraft == null) return;
+        cachedStats = getPlayerStats();
+        buildCategoryMap();
+        updateMaxScroll();
+        rebuildAllWidgets();
+    }
+
+    // ======================== 渲染主循环 ========================
+
+    @Override
+    protected void renderPanel(InfGuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 基类已经把屏幕坐标换算成面板坐标，并负责平移 / 缩放
+        updateHoverState(mouseX, mouseY);
+
+        renderPanel(graphics, 0, 0);
+        renderHeader(graphics, 0, 0);
+        renderStatCards(graphics, 0, 0, mouseX, mouseY);
+        renderScrollbar(graphics, 0, 0, mouseX, mouseY);
+        renderFooter(graphics, 0, 0);
+        renderDividers(graphics, 0, 0);
+    }
+
+    /** 浮窗画在控件之上（基类负责缩放）。 */
+    @Override
+    protected void renderPanelOverlay(InfGuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        renderTooltipOverlay(graphics, mouseX, mouseY, mouseX, mouseY);
+    }
+
+    /**
+     * 更新鼠标悬停在哪个卡片/按钮上
+     */
+    private void updateHoverState(int mouseX, int mouseY) {
+        hoveredCardIndex = -1;
+        hoveredBtnType = 0;
+
+        if (selectedCategory == StatCategory.EXTERNAL) {
+            updateExternalHoverState(mouseX, mouseY);
+            return;
+        }
+
+        List<StatType> stats = categoryStats.get(selectedCategory);
+        if (stats == null) return;
+
+        int cardWidth = GUI_WIDTH - SCROLLBAR_W - 16;
+
+        for (int i = 0; i < MAX_VISIBLE; i++) {
+            int cardIndex = i + scrollOffset;
+            if (cardIndex >= stats.size()) break;
+            int cardY = contentTop + i * (CARD_H + CARD_GAP);
+            int cardX = 4;
+
+            if (!isMouseInCard(mouseX, mouseY, cardX, cardY, cardWidth)) continue;
+
+            hoveredCardIndex = i;
+            StatType stat = stats.get(cardIndex);
+            int rightEdge = GUI_WIDTH - SCROLLBAR_W - 8;
+
+            if (stat.isToggle()) {
+                int toggleX = rightEdge - TOGGLE_W - 2;
+                int toggleY = cardY + (CARD_H - TOGGLE_H) / 2;
+                if (mouseX >= toggleX && mouseX < toggleX + TOGGLE_W &&
+                        mouseY >= toggleY && mouseY < toggleY + TOGGLE_H) {
+                    hoveredBtnType = 3;
+                }
+            } else {
+                int btnY = cardY + (CARD_H - BTN_H) / 2;
+                int minusX = rightEdge - BTN_W * 2 - 4;
+                int plusX = minusX + BTN_W + 4;
+                if (mouseX >= plusX && mouseX < plusX + BTN_W &&
+                        mouseY >= btnY && mouseY < btnY + BTN_H) {
+                    hoveredBtnType = 2; // plus
+                } else if (mouseX >= minusX && mouseX < minusX + BTN_W &&
+                        mouseY >= btnY && mouseY < btnY + BTN_H) {
+                    hoveredBtnType = 1; // minus
+                }
+            }
+            return;
+        }
+    }
+
+    private void updateExternalHoverState(int mouseX, int mouseY) {
+        int cardWidth = GUI_WIDTH - SCROLLBAR_W - 16;
+
+        for (int i = 0; i < MAX_VISIBLE; i++) {
+            int displayIndex = i + scrollOffset;
+            if (displayIndex >= externalDisplayList.size()) break;
+            int cardY = contentTop + i * (CARD_H + CARD_GAP);
+            int cardX = 4;
+
+            if (!isMouseInCard(mouseX, mouseY, cardX, cardY, cardWidth)) continue;
+
+            DisplayEntry entry = externalDisplayList.get(displayIndex);
+            hoveredCardIndex = i;
+
+            if (entry.isHeader) {
+                hoveredBtnType = 0; // 分组头无按钮
+                return;
+            }
+
+            // 属性卡片 — 检测按钮区域
+            StatType stat = entry.stat;
+            int rightEdge = GUI_WIDTH - SCROLLBAR_W - 8;
+
+            if (stat.isToggle()) {
+                int toggleX = rightEdge - TOGGLE_W - 2;
+                int toggleY = cardY + (CARD_H - TOGGLE_H) / 2;
+                if (mouseX >= toggleX && mouseX < toggleX + TOGGLE_W &&
+                        mouseY >= toggleY && mouseY < toggleY + TOGGLE_H) {
+                    hoveredBtnType = 3;
+                }
+            } else {
+                int btnY = cardY + (CARD_H - BTN_H) / 2;
+                int minusX = rightEdge - BTN_W * 2 - 4;
+                int plusX = minusX + BTN_W + 4;
+                if (mouseX >= plusX && mouseX < plusX + BTN_W &&
+                        mouseY >= btnY && mouseY < btnY + BTN_H) {
+                    hoveredBtnType = 2;
+                } else if (mouseX >= minusX && mouseX < minusX + BTN_W &&
+                        mouseY >= btnY && mouseY < btnY + BTN_H) {
+                    hoveredBtnType = 1;
+                }
+            }
+            return;
+        }
+    }
+
+    /** 鼠标坐标：基类已换算成面板坐标，这里直接透传。 */
+    private int screenToPanelX(int mouseX) {
+        return mouseX;
+    }
+
+    private int screenToPanelY(int mouseY) {
+        return mouseY;
+    }
+
+
+    // ======================== 面板绘制（面板坐标系） ========================
+
+    private void renderPanel(InfGuiGraphics g, int l, int t) {
+        // 外发光边框
+        g.fill(l - 2, t - 2, l + GUI_WIDTH + 2, t + GUI_HEIGHT + 2, 0x403B82F6);
+        // 深色边框
+        g.fill(l - 1, t - 1, l + GUI_WIDTH + 1, t + GUI_HEIGHT + 1, 0xFF1E293B);
+        // 主体面板
+        g.fill(l, t, l + GUI_WIDTH, t + GUI_HEIGHT, BG_PANEL);
+    }
+
+    private void renderDividers(InfGuiGraphics g, int l, int t) {
+        int y1 = t + HEADER_H;
+        g.fill(l + 8, y1, l + GUI_WIDTH - 8, y1 + 1, 0x30334860);
+        int y2 = t + HEADER_H + TAB_H;
+        g.fill(l + 8, y2, l + GUI_WIDTH - 8, y2 + 1, 0x40334860);
+        int y3 = contentTop + contentHeight + 4;
+        g.fill(l + 8, y3, l + GUI_WIDTH - 8, y3 + 1, 0x30334860);
+    }
+
+    // ======================== 头部绘制 ========================
+
+    private void renderHeader(InfGuiGraphics g, int l, int t) {
+        if (cachedStats == null) {
+            String title = Component.translatable("screen.infinitestats.title").getString();
+            g.drawCenteredString(font, title, l + GUI_WIDTH / 2, t + 30, TEXT_GOLD);
+            return;
+        }
+
+        long level = cachedStats.getLevel();
+        long xp = cachedStats.getExperience();
+        long xpNeeded = cachedStats.getXpForNextLevel();
+        long points = cachedStats.getAvailablePoints();
+
+        // 标题
+        String title = Component.translatable("screen.infinitestats.title").getString();
+        g.drawCenteredString(font, title, l + GUI_WIDTH / 2, t + 8, TEXT_GOLD);
+
+        // 等级
+        String levelStr = "Lv." + level;
+        g.drawString(font, levelStr, l + 14, t + 28, TEXT_LEVEL);
+
+        // XP 进度条
+        int barX = l + 60;
+        int barY = t + 26;
+        int barW = 200;
+        int barH = 12;
+
+        g.fill(barX, barY, barX + barW, barY + barH, BG_XP_BAR);
+        if (xpNeeded > 0) {
+            float progress = (float) xp / xpNeeded;
+            int filled = Math.max(1, (int) (progress * barW));
+            g.fill(barX, barY, barX + filled, barY + barH, BG_XP_FILL);
+        }
+        String xpText = xp + " / " + xpNeeded + " XP";
+        g.drawCenteredString(font, xpText, barX + barW / 2, barY + 2, TEXT_PRIMARY);
+
+        // 可用点数（右对齐，正=金色，零=灰色，负=红色）
+        String pointsStr = Component.translatable("screen.infinitestats.points_available", points).getString();
+        int pointsColor = points > 0 ? TEXT_POINTS : points < 0 ? TEXT_POINTS_NEGATIVE : TEXT_POINTS_ZERO;
+        g.drawString(font, pointsStr, l + GUI_WIDTH - 14 - font.width(pointsStr), t + 28, pointsColor);
+
+        String hint = Component.translatable("screen.infinitestats.hint_controls").getString();
+        g.drawString(font, hint, l + 60, t + 44, TEXT_HINT);
+    }
+
+    // ======================== 属性卡片绘制 ========================
+
+    private void renderStatCards(InfGuiGraphics g, int l, int t, int mouseX, int mouseY) {
+        if (selectedCategory == StatCategory.EXTERNAL) {
+            renderExternalStatCards(g, l, t, mouseX, mouseY);
+            return;
+        }
+
+        List<StatType> stats = categoryStats.get(selectedCategory);
+        if (stats == null || stats.isEmpty()) return;
+
+        int cardWidth = GUI_WIDTH - SCROLLBAR_W - 16;
+
+        for (int i = 0; i < MAX_VISIBLE; i++) {
+            int cardIndex = i + scrollOffset;
+            if (cardIndex >= stats.size()) break;
+
+            StatType stat = stats.get(cardIndex);
+            int cardY = contentTop + i * (CARD_H + CARD_GAP);
+            int cardX = l + 4;
+
+            boolean hovered = isMouseInCard(mouseX, mouseY, cardX, cardY, cardWidth);
+            renderOneCard(g, cardX, cardY, cardWidth, stat, hovered);
+        }
+    }
+
+    private void renderExternalStatCards(InfGuiGraphics g, int l, int t, int mouseX, int mouseY) {
+        if (externalDisplayList.isEmpty()) return;
+
+        int cardWidth = GUI_WIDTH - SCROLLBAR_W - 16;
+
+        for (int i = 0; i < MAX_VISIBLE; i++) {
+            int displayIndex = i + scrollOffset;
+            if (displayIndex >= externalDisplayList.size()) break;
+
+            DisplayEntry entry = externalDisplayList.get(displayIndex);
+            int cardY = contentTop + i * (CARD_H + CARD_GAP);
+            int cardX = l + 4;
+            boolean hovered = isMouseInCard(mouseX, mouseY, cardX, cardY, cardWidth);
+
+            if (entry.isHeader) {
+                renderGroupHeaderCard(g, cardX, cardY, cardWidth, entry, hovered);
+            } else {
+                renderOneCard(g, cardX, cardY, cardWidth, entry.stat, hovered);
+            }
+        }
+    }
+
+    private void renderGroupHeaderCard(InfGuiGraphics g, int x, int y, int width,
+                                        DisplayEntry header, boolean hovered) {
+        int bgColor = hovered ? 0x80404060 : 0x40383850;
+        g.fill(x, y, x + width, y + CARD_H, bgColor);
+
+        // 左侧灰条
+        g.fill(x, y, x + 3, y + CARD_H, 0xFF7777AA);
+
+        // 折叠指示符 + 命名空间 + 数量
+        boolean collapsed = collapsedExternalGroups.contains(header.namespace);
+        String arrow = collapsed ? "▶" : "▼";
+        int iconSize = 12;
+        int iconX = x + 18;
+        int iconY = y + (CARD_H - iconSize) / 2;
+        g.renderItem(GROUP_HEADER_ICON, iconX, iconY);
+        String label = arrow + " " + header.namespace + "  §7(" + header.groupSize + ")";
+        g.drawString(font, label, x + 34, y + (CARD_H - font.lineHeight) / 2 + 1,
+                hovered ? TEXT_PRIMARY : TEXT_SECONDARY);
+    }
+
+    /** 分组头默认图标 */
+    private static final ItemStack GROUP_HEADER_ICON = new ItemStack(Items.BOOKSHELF);
+
+    private void renderOneCard(InfGuiGraphics g, int x, int y, int width, StatType stat, boolean hovered) {
+        int bgColor = hovered ? BG_CARD_HOVER : BG_CARD;
+        g.fill(x, y, x + width, y + CARD_H, bgColor);
+
+        // 左侧类别色条
+        int catColor = stat.getCategory().getColor();
+        g.fill(x, y, x + 3, y + CARD_H, catColor | 0xFF000000);
+
+        // 收藏星标
+        boolean isFav = cachedStats != null && cachedStats.isFavorite(stat.getId());
+        int starX = x + 5;
+        int starY = y + (CARD_H - font.lineHeight) / 2 + 1;
+        int starColor = isFav ? 0xFFFFD700 : 0xFF555555;
+        g.drawString(font, isFav ? "\u2605" : "\u2606", starX, starY, starColor);
+
+        // 图标（向右移 10px 给星标留空间）
+        ItemStack icon = getIcon(stat);
+        if (!icon.isEmpty()) {
+            int iconX = x + 18;
+            int iconY = y + (CARD_H - ICON_SIZE) / 2;
+            g.renderItem(icon, iconX, iconY);
+            if (stat.isToggle()) {
+                long lvl = cachedStats != null ? cachedStats.getStatLevel(stat) : 0L;
+                boolean activeIcon = lvl >= stat.getMaxLevel();
+                if (!activeIcon) {
+                    g.fill(iconX, iconY, iconX + ICON_SIZE, iconY + ICON_SIZE, 0x60000000);
+                }
+            }
+        }
+
+        int nameX = x + 36;
+        int rightEdge = x + width - 8;
+        long level = cachedStats != null ? cachedStats.getStatLevel(stat) : 0L;
+        float value = cachedStats != null ? cachedStats.getStatValue(stat) : 0;
+        int nameColor = hovered ? TEXT_PRIMARY : (stat.getCategory().getColor() | 0xFF000000);
+
+        if (stat.isToggle()) {
+            // 拨动开关在按钮区域（由 ToggleSwitchButton 渲染）
+            boolean active = level >= stat.getMaxLevel();
+            int toggleX = rightEdge - TOGGLE_W - 2;
+
+            // 开关状态文字
+            String toggleText = active
+                    ? Component.translatable("screen.infinitestats.toggle_on").getString()
+                    : Component.translatable("screen.infinitestats.toggle_off").getString();
+            int toggleColor = active ? TEXT_TOGGLE_ON : TEXT_TOGGLE_OFF;
+            int toggleW = font.width(toggleText);
+
+            // 所需点数标签
+            long needed = stat.getMaxLevel();
+            String costText = Component.translatable("screen.infinitestats.toggle_cost", needed).getString();
+            int costW = font.width(costText);
+
+            // 名称截断，避免与右侧内容重叠
+            int maxNameRight = toggleX - toggleW - 6 - costW - 6 - 4;
+            int maxNameWidth = Math.max(20, maxNameRight - nameX);
+            String name = truncate(getStatDisplayName(stat), maxNameWidth);
+            g.drawString(font, name, nameX, y + (CARD_H - font.lineHeight) / 2 + 1, nameColor);
+
+            g.drawString(font, toggleText, toggleX - toggleW - 6,
+                    y + (CARD_H - font.lineHeight) / 2 + 1, toggleColor);
+            g.drawString(font, costText, toggleX - toggleW - 6 - costW - 6,
+                    y + (CARD_H - font.lineHeight) / 2 + 1, TEXT_HINT);
+        } else {
+            // 等级和数值
+            String valueStr = stat.formatValue(value);
+            int valueW = font.width(valueStr);
+            String levelTag = "Lv." + level;
+            int levelW = font.width(levelTag);
+
+            // 名称截断，避免与右侧内容重叠
+            int maxNameRight = rightEdge - BTN_W * 2 - 8 - valueW - levelW - 8 - 4;
+            int maxNameWidth = Math.max(20, maxNameRight - nameX);
+            String name = truncate(getStatDisplayName(stat), maxNameWidth);
+            g.drawString(font, name, nameX, y + (CARD_H - font.lineHeight) / 2 + 1, nameColor);
+
+            g.drawString(font, levelTag, rightEdge - BTN_W * 2 - 8 - valueW - levelW - 8,
+                    y + (CARD_H - font.lineHeight) / 2 + 1, TEXT_SECONDARY);
+            int valColor = value > 0 ? TEXT_ACTIVE : value < 0 ? TEXT_NEGATIVE : TEXT_SECONDARY;
+            g.drawString(font, valueStr, rightEdge - BTN_W * 2 - 8 - valueW,
+                    y + (CARD_H - font.lineHeight) / 2 + 1, valColor);
+        }
+    }
+
+    /** 按最大像素宽度截断文本并追加省略号，避免名称过长与右侧元素重叠 */
+    private String truncate(String text, int maxWidth) {
+        if (text == null || maxWidth <= 0) return "";
+        if (font.width(text) <= maxWidth) return text;
+        int ellipsisW = font.width("…");
+        int limit = maxWidth - ellipsisW;
+        if (limit <= 0) return "…";
+        StringBuilder sb = new StringBuilder();
+        int w = 0;
+        for (int i = 0; i < text.length(); i++) {
+            int cw = font.width(text.substring(i, i + 1));
+            if (w + cw > limit) break;
+            w += cw;
+            sb.append(text.charAt(i));
+        }
+        return sb.toString() + "…";
+    }
+
+    // ======================== 滚动条绘制 ========================
+
+    private void renderScrollbar(InfGuiGraphics g, int l, int t, int mouseX, int mouseY) {
+        if (maxScroll <= 0) return;
+
+        int sx = l + GUI_WIDTH - SCROLLBAR_W - 4;
+        int sy = contentTop;
+        int sh = contentHeight;
+
+        g.fill(sx, sy, sx + SCROLLBAR_W, sy + sh, BG_SCROLLBAR_TRACK);
+
+        int sliderH = Math.max(20, (int) ((float) MAX_VISIBLE / (maxScroll + MAX_VISIBLE) * sh));
+        int sliderY = sy + (sh - sliderH) * scrollOffset / maxScroll;
+
+        boolean hovering = mouseX >= sx && mouseX < sx + SCROLLBAR_W &&
+                mouseY >= sliderY && mouseY < sliderY + sliderH;
+        int sliderColor = hovering || scrollbarDragging ? BG_SCROLLBAR_HOVER : BG_SCROLLBAR;
+
+        g.fill(sx, sliderY, sx + SCROLLBAR_W, sliderY + sliderH, sliderColor);
+    }
+
+    // ======================== 底栏绘制 ========================
+
+    private void renderFooter(InfGuiGraphics g, int l, int t) {
+        int footerY = t + GUI_HEIGHT - FOOTER_H + 4;
+        // 绘制实心底栏背景，避免与卡片重叠
+        g.fill(l, footerY, l + GUI_WIDTH, footerY + FOOTER_H - 4, BG_PANEL);
+        g.fill(l + 1, footerY, l + GUI_WIDTH - 1, footerY + 1, 0x30334860);
+
+        int hintY = footerY + 38;
+        String hint = "P " + Component.translatable("screen.infinitestats.hint_close").getString()
+                + "  1-6 " + Component.translatable("screen.infinitestats.hint_switch").getString()
+                + "  B " + Component.translatable("screen.infinitestats.hint_batch").getString()
+                + "  = " + Component.translatable("screen.infinitestats.hint_quick_add").getString()
+                + "  Ctrl+滚轮 " + Component.translatable("screen.infinitestats.hint_zoom").getString()
+                + "  右键 " + Component.translatable("screen.infinitestats.hint_drag").getString()
+                + "  中键 " + Component.translatable("screen.infinitestats.hint_reset_view").getString();
+        g.drawCenteredString(font, hint, l + GUI_WIDTH / 2, hintY, TEXT_HINT);
+    }
+
+    // ======================== 悬停提示 ========================
+
+    private void renderTooltipOverlay(InfGuiGraphics g, int panelMouseX, int panelMouseY,
+                                      int screenMouseX, int screenMouseY) {
+        if (hoveredCardIndex < 0) return;
+
+        StatType stat;
+        long level;
+        float value;
+        String groupNamespace = null;
+        int groupSize = 0;
+
+        if (selectedCategory == StatCategory.EXTERNAL) {
+            int displayIndex = hoveredCardIndex + scrollOffset;
+            if (displayIndex >= externalDisplayList.size()) return;
+
+            DisplayEntry entry = externalDisplayList.get(displayIndex);
+            if (entry.isHeader) {
+                // 分组头提示
+                groupNamespace = entry.namespace;
+                groupSize = entry.groupSize;
+                List<String> lines = new ArrayList<>();
+                boolean collapsed = collapsedExternalGroups.contains(groupNamespace);
+                lines.add("§e" + groupNamespace);
+                lines.add("§7" + groupSize + " 个属性 · " + (collapsed ? "点击展开" : "点击折叠"));
+                renderWrappedTooltip(g, lines, screenMouseX, screenMouseY);
+                return;
+            }
+            stat = entry.stat;
+            level = cachedStats != null ? cachedStats.getStatLevel(stat) : 0L;
+            value = cachedStats != null ? cachedStats.getStatValue(stat) : 0;
+        } else {
+            List<StatType> stats = categoryStats.get(selectedCategory);
+            if (stats == null) return;
+
+            int cardIndex = hoveredCardIndex + scrollOffset;
+            if (cardIndex >= stats.size()) return;
+
+            stat = stats.get(cardIndex);
+            level = cachedStats != null ? cachedStats.getStatLevel(stat) : 0L;
+            value = cachedStats != null ? cachedStats.getStatValue(stat) : 0;
+        }
+
+        List<String> tooltipLines = new ArrayList<>();
+
+        // 悬停在 +/- 按钮上
+        if (!stat.isToggle() && (hoveredBtnType == 1 || hoveredBtnType == 2)) {
+            long amount = hoveredBtnType == 2
+                    ? getBatchAmount(stat, true)
+                    : getBatchAmount(stat, false);
+            String label = maxMode ? "MAX" : String.valueOf(amount);
+            if (hoveredBtnType == 2) {
+                tooltipLines.add(Component.translatable("screen.infinitestats.tooltip_add", label).getString());
+                // "+" 统一语义：值往正向走，负值区返还点数
+                if (cachedStats != null && !stat.isToggle()) {
+                    long nextLevel = level + amount;
+                    float nextValue = stat.calculateValue(nextLevel);
+                    String preview = Component.translatable("screen.infinitestats.tooltip_preview",
+                            stat.formatValue(value), stat.formatValue(nextValue)).getString();
+                    tooltipLines.add(preview);
+                }
+            } else {
+                tooltipLines.add(Component.translatable("screen.infinitestats.tooltip_remove", label).getString());
+                // "-" 统一语义：值往负向走，负值区消耗点数
+                if (!stat.isToggle()) {
+                    long prevLevel = level - amount;
+                    float prevValue = stat.calculateValue(prevLevel);
+                    String preview = Component.translatable("screen.infinitestats.tooltip_preview",
+                            stat.formatValue(value), stat.formatValue(prevValue)).getString();
+                    tooltipLines.add(preview);
+                }
+            }
+        } else if (stat.isToggle() && hoveredBtnType == 3) {
+            // 悬停在拨动开关上
+            tooltipLines.add(Component.translatable("screen.infinitestats.tooltip_toggle").getString());
+        } else {
+            // 悬停在卡片本体上 — 显示详细描述
+            String desc = getStatDescription(stat);
+            tooltipLines.add(desc);
+            if (!stat.isToggle()) {
+                tooltipLines.add(Component.translatable("screen.infinitestats.tooltip_current",
+                        level, stat.formatValue(value)).getString());
+                tooltipLines.add(Component.translatable("screen.infinitestats.per_point",
+                        stat.formatValue(stat.getPerPointValue())).getString());
+            }
+            appendExternalDetail(tooltipLines, stat);
+        }
+
+        if (!tooltipLines.isEmpty()) renderWrappedTooltip(g, tooltipLines, screenMouseX, screenMouseY);
+    }
+
+    /**
+     * 外部属性的补充信息：所属模组、属性自身区间、玩家身上的实际总值。
+     * <p>
+     * 外部属性的每点值是自动推导的，光看名字猜不出「还能加多高」：把属性区间摆出来，
+     * 再对照玩家当前总值，才知道继续投点是否还有意义（有些属性的上限只有 1.0）。
+     */
+    private void appendExternalDetail(List<String> lines, StatType stat) {
+        if (stat.getCategory() != StatCategory.EXTERNAL) return;
+
+        lines.add(Component.translatable("screen.infinitestats.tooltip_external_mod",
+                extractModNamespace(stat)).getString());
+
+        Attribute attribute = stat.getAttribute();
+        if (attribute == null) return;
+
+        if (attribute instanceof RangedAttribute ranged) {
+            double min = ranged.getMinValue();
+            double max = ranged.getMaxValue();
+            if (Double.isFinite(min) && Double.isFinite(max)) {
+                lines.add(Component.translatable("screen.infinitestats.tooltip_external_range",
+                        formatAttributeNumber(min), formatAttributeNumber(max)).getString());
+            }
+        }
+
+        if (minecraft != null && minecraft.player != null) {
+            AttributeInstance instance = minecraft.player.getAttribute(attribute);
+            if (instance != null) {
+                lines.add(Component.translatable("screen.infinitestats.tooltip_external_total",
+                        formatAttributeNumber(instance.getValue())).getString());
+            }
+        }
+    }
+
+    /** 属性数值的紧凑显示：整数不带小数点，小数最多两位并去掉尾零。 */
+    private static String formatAttributeNumber(double value) {
+        if (!Double.isFinite(value)) return String.valueOf(value);
+        if (value == Math.floor(value) && Math.abs(value) < 1.0e9D) {
+            return String.format("%.0f", value);
+        }
+        String text = String.format("%.2f", value);
+        while (text.endsWith("0")) text = text.substring(0, text.length() - 1);
+        if (text.endsWith(".")) text = text.substring(0, text.length() - 1);
+        return text;
+    }
+
+    /**
+     * 折行后再画浮窗。
+     *
+     * <h2>为什么不直接用 {@code g.renderTooltip(font, 行列表, x, y)}</h2>
+     * 这条重载收的是 {@link net.minecraft.util.FormattedCharSequence}，原版<b>只按传入的行数排版，
+     * 不做宽度折行</b>：一行有多宽就画多宽。功能描述动辄上百字（例如「无限弹药」那条），
+     * 于是整条文本一路画到屏幕外，超出部分被视口裁掉 —— 表现为「描述看不全」。
+     * <p>
+     * 所以这里先按当前可用宽度折行（与 {@code EntityPanelScreen} / {@code DebuffFilterScreen} 一致），
+     * 再把折好的多行交给原版画背景框，浮窗宽度就始终落在屏幕内。
+     */
+    private void renderWrappedTooltip(InfGuiGraphics g, List<String> lines, int screenX, int screenY) {
+        int maxWidth = tooltipWrapWidth();
+        List<net.minecraft.util.FormattedCharSequence> visualLines = new ArrayList<>();
+        for (String line : lines) {
+            for (String wrapped : EditorUi.wrap(font, line, maxWidth)) {
+                visualLines.add(Component.literal(wrapped).getVisualOrderText());
+            }
+        }
+        g.renderTooltipLines(font, visualLines, screenX, screenY);
+    }
+
+    /**
+     * 浮窗文本折行宽度（面板坐标）。
+     * <p>
+     * 浮窗是在面板缩放的姿态里画出来的，面板坐标 1 单位最终只占 {@code 面板缩放} 个屏幕像素，
+     * 所以可用宽度要按缩放换算回去；上限 220 是排版上限，避免宽屏下折出一整行超长短句。
+     */
+    private int tooltipWrapWidth() {
+        int guiWidth = minecraft != null ? minecraft.getWindow().getGuiScaledWidth() : 320;
+        int fit = Math.round((guiWidth - 24) / Math.max(0.25f, panelScale()));
+        return Mth.clamp(fit, 90, 220);
+    }
+
+    // ======================== 鼠标输入 ========================
+
+    @Override
+    protected boolean onPanelClick(int mouseX, int mouseY, int button) {
+        boolean onPanel = mouseX >= 0 && mouseX < GUI_WIDTH
+                && mouseY >= 0 && mouseY < GUI_HEIGHT;
+
+        if (onPanel) {
+            int px = screenToPanelX(mouseX);
+            int py = screenToPanelY(mouseY);
+
+            // 滚动条拖拽：按下即定位 + 开始拖拽（无状态换算，拖到边界再拖回来也不会卡住）
+            if (button == 0 && maxScroll > 0 && isMouseOnScrollbar(px, py)) {
+                scrollbarDragging = true;
+                scrollOffset = EditorUi.scrollFromMouseY(py, contentTop, contentHeight, maxScroll, MAX_VISIBLE);
+                rebuildAllWidgets();
+                return true;
+            }
+
+            // 检测外部属性分组头点击（在 Widget 按钮之前拦截）
+            if (button == 0 && selectedCategory == StatCategory.EXTERNAL) {
+                if (handleExternalHeaderClick(px, py)) return true;
+            }
+
+            // 检测收藏星标点击
+            if (button == 0 && handleStarClick(px, py)) return true;
+        }
+
+        return false;
+    }
+
+    @Override
+    protected boolean onPanelDrag(int mouseX, int mouseY, int button, int dragX, int dragY) {
+        if (scrollbarDragging && maxScroll > 0) {
+            int py = screenToPanelY(mouseY);
+            scrollOffset = EditorUi.scrollFromMouseY(py, contentTop, contentHeight, maxScroll, MAX_VISIBLE);
+            rebuildAllWidgets();
+            return true;
+        }
+
+        return false;
+    }
+
+    @Override
+    protected boolean onPanelRelease(int mouseX, int mouseY, int button) {
+        if (scrollbarDragging) {
+            scrollbarDragging = false;
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
+        // Ctrl+滚轮 的缩放由 PanelScreen 统一处理，这里只管列表滚动
+        boolean onPanel = mouseX >= 0 && mouseX < GUI_WIDTH
+                && mouseY >= 0 && mouseY < GUI_HEIGHT;
+        if (onPanel && maxScroll > 0) {
+            doScroll(delta > 0 ? -1 : 1);
+            return true;
+        }
+        return false;
+    }
+
+    // ======================== 键盘输入 ========================
+
+    @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE ||
+                ClientSetup.OPEN_STATS_KEY.matches(keyCode, scanCode)) {
+            onClose();
+            return true;
+        }
+
+        if (keyCode >= GLFW.GLFW_KEY_1 && keyCode <= GLFW.GLFW_KEY_9) {
+            StatCategory[] cats = visibleCategories();
+            int index = keyCode - GLFW.GLFW_KEY_1;
+            if (index < cats.length) {
+                selectCategory(cats[index]);
+                return true;
+            }
+        }
+
+        if (keyCode == GLFW.GLFW_KEY_EQUAL) {
+            // 快速加点：对当前悬停的卡片添加一批点数
+            if (selectedCategory == StatCategory.EXTERNAL) {
+                if (hoveredCardIndex >= 0) {
+                    int displayIndex = hoveredCardIndex + scrollOffset;
+                    if (displayIndex >= 0 && displayIndex < externalDisplayList.size()) {
+                        DisplayEntry entry = externalDisplayList.get(displayIndex);
+                        if (!entry.isHeader) {
+                            StatType stat = entry.stat;
+                            if (!stat.isToggle()) {
+                                handleQuickAdd(stat);
+                            }
+                        }
+                    }
+                }
+                return true;
+            }
+            List<StatType> stats = categoryStats.get(selectedCategory);
+            if (stats != null && hoveredCardIndex >= 0 && cachedStats != null) {
+                int cardIndex = hoveredCardIndex + scrollOffset;
+                if (cardIndex >= 0 && cardIndex < stats.size()) {
+                    StatType stat = stats.get(cardIndex);
+                    if (!stat.isToggle()) {
+                        handleQuickAdd(stat);
+                    }
+                }
+            }
+            return true;
+        }
+
+        if (keyCode == GLFW.GLFW_KEY_B) {
+            addAmountIndex = (addAmountIndex + 1) % ADD_LABELS.length;
+            maxMode = false;
+            playClickSound();
+            rebuildAllWidgets();
+            return true;
+        }
+
+        if (keyCode == GLFW.GLFW_KEY_R && hasShiftDown()) {
+            resetCategory();
+            return true;
+        }
+
+        if (keyCode == GLFW.GLFW_KEY_R && hasControlDown()) {
+            resetAll();
+            return true;
+        }
+
+
+        if (keyCode == GLFW.GLFW_KEY_UP || keyCode == GLFW.GLFW_KEY_W) {
+            doScroll(-1);
+            return true;
+        }
+        if (keyCode == GLFW.GLFW_KEY_DOWN || keyCode == GLFW.GLFW_KEY_S) {
+            doScroll(1);
+            return true;
+        }
+
+        return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    // ======================== 辅助方法 ========================
+
+    /**
+     * 获取属性的显示名称。
+     * <p>
+     * 外部属性的翻译键就是属性自身的 {@code getDescriptionId()}，因此模组自带的中文
+     * 会被直接复用，不需要再手工补翻译；万一某个属性连它自己所属的模组都没给译文，
+     * 才回退成「命名空间: 可读路径」，避免把 {@code attribute.name.xxx} 这种原始键名
+     * 直接摆到玩家面前。
+     */
+    private String getStatDisplayName(StatType stat) {
+        // 覆盖配置里手写的显示名优先（一般是整合包作者给外部属性补的中文）
+        String custom = stat.getCustomDisplayName();
+        if (custom != null) return custom;
+
+        String key = stat.getTranslationKey();
+        String translated = Component.translatable(key).getString();
+        if (!translated.equals(key)) return translated;
+
+        String attrName = stat.getAttributeName();
+        if (attrName != null) {
+            ResourceLocation rl = ResourceLocation.tryParse(attrName);
+            if (rl != null) {
+                return rl.getNamespace() + ": " + rl.getPath().replace('_', ' ').trim();
+            }
+            return attrName;
+        }
+        return key;
+    }
+
+    /**
+     * 获取属性的描述文本（优先翻译键，回退到属性注册名）
+     */
+    private String getStatDescription(StatType stat) {
+        // 外部属性：覆盖配置里手写的说明优先（内置属性仍走 lang 的 .desc 键）
+        if (stat.getCategory() == StatCategory.EXTERNAL) {
+            String custom = stat.getDescription();
+            if (custom != null && !custom.isBlank()) return custom;
+        }
+
+        String descKey = stat.getTranslationKey() + ".desc";
+        String translated = Component.translatable(descKey).getString();
+        // 如果翻译就是键本身（没找到翻译），回退到注册名
+        if (translated.equals(descKey)) {
+            if (stat.getAttributeName() != null) {
+                return "[" + stat.getAttributeName() + "]";
+            }
+            return "";
+        }
+        return translated;
+    }
+
+    private boolean isMouseInCard(int mouseX, int mouseY, int cardX, int cardY, int cardWidth) {
+        return mouseX >= cardX && mouseX < cardX + cardWidth &&
+                mouseY >= cardY && mouseY < cardY + CARD_H;
+    }
+
+    private boolean isMouseOnScrollbar(int mouseX, int mouseY) {
+        int sx = GUI_WIDTH - SCROLLBAR_W - 4;
+        return mouseX >= sx && mouseX < sx + SCROLLBAR_W + 4 &&
+                mouseY >= contentTop && mouseY < contentTop + contentHeight;
+    }
+
+    /**
+     * 检测是否点击了属性卡片的收藏星标
+     */
+    private boolean handleStarClick(int px, int py) {
+        int cardWidth = GUI_WIDTH - SCROLLBAR_W - 16;
+        int starRight = 4 + font.width("\u2605");
+
+        for (int i = 0; i < MAX_VISIBLE; i++) {
+            int cardY = contentTop + i * (CARD_H + CARD_GAP);
+            if (py >= cardY && py < cardY + CARD_H && px >= 4 && px <= 4 + starRight + 4) {
+                // 获取当前卡片对应的 StatType
+                StatType stat = null;
+                if (selectedCategory == StatCategory.EXTERNAL) {
+                    int di = i + scrollOffset;
+                    if (di < externalDisplayList.size() && !externalDisplayList.get(di).isHeader) {
+                        stat = externalDisplayList.get(di).stat;
+                    }
+                } else {
+                    List<StatType> list = categoryStats.get(selectedCategory);
+                    int idx = i + scrollOffset;
+                    if (list != null && idx < list.size()) stat = list.get(idx);
+                }
+                if (stat != null) {
+                    playClickSound();
+                    NetworkHandler.CHANNEL.sendToServer(
+                            new NetworkHandler.ToggleFavoritePacket(stat.getId()));
+                    // 立即更新客户端缓存
+                    if (cachedStats != null) cachedStats.toggleFavorite(stat.getId());
+                    // 如果开启了仅收藏模式，刷新列表
+                    if (favoritesOnly) {
+                        buildCategoryMap();
+                        updateMaxScroll();
+                        rebuildAllWidgets();
+                    }
+                    return true;
+                }
+                break;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 检测是否点击了 EXTERNAL 标签下的分组头
+     */
+    private boolean handleExternalHeaderClick(int px, int py) {
+        int cardWidth = GUI_WIDTH - SCROLLBAR_W - 16;
+        for (int i = 0; i < MAX_VISIBLE; i++) {
+            int displayIndex = i + scrollOffset;
+            if (displayIndex >= externalDisplayList.size()) break;
+            int cardY = contentTop + i * (CARD_H + CARD_GAP);
+            if (isMouseInCard(px, py, 4, cardY, cardWidth)) {
+                DisplayEntry entry = externalDisplayList.get(displayIndex);
+                if (entry.isHeader) {
+                    playClickSound();
+                    toggleExternalGroup(entry.namespace);
+                    return true;
+                }
+                break; // 点到了属性卡片，让 Widget 按钮处理
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public boolean isPauseScreen() {
+        return true;
+    }
+
+    // ======================== 自定义按钮控件 ========================
+
+    /** 像素风格按钮 — 纯色背景 + 居中文字 */
+    private static class PixelButton extends com.infinitestats.client.widget.Btn {
+        private final int bgColor, hoverColor, textColor;
+
+        PixelButton(int x, int y, int w, int h, Component message,
+                    int bg, int hover, int text, OnPress onPress) {
+            super(x, y, w, h, message, onPress, (net.minecraft.network.chat.Component) null);
+            this.bgColor = bg;
+            this.hoverColor = hover;
+            this.textColor = text;
+        }
+
+        @Override
+        public void renderButton(PoseStack poseStack, int mouseX, int mouseY, float partialTick) {
+            InfGuiGraphics g = new InfGuiGraphics(poseStack, net.minecraft.client.Minecraft.getInstance().screen);
+            Minecraft mc = Minecraft.getInstance();
+            int color = isHoveredOrFocused() ? hoverColor : bgColor;
+            g.fill(x, y, x + width, y + height, color);
+            g.drawCenteredString(mc.font, getMessage(), x + width / 2,
+                    y + (height - mc.font.lineHeight) / 2 + 1, textColor);
+        }
+
+        @Override
+        public void playDownSound(net.minecraft.client.sounds.SoundManager handler) {
+            // 音效已在外层 onPress 中处理，这里静默
+        }
+    }
+
+    /**
+     * 分类标签按钮 — 带颜色指示条 + 点数统计 + 分类图标。
+     *
+     * <h2>为什么图标画成物品，而不是写进分类名里</h2>
+     * 原来分类名是 {@code "🛡 防御"} 这种 emoji 前缀，但那些字符在 Unicode 增补平面
+     * （U+1F6E1 等），原版字体根本没有对应字形 —— 游戏里一律显示成方块。
+     * 现在分类名只留文字，图标直接用 {@link StatCategory#getIcon()} 的物品渲染，
+     * 不依赖字体覆盖到哪些字符。
+     */
+    private static class TabButton extends Button {
+        private final int accentColor;
+        private final long allocatedPoints;
+        private final ItemStack icon;
+        private boolean selected;
+
+        TabButton(int x, int y, int w, int h, Component message, ItemStack icon,
+                  long allocatedPoints, int accent, boolean selected, OnPress onPress) {
+            super(x, y, w, h, message, onPress, NO_TOOLTIP);
+            this.icon = icon;
+            this.allocatedPoints = allocatedPoints;
+            this.accentColor = accent;
+            this.selected = selected;
+        }
+
+        @Override
+        public void renderButton(PoseStack poseStack, int mouseX, int mouseY, float partialTick) {
+            InfGuiGraphics g = new InfGuiGraphics(poseStack, net.minecraft.client.Minecraft.getInstance().screen);
+            Minecraft mc = Minecraft.getInstance();
+            int bg = selected ? BG_TAB_SELECTED :
+                    (isHoveredOrFocused() ? 0x60353550 : BG_TAB);
+            g.fill(x, y, x + width, y + height, bg);
+
+            // 选中指示条
+            if (selected) {
+                g.fill(x + 4, y + height - 3, x + width - 4, y + height - 1,
+                        accentColor | 0xFF000000);
+            }
+
+            // 类别名称（左边配分类物品图标，含点数统计时整体居中）
+            int textColor = selected ? (accentColor | 0xFF000000) :
+                    (isHoveredOrFocused() ? TEXT_PRIMARY : TEXT_SECONDARY);
+            String label = getMessage().getString();
+            int labelW = mc.font.width(label);
+            String ptsStr = allocatedPoints != 0 ? "(" + allocatedPoints + ")" : null;
+            int ptsW = ptsStr == null ? 0 : mc.font.width(ptsStr);
+            int iconW = icon.isEmpty() ? 0 : 18;
+            int totalW = iconW + labelW + (ptsStr == null ? 0 : ptsW + 4);
+            int startX = x + (width - totalW) / 2;
+            int textY = y + (height - mc.font.lineHeight) / 2 + 1;
+
+            if (!icon.isEmpty()) {
+                g.renderItem(icon, startX, y + (height - 16) / 2);
+            }
+            g.drawString(mc.font, label, startX + iconW, textY, textColor);
+            if (ptsStr != null) {
+                g.drawString(mc.font, ptsStr, startX + iconW + labelW + 4, textY,
+                        allocatedPoints > 0 ? TEXT_POINTS : TEXT_POINTS_NEGATIVE);
+            }
+        }
+
+        @Override
+        public void playDownSound(net.minecraft.client.sounds.SoundManager handler) {
+            // 静默 — 由父级处理
+        }
+    }
+
+    /** 拨动开关按钮 — 用于 Toggle 型属性 */
+    private class ToggleSwitchButton extends Button {
+        private final StatType stat;
+
+        ToggleSwitchButton(int x, int y, int w, int h, StatType stat, OnPress onPress) {
+            super(x, y, w, h, Component.empty(), onPress, NO_TOOLTIP);
+            this.stat = stat;
+        }
+
+        @Override
+        public void renderButton(PoseStack poseStack, int mouseX, int mouseY, float partialTick) {
+            InfGuiGraphics g = new InfGuiGraphics(poseStack, net.minecraft.client.Minecraft.getInstance().screen);
+            long level = cachedStats != null ? cachedStats.getStatLevel(stat) : 0L;
+            boolean active = level >= stat.getMaxLevel();
+            int tx = x;
+            int ty = y;
+
+            // 轨道背景
+            int trackColor = active ? 0xFF22C55E : 0xFF374151;
+            g.fill(tx, ty + 2, tx + TOGGLE_W, ty + TOGGLE_H - 2, trackColor);
+
+            // 阴影
+            int knobOffset = active ? TOGGLE_W - 12 : 0;
+            g.fill(tx + knobOffset, ty, tx + knobOffset + 12, ty + TOGGLE_H, 0x40000000);
+
+            // 滑块
+            int knobColor = isHoveredOrFocused() ? 0xFFFFFFFF : 0xFFDDDDDD;
+            g.fill(tx + knobOffset + 1, ty + 1, tx + knobOffset + 11, ty + TOGGLE_H - 1, knobColor);
+        }
+
+        @Override
+        public void playDownSound(net.minecraft.client.sounds.SoundManager handler) {
+            // 静默 — 由 toggleStat 处理
+        }
+    }
+}

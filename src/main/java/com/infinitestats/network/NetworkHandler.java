@@ -1,0 +1,3052 @@
+package com.infinitestats.network;
+
+import com.infinitestats.InfiniteStats;
+import com.infinitestats.crafting.PortableAnvil;
+import com.infinitestats.crafting.PortableCraftingMenu;
+import com.infinitestats.crafting.PortableGuis;
+import com.infinitestats.crafting.PortableInfuser;
+import com.infinitestats.crafting.PortableInfuserMenu;
+import com.infinitestats.crafting.PortableStationMenus;
+import com.infinitestats.emc.EmcDatabase;
+import com.infinitestats.emc.EmcMenu;
+import com.infinitestats.emc.EmcPricing;
+import com.infinitestats.emc.EmcPlayerData;
+import com.infinitestats.emc.EmcPlayerDataProvider;
+import com.infinitestats.furnace.FurnaceFuelBufferMenu;
+import com.infinitestats.furnace.FurnaceOrePriorityMenu;
+import com.infinitestats.furnace.FurnaceProductBufferMenu;
+import com.infinitestats.furnace.PlayerFurnaceData;
+import com.infinitestats.furnace.PortableFurnaceMenu;
+import com.infinitestats.Config;
+import com.infinitestats.stats.PlayerStats;
+import com.infinitestats.stats.PlayerStatsProvider;
+import com.infinitestats.stats.StatType;
+import com.infinitestats.handler.AttributeHandler;
+import com.infinitestats.util.AttributeValueMath;
+import com.infinitestats.util.EntityPanelToggles;
+import com.infinitestats.util.EntityPanelWand;
+import com.infinitestats.util.TeleportUtil;
+import com.infinitestats.handler.HandlerRegistry;
+import com.infinitestats.client.CrossDimScreen;
+import com.infinitestats.client.EntityPanelScreen;
+import net.minecraft.advancements.Advancement;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Registry;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.inventory.MenuType;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.item.crafting.Recipe;
+import net.minecraft.world.item.crafting.RecipeManager;
+import net.minecraft.world.item.crafting.RecipeType;
+import net.minecraftforge.registries.ForgeRegistries;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.util.Mth;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.enchantment.Enchantment;
+import net.minecraftforge.network.NetworkEvent;
+import net.minecraftforge.network.NetworkHooks;
+import net.minecraftforge.network.NetworkRegistry;
+import net.minecraftforge.network.PacketDistributor;
+import net.minecraftforge.network.simple.SimpleChannel;
+
+import java.util.*;
+import java.lang.reflect.Method;
+import java.util.function.Supplier;
+
+/**
+ * 网络处理系统 - 高效的数据包设计
+ * 使用简洁的协议减少带宽占用
+ */
+public final class NetworkHandler {
+
+    // 22：SyncStatsPacket / UpdateBuffFilterPacket 增加「死亡重生继承保护」开关
+    // 23：新增 OpenEntityPanelPacket（服务端下发「打开某个生物的面板」）
+    // 24：OpenEntityPanelPacket 增加开关掩码与可编辑标志，并新增 EntityPanelActionPacket（切换生物开关）
+    // 25：新增 EntityPanelAttributePacket（改生物某条属性的基础值）
+    // 26：新增传送石碑三个包（列表请求 / 列表同步 / 传送）
+    // 27：EntityPanelAttributePacket 的语义改成「目标最终值」（旧客户端拿来当基础值写会算错，故升版本）
+    // 28：新增 ExternalStatsSyncPacket（服务端下发权威的外部属性列表，旧客户端收不到会少一批卡片）
+    private static final String PROTOCOL_VERSION = "28";
+    public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
+            new ResourceLocation(InfiniteStats.MODID, "main"),
+            () -> PROTOCOL_VERSION,
+            PROTOCOL_VERSION::equals,
+            PROTOCOL_VERSION::equals
+    );
+
+    private static int packetId = 0;
+    private static final Map<ResourceLocation, Long> CLIENT_EMC_PRICES = new HashMap<>();
+
+    /** 「自动入库」支持的存储键（与 NetworkIO 的桥接名一致）。 */
+    private static final List<String> STORAGE_KEYS = List.of("RS", "AE2", "TOMS", "BACKPACK", "BD");
+
+    public static long getClientEmc(ResourceLocation id) {
+        return CLIENT_EMC_PRICES.getOrDefault(id, 0L);
+    }
+
+    /** 待处理的成就同步数据（由 SyncAdvancementsPacket 写入，AchievementManagerScreen 读取） */
+    public static List<AchievementInfo> pendingAdvancements = null;
+
+    /**
+     * 待处理的「区块强加载」列表（由 {@link ChunkLoaderSyncPacket} 写入，ChunkLoaderScreen 读取）。
+     * 元素是 {@link ChunkPos#toLong()} 打包后的区块坐标。
+     */
+    public static volatile List<Long> pendingForcedChunks = null;
+    /** 上面那份列表所属的维度 id（仅用于界面显示）。 */
+    public static volatile String pendingForcedChunkDimension = null;
+    /** 列表版本号：每次同步自增，界面据此判断是否需要重建列表。 */
+    public static volatile long forcedChunksVersion = 0;
+
+    /**
+     * 待处理的「已激活传送石碑」列表（由 {@link WaystoneListPacket} 写入，{@code WaypointScreen} 读取）。
+     * 没装传送石碑时一直是空表。
+     */
+    public static volatile List<WaystoneEntry> pendingWaystones = List.of();
+    /** 上面那份列表的版本号：每次同步自增，界面据此重建列表。 */
+    public static volatile long waystoneListVersion = 0;
+
+    /**
+     * 注册所有数据包
+     */
+    public static void register() {
+        // 同步数据包（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, SyncStatsPacket.class,
+                SyncStatsPacket::encode,
+                SyncStatsPacket::decode,
+                SyncStatsPacket::handle);
+
+        // 外部属性列表（服务器 → 客户端）：登录 / 热重扫后下发一次
+        CHANNEL.registerMessage(packetId++, ExternalStatsSyncPacket.class,
+                ExternalStatsSyncPacket::encode,
+                ExternalStatsSyncPacket::decode,
+                ExternalStatsSyncPacket::handle);
+
+        // ========== 传送点面板 × 传送石碑（Waystones）联动 ==========
+        // 列表请求（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, WaystoneListRequestPacket.class,
+                WaystoneListRequestPacket::encode,
+                WaystoneListRequestPacket::decode,
+                WaystoneListRequestPacket::handle);
+        // 列表同步（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, WaystoneListPacket.class,
+                WaystoneListPacket::encode,
+                WaystoneListPacket::decode,
+                WaystoneListPacket::handle);
+        // 传送请求（客户端 → 服务器，免费无冷却）
+        CHANNEL.registerMessage(packetId++, WaystoneTeleportPacket.class,
+                WaystoneTeleportPacket::encode,
+                WaystoneTeleportPacket::decode,
+                WaystoneTeleportPacket::handle);
+
+        // ========== 随身工作台 / 熔炉 联动 Refined Storage ==========
+        CHANNEL.registerMessage(packetId++, CraftingRecipeFillPacket.class,
+                CraftingRecipeFillPacket::encode,
+                CraftingRecipeFillPacket::decode,
+                CraftingRecipeFillPacket::handle);
+
+        // 网络库存查询（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, RequestNetworkItemsPacket.class,
+                RequestNetworkItemsPacket::encode,
+                RequestNetworkItemsPacket::decode,
+                RequestNetworkItemsPacket::handle);
+        // 网络库存同步（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, SyncNetworkItemsPacket.class,
+                SyncNetworkItemsPacket::encode,
+                SyncNetworkItemsPacket::decode,
+                SyncNetworkItemsPacket::handle);
+
+        CHANNEL.registerMessage(packetId++, CraftingOutputModePacket.class,
+                CraftingOutputModePacket::encode,
+                CraftingOutputModePacket::decode,
+                CraftingOutputModePacket::handle);
+        CHANNEL.registerMessage(packetId++, FurnaceRSRefillOrePacket.class,
+                FurnaceRSRefillOrePacket::encode,
+                FurnaceRSRefillOrePacket::decode,
+                FurnaceRSRefillOrePacket::handle);
+        CHANNEL.registerMessage(packetId++, FurnaceRSRefillFuelPacket.class,
+                FurnaceRSRefillFuelPacket::encode,
+                FurnaceRSRefillFuelPacket::decode,
+                FurnaceRSRefillFuelPacket::handle);
+        CHANNEL.registerMessage(packetId++, FurnaceRSDepositPacket.class,
+                FurnaceRSDepositPacket::encode,
+                FurnaceRSDepositPacket::decode,
+                FurnaceRSDepositPacket::handle);
+
+        // 属性修改数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, ModifyStatPacket.class,
+                ModifyStatPacket::encode,
+                ModifyStatPacket::decode,
+                ModifyStatPacket::handle);
+
+        // 分类重置数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, ResetCategoryPacket.class,
+                ResetCategoryPacket::encode,
+                ResetCategoryPacket::decode,
+                ResetCategoryPacket::handle);
+
+        // 全部重置数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, ResetAllPacket.class,
+                ResetAllPacket::encode,
+                ResetAllPacket::decode,
+                ResetAllPacket::handle);
+
+        // Buff 过滤列表更新数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, UpdateBuffFilterPacket.class,
+                UpdateBuffFilterPacket::encode,
+                UpdateBuffFilterPacket::decode,
+                UpdateBuffFilterPacket::handle);
+
+        // 连锁挖掘设置：客户端提交（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, UpdateVeinMinerConfigPacket.class,
+                UpdateVeinMinerConfigPacket::encode,
+                UpdateVeinMinerConfigPacket::decode,
+                UpdateVeinMinerConfigPacket::handle);
+        // 连锁挖掘设置：服务端下发（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, VeinMinerConfigPacket.class,
+                VeinMinerConfigPacket::encode,
+                VeinMinerConfigPacket::decode,
+                VeinMinerConfigPacket::handle);
+
+        // 矿透设置：客户端提交（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, UpdateOreVisionConfigPacket.class,
+                UpdateOreVisionConfigPacket::encode,
+                UpdateOreVisionConfigPacket::decode,
+                UpdateOreVisionConfigPacket::handle);
+        // 矿透设置：服务端下发（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, OreVisionConfigPacket.class,
+                OreVisionConfigPacket::encode,
+                OreVisionConfigPacket::decode,
+                OreVisionConfigPacket::handle);
+
+        // 物品编辑器数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EditItemPacket.class,
+                EditItemPacket::encode,
+                EditItemPacket::decode,
+                EditItemPacket::handle);
+
+        // 物品元数据编辑数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EditItemMetaPacket.class,
+                EditItemMetaPacket::encode,
+                EditItemMetaPacket::decode,
+                EditItemMetaPacket::handle);
+
+        // ========== EMC 数据包 ==========
+
+        // EMC 同步数据包（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, EmcSyncPacket.class,
+                EmcSyncPacket::encode,
+                EmcSyncPacket::decode,
+                EmcSyncPacket::handle);
+
+        // 物品学习数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EmcLearnPacket.class,
+                EmcLearnPacket::encode,
+                EmcLearnPacket::decode,
+                EmcLearnPacket::handle);
+
+        // 物品提取数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EmcExtractPacket.class,
+                EmcExtractPacket::encode,
+                EmcExtractPacket::decode,
+                EmcExtractPacket::handle);
+
+        // 一键卖出数据包（客户端 → 服务器）：把背包内所有可转化物品倾销成 EMC
+        CHANNEL.registerMessage(packetId++, EmcSellAllPacket.class,
+                EmcSellAllPacket::encode,
+                EmcSellAllPacket::decode,
+                EmcSellAllPacket::handle);
+
+        // 单个槽位卖出数据包（客户端 → 服务器）：Shift+左键卖出指定槽位物品
+        CHANNEL.registerMessage(packetId++, EmcSellSlotPacket.class,
+                EmcSellSlotPacket::encode,
+                EmcSellSlotPacket::decode,
+                EmcSellSlotPacket::handle);
+
+        // 自定义定价数据包（客户端 → 服务器）：设置物品的 EMC 值
+        CHANNEL.registerMessage(packetId++, EmcSetPricePacket.class,
+                EmcSetPricePacket::encode,
+                EmcSetPricePacket::decode,
+                EmcSetPricePacket::handle);
+
+        // 收藏切换数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, ToggleFavoritePacket.class,
+                ToggleFavoritePacket::encode,
+                ToggleFavoritePacket::decode,
+                ToggleFavoritePacket::handle);
+
+        // EMC 菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EmcOpenPacket.class,
+                EmcOpenPacket::encode,
+                EmcOpenPacket::decode,
+                EmcOpenPacket::handle);
+
+        // 便携式熔炉菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, FurnaceOpenPacket.class,
+                FurnaceOpenPacket::encode,
+                FurnaceOpenPacket::decode,
+                FurnaceOpenPacket::handle);
+
+        // 燃料仓菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, FurnaceFuelOpenPacket.class,
+                FurnaceFuelOpenPacket::encode,
+                FurnaceFuelOpenPacket::decode,
+                FurnaceFuelOpenPacket::handle);
+
+        // 成品仓菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, FurnaceProductOpenPacket.class,
+                FurnaceProductOpenPacket::encode,
+                FurnaceProductOpenPacket::decode,
+                FurnaceProductOpenPacket::handle);
+
+        // 成品仓：将成品存入 RS 网络（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, FurnaceProductRSDepositPacket.class,
+                FurnaceProductRSDepositPacket::encode,
+                FurnaceProductRSDepositPacket::decode,
+                FurnaceProductRSDepositPacket::handle);
+
+        // 随身熔炉速度调节数据包（客户端 → 服务器，消耗/返还可分配点数）
+        CHANNEL.registerMessage(packetId++, FurnaceSpeedPacket.class,
+                FurnaceSpeedPacket::encode,
+                FurnaceSpeedPacket::decode,
+                FurnaceSpeedPacket::handle);
+
+        // 矿石优先顺序界面打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, FurnaceOrePriorityOpenPacket.class,
+                FurnaceOrePriorityOpenPacket::encode,
+                FurnaceOrePriorityOpenPacket::decode,
+                FurnaceOrePriorityOpenPacket::handle);
+
+        // 矿石优先顺序请求数据包（客户端 → 服务器）：拉取当前优先顺序与可加入矿石
+        CHANNEL.registerMessage(packetId++, FurnaceOrePriorityRequestPacket.class,
+                FurnaceOrePriorityRequestPacket::encode,
+                FurnaceOrePriorityRequestPacket::decode,
+                FurnaceOrePriorityRequestPacket::handle);
+
+        // 矿石优先顺序同步数据包（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, FurnaceOrePrioritySyncPacket.class,
+                FurnaceOrePrioritySyncPacket::encode,
+                FurnaceOrePrioritySyncPacket::decode,
+                FurnaceOrePrioritySyncPacket::handle);
+
+        // 矿石优先顺序更新数据包（客户端 → 服务器）：提交新的优先顺序列表
+        CHANNEL.registerMessage(packetId++, FurnaceOrePriorityUpdatePacket.class,
+                FurnaceOrePriorityUpdatePacket::encode,
+                FurnaceOrePriorityUpdatePacket::decode,
+                FurnaceOrePriorityUpdatePacket::handle);
+
+        // 随身工作台倍率调节数据包（客户端 → 服务器，消耗/返还可分配点数）
+        CHANNEL.registerMessage(packetId++, CraftingMultiplierPacket.class,
+                CraftingMultiplierPacket::encode,
+                CraftingMultiplierPacket::decode,
+                CraftingMultiplierPacket::handle);
+
+        // 随身工作台菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, CraftingOpenPacket.class,
+                CraftingOpenPacket::encode,
+                CraftingOpenPacket::decode,
+                CraftingOpenPacket::handle);
+
+        // 随身铁砧菜单打开数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, AnvilOpenPacket.class,
+                AnvilOpenPacket::encode,
+                AnvilOpenPacket::decode,
+                AnvilOpenPacket::handle);
+
+        // 跨维度传送请求数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, CrossDimRequestPacket.class,
+                CrossDimRequestPacket::encode,
+                CrossDimRequestPacket::decode,
+                CrossDimRequestPacket::handle);
+
+        // 跨维度维度列表请求 / 响应（客户端 ↔ 服务器）
+        CHANNEL.registerMessage(packetId++, CrossDimListRequestPacket.class,
+                CrossDimListRequestPacket::encode,
+                CrossDimListRequestPacket::decode,
+                CrossDimListRequestPacket::handle);
+        CHANNEL.registerMessage(packetId++, CrossDimListPacket.class,
+                CrossDimListPacket::encode,
+                CrossDimListPacket::decode,
+                CrossDimListPacket::handle);
+
+        // ========== 成就管理数据包 ==========
+
+        // 请求成就列表（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, RequestAdvancementsPacket.class,
+                RequestAdvancementsPacket::encode,
+                RequestAdvancementsPacket::decode,
+                RequestAdvancementsPacket::handle);
+
+        // 同步成就列表（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, SyncAdvancementsPacket.class,
+                SyncAdvancementsPacket::encode,
+                SyncAdvancementsPacket::decode,
+                SyncAdvancementsPacket::handle);
+
+        // 切换成就状态（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, ToggleAdvancementPacket.class,
+                ToggleAdvancementPacket::encode,
+                ToggleAdvancementPacket::decode,
+                ToggleAdvancementPacket::handle);
+
+        // ========== 传送点管理数据包 ==========
+
+        // 传送点操作（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, WaypointActionPacket.class,
+                WaypointActionPacket::encode,
+                WaypointActionPacket::decode,
+                WaypointActionPacket::handle);
+
+        // 存储优先级更新（客户端 → 服务器，带作用域）
+        CHANNEL.registerMessage(packetId++, SetNetworkPriorityPacket.class,
+                SetNetworkPriorityPacket::encode,
+                SetNetworkPriorityPacket::decode,
+                SetNetworkPriorityPacket::handle);
+
+        // 自动入库过滤（白 / 黑名单）更新（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, UpdateDepositFilterPacket.class,
+                UpdateDepositFilterPacket::encode,
+                UpdateDepositFilterPacket::decode,
+                UpdateDepositFilterPacket::handle);
+
+        // 随身末影箱 / 随身锻造台打开（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EnderChestOpenPacket.class,
+                EnderChestOpenPacket::encode,
+                EnderChestOpenPacket::decode,
+                EnderChestOpenPacket::handle);
+        CHANNEL.registerMessage(packetId++, SmithingOpenPacket.class,
+                SmithingOpenPacket::encode,
+                SmithingOpenPacket::decode,
+                SmithingOpenPacket::handle);
+
+        // 随身工具枢纽：按属性 id 打开附魔台 / 切石机 / 织布机 / 制图台 / 磨石 / 锻造台（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, PortableToolOpenPacket.class,
+                PortableToolOpenPacket::encode,
+                PortableToolOpenPacket::decode,
+                PortableToolOpenPacket::handle);
+
+        // 随身进阶高级附魔台：附魔 / 修复 / 回收（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, InfuserActionPacket.class,
+                InfuserActionPacket::encode,
+                InfuserActionPacket::decode,
+                InfuserActionPacket::handle);
+
+        // 天气切换：晴 → 雨 → 雷 → 晴（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, WeatherControlPacket.class,
+                WeatherControlPacket::encode,
+                WeatherControlPacket::decode,
+                WeatherControlPacket::handle);
+
+        // 区块强加载：加载 / 卸载 / 请求列表（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, ChunkLoaderActionPacket.class,
+                ChunkLoaderActionPacket::encode,
+                ChunkLoaderActionPacket::decode,
+                ChunkLoaderActionPacket::handle);
+        // 区块强加载列表同步（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, ChunkLoaderSyncPacket.class,
+                ChunkLoaderSyncPacket::encode,
+                ChunkLoaderSyncPacket::decode,
+                ChunkLoaderSyncPacket::handle);
+
+        // 拔刀剑编辑：杀敌数 / 耀魂数 / 锻造数 / SA / SE（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EditItemBladePacket.class,
+                EditItemBladePacket::encode,
+                EditItemBladePacket::decode,
+                EditItemBladePacket::handle);
+
+        // 生物面板：通知客户端打开某个生物的面板（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, OpenEntityPanelPacket.class,
+                OpenEntityPanelPacket::encode,
+                OpenEntityPanelPacket::decode,
+                OpenEntityPanelPacket::handle);
+
+        // 生物面板：面板里切换生物的开关（客户端 → 服务器，服务端执行后回上面的包刷新状态）
+        CHANNEL.registerMessage(packetId++, EntityPanelActionPacket.class,
+                EntityPanelActionPacket::encode,
+                EntityPanelActionPacket::decode,
+                EntityPanelActionPacket::handle);
+
+        // 生物面板：改某条属性的基础值（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EntityPanelAttributePacket.class,
+                EntityPanelAttributePacket::encode,
+                EntityPanelAttributePacket::decode,
+                EntityPanelAttributePacket::handle);
+
+    }
+
+    /**
+     * 通知玩家打开某个生物的面板（也用于切换开关后刷新状态）。
+     * <p>
+     * 属性数值不用发：生物的属性（含各条修饰符）本来就随实体追踪同步到客户端，
+     * 客户端直接读本地那份即可，没必要把属性表再抄一遍发过去 —— 也就不会出现
+     * 「面板里的数值和世界里看到的不一致」。
+     * <p>
+     * 但面板里的「开关」状态必须发：{@code NoAI} / {@code Silent} 这些字段大多<b>不在</b>
+     * 同步实体数据里，客户端本地读不到权威值 —— 所以这里带上「哪些开关可用」与「当前开着哪些」两个掩码，
+     * 以及「这个玩家能不能改」（配置 + 服务端校验的结果）。
+     */
+    public static void sendOpenEntityPanel(ServerPlayer player, Entity target) {
+        if (player == null || target == null) return;
+        sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
+    }
+
+    /** 按当前真实状态回包（切换开关后、或校验失败后都用它把客户端拉回权威状态）。 */
+    private static void sendEntityPanelState(ServerPlayer player, Entity target, boolean editable) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new OpenEntityPanelPacket(target.getId(),
+                        EntityPanelToggles.applicableMask(target),
+                        EntityPanelToggles.enabledMask(target),
+                        editable));
+    }
+
+    /**
+     * 把某个维度的「已强加载区块」列表同步给玩家。
+     */
+    private static void syncForcedChunks(ServerPlayer player, ServerLevel level) {
+        List<Long> list = new ArrayList<>();
+        for (long packed : level.getForcedChunks()) {
+            list.add(packed);
+        }
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new ChunkLoaderSyncPacket(list, level.dimension().location().toString()));
+    }
+
+    /** 归一化自动入库过滤列表：只保留合法的物品 ID，并限制条目数上限。 */
+    private static Set<String> normalizeFilterIds(Set<String> ids) {
+        Set<String> out = new HashSet<>();
+        if (ids == null) return out;
+        for (String raw : ids) {
+            if (raw == null) continue;
+            String value = raw.trim();
+            if (value.isEmpty()) continue;
+            if (ResourceLocation.tryParse(value) == null) continue;
+            out.add(value);
+            if (out.size() >= 512) break;
+        }
+        return out;
+    }
+
+    /**
+     * 归一化存储优先级（任意作用域通用）：只保留已知存储键、按出现顺序去重，再把缺失的按配置默认顺序
+     * 补到末尾，最后兜底补全。保证结果始终是完整排列，客户端与服务端对顺序的理解不会分叉。
+     */
+    private static List<String> normalizeNetworkOrder(List<String> input) {
+        List<String> out = new ArrayList<>();
+        if (input != null) {
+            for (String raw : input) {
+                if (raw == null) continue;
+                String key = raw.trim().toUpperCase(Locale.ROOT);
+                if (STORAGE_KEYS.contains(key) && !out.contains(key)) out.add(key);
+            }
+        }
+        List<? extends String> cfg = Config.NETWORK_PRIORITY.get();
+        List<String> fallback = cfg != null ? new ArrayList<>(cfg) : new ArrayList<>(STORAGE_KEYS);
+        for (String raw : fallback) {
+            if (raw == null) continue;
+            String key = raw.trim().toUpperCase(Locale.ROOT);
+            if (STORAGE_KEYS.contains(key) && !out.contains(key)) out.add(key);
+        }
+        for (String key : STORAGE_KEYS) {
+            if (!out.contains(key)) out.add(key);
+        }
+        return out;
+    }
+
+    // ========== 数据包类 ==========
+
+    /**
+     * 属性修改数据包
+     */
+    public static final class ModifyStatPacket {
+        private final String statId;
+        private final long amount;
+
+        public ModifyStatPacket(String statId, long amount) {
+            this.statId = statId;
+            this.amount = amount;
+        }
+
+        public static void encode(ModifyStatPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.statId);
+            buf.writeVarLong(msg.amount);
+        }
+
+        public static ModifyStatPacket decode(FriendlyByteBuf buf) {
+            return new ModifyStatPacket(buf.readUtf(), buf.readVarLong());
+        }
+
+        public static void handle(ModifyStatPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    StatType stat = StatType.fromId(msg.statId);
+                    if (stat == null) return;
+
+                    boolean success;
+                    // 已被「功能开关」关闭的属性不允许再加点（仍允许返还，避免卡住已投入的点数）
+                    if (msg.amount > 0 && stats.isStatDisabled(stat.getId())) return;
+                    if (msg.amount > 0) {
+                        success = stats.addPoints(stat, msg.amount);
+                    } else {
+                        success = stats.removePoints(stat, -msg.amount);
+                    }
+
+                    if (success) {
+                        // 同步到客户端
+                        syncToClient(player);
+                        // 更新属性
+                        AttributeHandler.applyAllAttributes(player, stats);
+                        // 生物面板：刚解锁 / 刚退款都要立刻见效，不等下一秒的定时对齐
+                        EntityPanelWand.sync(player, stats);
+                    }
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 分类重置数据包
+     */
+    public static final class ResetCategoryPacket {
+        private final String categoryName;
+
+        public ResetCategoryPacket(String categoryName) {
+            this.categoryName = categoryName;
+        }
+
+        public static void encode(ResetCategoryPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.categoryName);
+        }
+
+        public static ResetCategoryPacket decode(FriendlyByteBuf buf) {
+            return new ResetCategoryPacket(buf.readUtf());
+        }
+
+        public static void handle(ResetCategoryPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    for (StatType stat : StatType.ALL_STATS) {
+                        // 随身工具属性不在属性面板里列出，也就不能被「重置分类」连带清掉
+                        // （要退某个工具的点数，用随身工具面板右键）
+                        if (stat.getCategory().getName().equals(msg.categoryName) && !stat.isPortableTool()) {
+                            stats.resetStat(stat);
+                        }
+                    }
+                    syncToClient(player);
+                    AttributeHandler.applyAllAttributes(player, stats);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 全部重置数据包
+     */
+    public static final class ResetAllPacket {
+        public ResetAllPacket() {}
+
+        public static void encode(ResetAllPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static ResetAllPacket decode(FriendlyByteBuf buf) {
+            return new ResetAllPacket();
+        }
+
+        public static void handle(ResetAllPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    stats.resetAllPoints();
+                    syncToClient(player);
+                    AttributeHandler.applyAllAttributes(player, stats);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * Buff 过滤列表更新数据包（名单 + 模式 + 保护模式的死亡重生继承开关一起提交）
+     */
+    public static final class UpdateBuffFilterPacket {
+        private final boolean useBlacklist;
+        private final Set<String> effectIds;
+        private final boolean protectAcrossDeath;
+
+        public UpdateBuffFilterPacket(boolean useBlacklist, Set<String> effectIds, boolean protectAcrossDeath) {
+            this.useBlacklist = useBlacklist;
+            this.effectIds = effectIds;
+            this.protectAcrossDeath = protectAcrossDeath;
+        }
+
+        public static void encode(UpdateBuffFilterPacket msg, FriendlyByteBuf buf) {
+            buf.writeBoolean(msg.useBlacklist);
+            buf.writeVarInt(msg.effectIds.size());
+            for (String id : msg.effectIds) {
+                buf.writeUtf(id);
+            }
+            buf.writeBoolean(msg.protectAcrossDeath);
+        }
+
+        public static UpdateBuffFilterPacket decode(FriendlyByteBuf buf) {
+            boolean useBlacklist = buf.readBoolean();
+            int count = buf.readVarInt();
+            Set<String> ids = new HashSet<>();
+            for (int i = 0; i < count; i++) {
+                ids.add(buf.readUtf());
+            }
+            boolean protectAcrossDeath = buf.readBoolean();
+            return new UpdateBuffFilterPacket(useBlacklist, ids, protectAcrossDeath);
+        }
+
+        public static void handle(UpdateBuffFilterPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    stats.setBuffFilterList(new HashSet<>(msg.effectIds), msg.useBlacklist);
+                    stats.setProtectAcrossDeath(msg.protectAcrossDeath);
+                    // 同步回客户端
+                    syncToClient(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    // ========== 同步方法 ==========
+
+    /**
+     * 同步玩家数据到客户端
+     */
+    public static void syncToClient(ServerPlayer player) {
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), 
+                    new SyncStatsPacket(stats.createSnapshot()));
+            // 连锁设置跟着属性数据一起下发，登录 / 重生 / 改设置后客户端手上都是新的
+            CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                    new VeinMinerConfigPacket(stats.getVeinMinerConfig()));
+            // 矿透设置同路下发
+            CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                    new OreVisionConfigPacket(stats.getOreVisionConfig()));
+        });
+    }
+
+    /**
+     * 单独下发「外部属性列表」（登录 / 热重扫后）。
+     * <p>
+     * 这份列表不随 {@link #syncToClient} 走：它是按属性注册表算出来的静态数据，
+     * 只有登录和 {@code /infstats reload external} 两种情况会变。
+     */
+    public static void syncExternalStats(ServerPlayer player) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new ExternalStatsSyncPacket(StatType.externalSnapshot()));
+    }
+
+    /** 把外部属性列表广播给所有在线玩家（热重扫后调用）。 */
+    public static void broadcastExternalStats(MinecraftServer server) {
+        if (server == null) return;
+        ExternalStatsSyncPacket packet = new ExternalStatsSyncPacket(StatType.externalSnapshot());
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+        }
+    }
+
+    /** 单独下发连锁挖掘设置（设置提交后的回同步）。 */
+    public static void syncVeinMinerConfig(ServerPlayer player) {
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                        new VeinMinerConfigPacket(stats.getVeinMinerConfig())));
+    }
+
+    /** 单独下发矿透设置（设置提交后的回同步）。 */
+    public static void syncOreVisionConfig(ServerPlayer player) {
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                        new OreVisionConfigPacket(stats.getOreVisionConfig())));
+    }
+
+    /**
+     * 同步所有数据到指定客户端
+     */
+    public static void syncToTracking(ServerPlayer player) {
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            CHANNEL.send(PacketDistributor.TRACKING_ENTITY_AND_SELF.with(() -> player),
+                    new SyncStatsPacket(stats.createSnapshot()));
+        });
+    }
+
+    /**
+     * 向所有玩家广播数据
+     */
+    public static void broadcastToAll(PlayerStats stats) {
+        // 通常只在调试时使用
+        // CHANNEL.send(PacketDistributor.ALL.noArg(), new SyncStatsPacket(stats.createSnapshot()));
+    }
+
+    // ========== EMC 数据包类 ==========
+
+    /**
+     * EMC 同步数据包（服务器 → 客户端）
+     */
+    public static final class EmcSyncPacket {
+        private final EmcPlayerData.EmcSnapshot snapshot;
+        private final Map<ResourceLocation, Long> prices;
+
+        public EmcSyncPacket(EmcPlayerData.EmcSnapshot snapshot) {
+            this.snapshot = snapshot;
+            this.prices = new HashMap<>();
+            for (ResourceLocation id : snapshot.learnedItems) {
+                ItemStack template = new ItemStack(Registry.ITEM.get(id));
+                CompoundTag tag = snapshot.itemNbt.get(id);
+                if (tag != null) template.setTag(tag.copy());
+                prices.put(id, EmcDatabase.getEmc(template));
+            }
+        }
+
+        private EmcSyncPacket(EmcPlayerData.EmcSnapshot snapshot, Map<ResourceLocation, Long> prices) {
+            this.snapshot = snapshot;
+            this.prices = prices;
+        }
+
+        public static void encode(EmcSyncPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarLong(msg.snapshot.emcBalance);
+            buf.writeVarInt(msg.snapshot.learnedItems.size());
+            for (ResourceLocation id : msg.snapshot.learnedItems) {
+                buf.writeUtf(id.toString());
+                CompoundTag nbt = msg.snapshot.itemNbt.get(id);
+                buf.writeBoolean(nbt != null && !nbt.isEmpty());
+                if (nbt != null && !nbt.isEmpty()) {
+                    buf.writeNbt(nbt);
+                }
+                buf.writeVarLong(msg.prices.getOrDefault(id, 0L));
+            }
+        }
+
+        public static EmcSyncPacket decode(FriendlyByteBuf buf) {
+            long balance = buf.readVarLong();
+            int count = buf.readVarInt();
+            List<ResourceLocation> items = new ArrayList<>();
+            Map<ResourceLocation, CompoundTag> nbtMap = new HashMap<>();
+            Map<ResourceLocation, Long> prices = new HashMap<>();
+            for (int i = 0; i < count; i++) {
+                ResourceLocation rl = ResourceLocation.tryParse(buf.readUtf());
+                CompoundTag nbt = buf.readBoolean() ? buf.readNbt() : null;
+                long price = buf.readVarLong();
+                if (rl != null) {
+                    items.add(rl);
+                    if (nbt != null) nbtMap.put(rl, nbt);
+                    prices.put(rl, price);
+                }
+            }
+            return new EmcSyncPacket(new EmcPlayerData.EmcSnapshot(balance, items, nbtMap), prices);
+        }
+
+        public static void handle(EmcSyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                CLIENT_EMC_PRICES.clear();
+                CLIENT_EMC_PRICES.putAll(msg.prices);
+                var player = net.minecraft.client.Minecraft.getInstance().player;
+                if (player != null) {
+                    player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+                        data.restoreFromSnapshot(msg.snapshot);
+                    });
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 物品学习数据包（客户端 → 服务器）
+     */
+    public static final class EmcLearnPacket {
+        private final String itemId;
+
+        public EmcLearnPacket(String itemId) {
+            this.itemId = itemId;
+        }
+
+        public static void encode(EmcLearnPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.itemId);
+        }
+
+        public static EmcLearnPacket decode(FriendlyByteBuf buf) {
+            return new EmcLearnPacket(buf.readUtf());
+        }
+
+        public static void handle(EmcLearnPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null || !Config.EMC_ENABLED.get()) return;
+
+                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
+                if (itemId == null) return;
+
+                Item item = Registry.ITEM.get(itemId);
+
+                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+                    // 只卖出光标上实际持有的那一份（避免误删背包中其它同类物品且不同步其槽位）
+                    int count = 0;
+                    CompoundTag itemNbt = null;
+                    // 手持（光标）中已经拖入学习槽的同类物品（光标在打开的菜单上，而非玩家背包）
+                    var openMenu = player.containerMenu;
+                    ItemStack carried = openMenu.getCarried();
+                    // 仅比较物品类型（不比较 NBT），因为手册等物品有额外标签
+                    if (!carried.isEmpty() && carried.getItem() == item) {
+                        count += carried.getCount();
+                        itemNbt = carried.getTag();
+                        // 用实际手持（含 NBT）计算 EMC，避免附魔书等带 NBT 物品单价误判为 0
+                        if (EmcDatabase.getEmc(carried) <= 0) return;
+                        long sale = EmcPricing.sellValue(player, carried, count);
+                        openMenu.setCarried(ItemStack.EMPTY);
+                        openMenu.broadcastChanges();
+                        // 学习物品并返还 数量×EMC，保留 NBT
+                        data.learnAndConvert(itemId, sale, itemNbt);
+                        syncEmcToClient(player);
+                    }
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 物品提取数据包（客户端 → 服务器）
+     */
+    public static final class EmcExtractPacket {
+        private final String itemId;
+        private final int count;
+
+        public EmcExtractPacket(String itemId, int count) {
+            this.itemId = itemId;
+            this.count = count;
+        }
+
+        public static void encode(EmcExtractPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.itemId);
+            buf.writeVarInt(msg.count);
+        }
+
+        public static EmcExtractPacket decode(FriendlyByteBuf buf) {
+            return new EmcExtractPacket(buf.readUtf(), buf.readVarInt());
+        }
+
+        public static void handle(EmcExtractPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null || !Config.EMC_ENABLED.get()) return;
+
+                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
+                if (itemId == null) return;
+
+                Item item = Registry.ITEM.get(itemId);
+                if (item == null) return;
+
+                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+                    com.infinitestats.emc.EmcTransactions.extract(player, data, itemId, msg.count);
+
+                    syncEmcToClient(player);
+                    // 提取后刷新当前容器菜单（含背包槽位）使客户端立即显示
+                    if (player.containerMenu != null) {
+                        player.containerMenu.broadcastChanges();
+                    }
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 一键卖出数据包（客户端 → 服务器）
+     * 把玩家背包（主背包 + 快捷栏）中所有「已学且有 EMC 值」的物品倾销成 EMC。
+     */
+    public static final class EmcSellAllPacket {
+        public EmcSellAllPacket() {}
+
+        public static void encode(EmcSellAllPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static EmcSellAllPacket decode(FriendlyByteBuf buf) {
+            return new EmcSellAllPacket();
+        }
+
+        public static void handle(EmcSellAllPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null || !Config.EMC_ENABLED.get()) return;
+
+                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+                    long total = 0;
+                    var inv = player.getInventory();
+                    // 仅遍历主背包 + 快捷栏（0~35），不碰盔甲 / 副手，避免误卖穿戴装备
+                    for (int i = 0; i < 36; i++) {
+                        ItemStack s = inv.getItem(i);
+                        if (s.isEmpty()) continue;
+                        if (i == inv.selected) continue;        // 不卖当前手持的那一格
+                        ResourceLocation id = Registry.ITEM.getKey(s.getItem());
+                        if (!data.hasLearned(id)) continue;     // 只卖已学物品
+                        long emc = EmcDatabase.getEmc(s);
+                        if (emc <= 0) continue;
+                        long sale = EmcPricing.sellValue(player, s, s.getCount());
+                        total += Math.min(sale, Long.MAX_VALUE - total);
+                        inv.setItem(i, ItemStack.EMPTY);
+                    }
+                    if (total > 0) {
+                        data.addEmc(total);
+                        syncEmcToClient(player);
+                        player.displayClientMessage(
+                                Component.literal("§a已将背包内可转化物品卖出，获得 §f" + total + " EMC"), false);
+                    } else {
+                        player.displayClientMessage(
+                                Component.literal("§e背包中没有可卖出的已学物品"), false);
+                    }
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * EMC 菜单打开数据包（客户端 → 服务器）
+     */
+    public static final class EmcOpenPacket {
+        public EmcOpenPacket() {}
+
+        public static void encode(EmcOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static EmcOpenPacket decode(FriendlyByteBuf buf) {
+            return new EmcOpenPacket();
+        }
+
+        public static void handle(EmcOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null || !Config.EMC_ENABLED.get()) return;
+                // 作者把 EMC 面板隐藏后，服务端也不再受理开桌请求（客户端另有入口拦截）
+                if (Config.isPanelHidden("emc")) return;
+                NetworkHooks.openScreen(player,
+                        new SimpleMenuProvider(
+                                (id, inv, p) -> new EmcMenu(id, inv),
+                                Component.translatable("screen.infinitestats.emc")));
+                // 打开界面时同步一次 EMC/已学数据，保证已学习列表立即有内容
+                syncEmcToClient(player);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求打开便携式熔炉（需已开启 portable_furnace 开关）。 */
+    public static final class FurnaceOpenPacket {
+        public FurnaceOpenPacket() {}
+
+        public static void encode(FurnaceOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static FurnaceOpenPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceOpenPacket();
+        }
+
+        public static void handle(FurnaceOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_furnace")) return;
+                    NetworkHooks.openScreen(player,
+                            new SimpleMenuProvider(
+                                    (id, inv, p) -> new PortableFurnaceMenu(id, inv),
+                                    Component.translatable("screen.infinitestats.furnace")));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求打开燃料仓（需已开启 portable_furnace 开关）。 */
+    public static final class FurnaceFuelOpenPacket {
+        public FurnaceFuelOpenPacket() {}
+
+        public static void encode(FurnaceFuelOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static FurnaceFuelOpenPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceFuelOpenPacket();
+        }
+
+        public static void handle(FurnaceFuelOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_furnace")) return;
+                    NetworkHooks.openScreen(player,
+                            new SimpleMenuProvider(
+                                    (id, inv, p) -> new FurnaceFuelBufferMenu(id, inv),
+                                    Component.translatable("screen.infinitestats.furnace.fuel_buffer")));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求打开成品仓（需已开启 portable_furnace 开关）。 */
+    public static final class FurnaceProductOpenPacket {
+        public FurnaceProductOpenPacket() {}
+
+        public static void encode(FurnaceProductOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static FurnaceProductOpenPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceProductOpenPacket();
+        }
+
+        public static void handle(FurnaceProductOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_furnace")) return;
+                    NetworkHooks.openScreen(player,
+                            new SimpleMenuProvider(
+                                    (id, inv, p) -> new FurnaceProductBufferMenu(id, inv),
+                                    Component.translatable("screen.infinitestats.furnace.product_buffer")));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 成品仓：把成品储备箱中的成品存入 RS 网络。 */
+    public static final class FurnaceProductRSDepositPacket {
+        public FurnaceProductRSDepositPacket() {}
+
+        public static void encode(FurnaceProductRSDepositPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static FurnaceProductRSDepositPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceProductRSDepositPacket();
+        }
+
+        public static void handle(FurnaceProductRSDepositPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof FurnaceProductBufferMenu m) m.depositToNetwork();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端向服务器请求增减随身熔炉速度（消耗/返还可分配点数）。 */
+    public static final class FurnaceSpeedPacket {
+        private final boolean increase; // true=加速（消耗点数）；false=减速（返点数）
+
+        public FurnaceSpeedPacket(boolean increase) {
+            this.increase = increase;
+        }
+
+        public static void encode(FurnaceSpeedPacket msg, FriendlyByteBuf buf) {
+            buf.writeBoolean(msg.increase);
+        }
+
+        public static FurnaceSpeedPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceSpeedPacket(buf.readBoolean());
+        }
+
+        public static void handle(FurnaceSpeedPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_furnace")) return;
+
+                    var furnace = stats.getFurnaceData();
+                    int cost = Config.FURNACE_SPEED_COST.get();
+
+                    if (msg.increase) {
+                        if (stats.getAvailablePoints() < cost) {
+                            player.sendSystemMessage(Component.literal(
+                                    "§c可分配点数不足，提升一级速度需 " + cost + " 点"));
+                            return;
+                        }
+                        if (furnace.getSpeedLevel() >= Integer.MAX_VALUE - 1) return;
+                        furnace.setSpeedLevel(furnace.getSpeedLevel() + 1);
+                        stats.recalculateAvailablePoints();
+                        player.sendSystemMessage(Component.literal(
+                                "§a熔炉加速至 §f×" + furnace.getSpeedMultiplier()
+                                        + "§a（消耗 " + cost + " 点）"));
+                    } else {
+                        if (furnace.getSpeedLevel() <= 0) {
+                            player.sendSystemMessage(Component.literal("§e随身熔炉已处于普通速度"));
+                            return;
+                        }
+                        furnace.setSpeedLevel(furnace.getSpeedLevel() - 1);
+                        stats.recalculateAvailablePoints();
+                        player.sendSystemMessage(Component.literal(
+                                "§a熔炉减速至 §f×" + furnace.getSpeedMultiplier()
+                                        + "§a（返还 " + cost + " 点）"));
+                    }
+
+                    // 同步点数变动到客户端
+                    syncToClient(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 打开“矿石优先顺序”界面（客户端 → 服务器）。 */
+    public static final class FurnaceOrePriorityOpenPacket {
+        public FurnaceOrePriorityOpenPacket() {}
+
+        public static void encode(FurnaceOrePriorityOpenPacket msg, FriendlyByteBuf buf) {}
+
+        public static FurnaceOrePriorityOpenPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceOrePriorityOpenPacket();
+        }
+
+        public static void handle(FurnaceOrePriorityOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_furnace")) return;
+                    NetworkHooks.openScreen(player,
+                            new SimpleMenuProvider(
+                                    (windowId, inv, p) -> new FurnaceOrePriorityMenu(windowId, inv),
+                                    Component.translatable("gui.infinitestats.furnace.ore_priority.title")),
+                            BlockPos.ZERO);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求当前矿石优先顺序与可加入矿石列表（客户端 → 服务器）。 */
+    public static final class FurnaceOrePriorityRequestPacket {
+        public FurnaceOrePriorityRequestPacket() {}
+
+        public static void encode(FurnaceOrePriorityRequestPacket msg, FriendlyByteBuf buf) {}
+
+        public static FurnaceOrePriorityRequestPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceOrePriorityRequestPacket();
+        }
+
+        public static void handle(FurnaceOrePriorityRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
+                        sendOrePrioritySync(player, stats.getFurnaceData()));
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 服务器将矿石优先顺序、可加入矿石与待炼仓矿石同步到客户端（服务器 → 客户端）。 */
+    public static final class FurnaceOrePrioritySyncPacket {
+        public static class SyncData {
+            public final List<String> available;
+            public final List<String> priority;
+            public final List<String> reserveIds;
+            public final List<Long> reserveAmounts;
+
+            public SyncData(List<String> available, List<String> priority,
+                            List<String> reserveIds, List<Long> reserveAmounts) {
+                this.available = available;
+                this.priority = priority;
+                this.reserveIds = reserveIds;
+                this.reserveAmounts = reserveAmounts;
+            }
+        }
+
+        /** 最近一次同步的数据，供界面读取（仅单玩家单界面，使用静态字段足够）。 */
+        public static volatile SyncData latest;
+        /** 每次同步自增，界面据此判断是否需要重建控件。 */
+        public static int version = 0;
+
+        public final List<String> available;
+        public final List<String> priority;
+        public final List<String> reserveIds;
+        public final List<Long> reserveAmounts;
+
+        public FurnaceOrePrioritySyncPacket(List<String> available, List<String> priority,
+                                            List<String> reserveIds, List<Long> reserveAmounts) {
+            this.available = available;
+            this.priority = priority;
+            this.reserveIds = reserveIds;
+            this.reserveAmounts = reserveAmounts;
+        }
+
+        public static void encode(FurnaceOrePrioritySyncPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.priority.size());
+            for (String id : msg.priority) buf.writeUtf(id);
+            buf.writeVarInt(msg.available.size());
+            for (String id : msg.available) buf.writeUtf(id);
+            buf.writeVarInt(msg.reserveIds.size());
+            for (int i = 0; i < msg.reserveIds.size(); i++) {
+                buf.writeUtf(msg.reserveIds.get(i));
+                buf.writeVarLong(msg.reserveAmounts.get(i));
+            }
+        }
+
+        public static FurnaceOrePrioritySyncPacket decode(FriendlyByteBuf buf) {
+            int n = buf.readVarInt();
+            List<String> priority = new ArrayList<>();
+            for (int i = 0; i < n; i++) priority.add(buf.readUtf());
+            int m = buf.readVarInt();
+            List<String> available = new ArrayList<>();
+            for (int i = 0; i < m; i++) available.add(buf.readUtf());
+            int k = buf.readVarInt();
+            List<String> reserveIds = new ArrayList<>();
+            List<Long> reserveAmounts = new ArrayList<>();
+            for (int i = 0; i < k; i++) {
+                reserveIds.add(buf.readUtf());
+                reserveAmounts.add(buf.readVarLong());
+            }
+            return new FurnaceOrePrioritySyncPacket(available, priority, reserveIds, reserveAmounts);
+        }
+
+        public static void handle(FurnaceOrePrioritySyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                latest = new SyncData(msg.available, msg.priority, msg.reserveIds, msg.reserveAmounts);
+                version++;
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端提交新的矿石优先顺序列表（客户端 → 服务器）。 */
+    public static final class FurnaceOrePriorityUpdatePacket {
+        public final List<String> priority;
+
+        public FurnaceOrePriorityUpdatePacket(List<String> priority) {
+            this.priority = priority;
+        }
+
+        public static void encode(FurnaceOrePriorityUpdatePacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.priority.size());
+            for (String id : msg.priority) buf.writeUtf(id);
+        }
+
+        public static FurnaceOrePriorityUpdatePacket decode(FriendlyByteBuf buf) {
+            int n = buf.readVarInt();
+            List<String> priority = new ArrayList<>();
+            for (int i = 0; i < n; i++) priority.add(buf.readUtf());
+            return new FurnaceOrePriorityUpdatePacket(priority);
+        }
+
+        public static void handle(FurnaceOrePriorityUpdatePacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    PlayerFurnaceData furnace = stats.getFurnaceData();
+                    furnace.setOrePriorityIds(msg.priority);
+                    sendOrePrioritySync(player, furnace);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 收集待炼仓（矿石储备箱）当前有货的矿石，并把「优先顺序 + 可加入列表 + 仓内矿石」一并同步给客户端。
+     */
+    private static void sendOrePrioritySync(ServerPlayer player, PlayerFurnaceData furnace) {
+        List<String> priority = furnace.getOrePriorityIds();
+        List<String> reserveIds = new ArrayList<>();
+        List<Long> reserveAmounts = new ArrayList<>();
+        for (int i = 0; i < furnace.getInputBuffer().size(); i++) {
+            ItemStack s = furnace.getInputBuffer().get(i);
+            if (s.isEmpty() || furnace.getInputAmounts()[i] <= 0) continue;
+            reserveIds.add(Registry.ITEM.getKey(s.getItem()).toString());
+            reserveAmounts.add(furnace.getInputAmounts()[i]);
+        }
+        List<String> available = computeAvailable(player, priority, reserveIds);
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new FurnaceOrePrioritySyncPacket(available, priority, reserveIds, reserveAmounts));
+    }
+
+    /**
+     * 计算“可加入的矿石”列表：游戏内所有拥有熔炼/高炉配方的物品（排除已在优先列表中的）。
+     * 待炼仓里已有存货的矿石排在最前面，其余按注册名字典序排列，方便玩家一眼找到仓内矿石。
+     */
+    private static List<String> computeAvailable(ServerPlayer player, List<String> priority, List<String> reserveIds) {
+        Set<String> inPrio = new HashSet<>(priority);
+        Set<String> ids = new LinkedHashSet<>();
+        RecipeManager rm = player.level.getRecipeManager();
+        collect(rm, RecipeType.SMELTING, ids);
+        collect(rm, RecipeType.BLASTING, ids);
+        List<String> available = new ArrayList<>();
+        for (String id : reserveIds) {
+            if (!inPrio.contains(id) && ids.contains(id) && !available.contains(id)) {
+                available.add(id);
+            }
+        }
+        List<String> rest = new ArrayList<>();
+        for (String id : ids) {
+            if (!inPrio.contains(id) && !available.contains(id)) rest.add(id);
+        }
+        rest.sort(String::compareTo);
+        available.addAll(rest);
+        return available;
+    }
+
+    private static void collect(RecipeManager rm, RecipeType<?> type, Set<String> ids) {
+        for (Recipe<?> recipe : rm.getRecipes()) {
+            if (recipe.getType() == type) {
+                for (Ingredient ing : recipe.getIngredients()) {
+                    for (ItemStack s : ing.getItems()) {
+                        if (!s.isEmpty()) ids.add(Registry.ITEM.getKey(s.getItem()).toString());
+                    }
+                }
+            }
+        }
+    }
+
+    /** 客户端向服务器请求增减随身工作台物品倍率（消耗/返还可分配点数）。 */
+    public static final class CraftingMultiplierPacket {
+        private static final int MAX_MULTIPLIER = 64; // 受物品堆叠上限约束
+        /** 单次请求最多调整的级数：客户端按住 Shift 即以此步长提交。 */
+        private static final int MAX_STEP = 10;
+
+        private final boolean increase; // true=提升倍率（消耗点数）；false=降低倍率（返点数）
+        private final int amount;       // 本次请求调整的级数
+
+        public CraftingMultiplierPacket(boolean increase) {
+            this(increase, 1);
+        }
+
+        public CraftingMultiplierPacket(boolean increase, int amount) {
+            this.increase = increase;
+            this.amount = Math.max(1, Math.min(amount, MAX_STEP));
+        }
+
+        public static void encode(CraftingMultiplierPacket msg, FriendlyByteBuf buf) {
+            buf.writeBoolean(msg.increase);
+            buf.writeVarInt(msg.amount);
+        }
+
+        public static CraftingMultiplierPacket decode(FriendlyByteBuf buf) {
+            return new CraftingMultiplierPacket(buf.readBoolean(), buf.readVarInt());
+        }
+
+        public static void handle(CraftingMultiplierPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_crafting")) return;
+
+                    int cost = Config.CRAFTING_MULTIPLIER_COST.get();
+                    long mult = stats.getCraftingMultiplier();
+
+                    if (msg.increase) {
+                        int headroom = (int) Math.min(msg.amount, MAX_MULTIPLIER - mult);
+                        if (headroom <= 0) {
+                            player.sendSystemMessage(Component.literal(
+                                    "§e随身工作台倍率已达上限 ×" + MAX_MULTIPLIER));
+                            return;
+                        }
+                        // 点数够几级就升几级；一级都升不动时才提示
+                        int affordable = (int) Math.min(headroom, stats.getAvailablePoints() / cost);
+                        if (affordable <= 0) {
+                            player.sendSystemMessage(Component.literal(
+                                    "§c可分配点数不足，提升一级倍率需 " + cost + " 点"));
+                            return;
+                        }
+                        stats.setCraftingMultiplier(mult + affordable);
+                        stats.recalculateAvailablePoints();
+                        player.sendSystemMessage(Component.literal(
+                                "§a工作台倍率提升至 §f×" + stats.getCraftingMultiplier()
+                                        + "§a（消耗 " + (long) cost * affordable + " 点）"));
+                    } else {
+                        int step = (int) Math.min(msg.amount, mult - 1);
+                        if (step <= 0) {
+                            player.sendSystemMessage(Component.literal("§e随身工作台已处于基础倍率 ×1"));
+                            return;
+                        }
+                        stats.setCraftingMultiplier(mult - step);
+                        stats.recalculateAvailablePoints();
+                        player.sendSystemMessage(Component.literal(
+                                "§a工作台倍率降至 §f×" + stats.getCraftingMultiplier()
+                                        + "§a（返还 " + (long) cost * step + " 点）"));
+                    }
+
+                    // 同步点数与倍率，并立即重算已摆放配方的产物。
+                    syncToClient(player);
+                    if (player.containerMenu instanceof PortableCraftingMenu menu) {
+                        menu.refreshResult();
+                        menu.broadcastChanges();
+                    }
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 客户端更新**某个功能**的存储优先级（作用域 + 存储键顺序，靠前者优先）。
+     * 服务端会校验作用域与键名，并把缺失的键按配置顺序补齐，避免顺序残缺。
+     * 自动入库作用域额外要求已解锁 {@code auto_deposit}；其余作用域由各自界面把关。
+     */
+    public static final class SetNetworkPriorityPacket {
+        private final String scope;
+        private final List<String> order;
+
+        public SetNetworkPriorityPacket(String scope, List<String> order) {
+            this.scope = scope == null ? "" : scope;
+            this.order = order == null ? List.of() : new ArrayList<>(order);
+        }
+
+        public static void encode(SetNetworkPriorityPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.scope);
+            buf.writeVarInt(msg.order.size());
+            for (String key : msg.order) buf.writeUtf(key);
+        }
+
+        public static SetNetworkPriorityPacket decode(FriendlyByteBuf buf) {
+            String scope = buf.readUtf();
+            int n = buf.readVarInt();
+            List<String> list = new ArrayList<>(Math.max(0, Math.min(n, 32)));
+            for (int i = 0; i < n; i++) list.add(buf.readUtf(16));
+            return new SetNetworkPriorityPacket(scope, list);
+        }
+
+        public static void handle(SetNetworkPriorityPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (!PlayerStats.NETWORK_SCOPES.contains(msg.scope)) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (PlayerStats.SCOPE_AUTO_DEPOSIT.equals(msg.scope)
+                            && !stats.isToggleActive("auto_deposit")) {
+                        return;
+                    }
+                    stats.setNetworkPriority(msg.scope, normalizeNetworkOrder(msg.order));
+                    syncToClient(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 客户端更新「自动入库」的白 / 黑名单过滤（物品 ID 集合 + 模式）。
+     * 服务端会剔除非法 ID 并限制条目数，避免客户端塞入垃圾数据。
+     */
+    public static final class UpdateDepositFilterPacket {
+        private final boolean useWhitelist;
+        private final Set<String> itemIds;
+
+        public UpdateDepositFilterPacket(boolean useWhitelist, Set<String> itemIds) {
+            this.useWhitelist = useWhitelist;
+            this.itemIds = itemIds == null ? Set.of() : new HashSet<>(itemIds);
+        }
+
+        public static void encode(UpdateDepositFilterPacket msg, FriendlyByteBuf buf) {
+            buf.writeBoolean(msg.useWhitelist);
+            buf.writeVarInt(msg.itemIds.size());
+            for (String id : msg.itemIds) buf.writeUtf(id);
+        }
+
+        public static UpdateDepositFilterPacket decode(FriendlyByteBuf buf) {
+            boolean useWhitelist = buf.readBoolean();
+            int count = buf.readVarInt();
+            Set<String> ids = new HashSet<>();
+            for (int i = 0; i < count; i++) ids.add(buf.readUtf());
+            return new UpdateDepositFilterPacket(useWhitelist, ids);
+        }
+
+        public static void handle(UpdateDepositFilterPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("auto_deposit")) return;
+                    stats.setAutoDepositFilterList(normalizeFilterIds(msg.itemIds), msg.useWhitelist);
+                    syncToClient(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求打开随身末影箱（需已开启 portable_ender_chest 开关）。 */
+    public static final class EnderChestOpenPacket {
+        public EnderChestOpenPacket() {}
+
+        public static void encode(EnderChestOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static EnderChestOpenPacket decode(FriendlyByteBuf buf) {
+            return new EnderChestOpenPacket();
+        }
+
+        public static void handle(EnderChestOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_ender_chest")) {
+                        player.sendSystemMessage(
+                                Component.translatable("message.infinitestats.ender_chest_locked"));
+                        return;
+                    }
+                    PortableGuis.openEnderChest(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求打开随身锻造台（需已开启 portable_smithing 开关）。 */
+    public static final class SmithingOpenPacket {
+        public SmithingOpenPacket() {}
+
+        public static void encode(SmithingOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static SmithingOpenPacket decode(FriendlyByteBuf buf) {
+            return new SmithingOpenPacket();
+        }
+
+        public static void handle(SmithingOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_smithing")) {
+                        player.sendSystemMessage(
+                                Component.translatable("message.infinitestats.smithing_locked"));
+                        return;
+                    }
+                    PortableGuis.openSmithing(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求打开随身工作台（需已开启 portable_crafting 开关）。 */
+    public static final class CraftingOpenPacket {
+        public CraftingOpenPacket() {}
+
+        public static void encode(CraftingOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static CraftingOpenPacket decode(FriendlyByteBuf buf) {
+            return new CraftingOpenPacket();
+        }
+
+        public static void handle(CraftingOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_crafting")) {
+                        player.sendSystemMessage(Component.literal("未激活『内置工作台』属性，无法打开随身工作台"));
+                        return;
+                    }
+                    NetworkHooks.openScreen(player,
+                            new SimpleMenuProvider(
+                                    (id, inv, p) -> new PortableCraftingMenu(id, inv),
+                                    Component.translatable("container.crafting")));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求打开随身铁砧（需已开启 portable_anvil 开关）。 */
+    public static final class AnvilOpenPacket {
+        public AnvilOpenPacket() {}
+
+        public static void encode(AnvilOpenPacket msg, FriendlyByteBuf buf) {
+            // 无数据
+        }
+
+        public static AnvilOpenPacket decode(FriendlyByteBuf buf) {
+            return new AnvilOpenPacket();
+        }
+
+        public static void handle(AnvilOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("portable_anvil")) {
+                        player.sendSystemMessage(Component.literal("未激活『随身铁砧』属性，无法打开随身铁砧"));
+                        return;
+                    }
+                    PortableAnvil.open(player);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 客户端请求跨维度传送（需已开启 cross_dimension_teleport 开关）。 */
+    public static final class CrossDimRequestPacket {
+        private final String dimension;
+
+        public CrossDimRequestPacket(String dimension) {
+            this.dimension = dimension;
+        }
+
+        public static void encode(CrossDimRequestPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.dimension == null ? "" : msg.dimension);
+        }
+
+        public static CrossDimRequestPacket decode(FriendlyByteBuf buf) {
+            return new CrossDimRequestPacket(buf.readUtf());
+        }
+
+        public static void handle(CrossDimRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                // 兼容别名（overworld / nether / end）与完整注册名（modid:dimension）
+                String dimArg = msg.dimension.trim().toLowerCase(Locale.ROOT);
+                ResourceLocation rl = switch (dimArg) {
+                    case "overworld" -> Level.OVERWORLD.location();
+                    case "nether" -> Level.NETHER.location();
+                    case "end" -> Level.END.location();
+                    default -> dimArg.indexOf(':') < 0
+                            ? new ResourceLocation("minecraft", dimArg)
+                            : new ResourceLocation(dimArg);
+                };
+                ResourceKey<Level> targetKey = ResourceKey.create(Registry.DIMENSION_REGISTRY, rl);
+                PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+                if (stats == null || !stats.isToggleActive("cross_dimension_teleport")) {
+                    player.sendSystemMessage(Component.literal("未激活『跨维度传送』属性，无法跨维度传送"));
+                    return;
+                }
+                if (player.level.dimension() == targetKey) {
+                    player.sendSystemMessage(Component.literal("你已经在该维度"));
+                    return;
+                }
+                ServerLevel target = getOrLoadLevel(player.getServer(), targetKey);
+                if (target == null) {
+                    player.sendSystemMessage(Component.literal("未知或无法加载的维度: " + rl + "（可用命令 /infstats crossdim 查看）"));
+                    return;
+                }
+                // 强制跨维度传送：绕过外部「维度进入权限」（不触发可取消的 EntityTravelToDimensionEvent）
+                TeleportUtil.forceTeleportTo(player, target, player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot());
+                player.sendSystemMessage(Component.literal("§a已跨维度传送到 §f" + rl));
+            });
+            ctx.get().setPacketHandled(true);
+        }
+
+        /**
+         * 获取指定维度；若维度已注册（存在于 levelKeys）但当前尚未加载到内存，
+         * 则通过反射调用 MinecraftServer#loadLevel() 按需加载（该方法仅补充缺失维度，
+         * 不会重复加载已加载的维度），之后再尝试获取。
+         */
+        private static ServerLevel getOrLoadLevel(MinecraftServer server, ResourceKey<Level> key) {
+            ServerLevel level = server.getLevel(key);
+            if (level != null) return level;
+            if (server.levelKeys().contains(key)) {
+                try {
+                    Method loadLevel = MinecraftServer.class.getDeclaredMethod("loadLevel");
+                    loadLevel.setAccessible(true);
+                    loadLevel.invoke(server);
+                } catch (Throwable ignored) {
+                    // 加载失败则下方再次获取，仍可能为 null，由调用方给出提示
+                }
+                level = server.getLevel(key);
+            }
+            return level;
+        }
+    }
+
+    /** 客户端向服务器请求当前世界已加载的维度列表。 */
+    public static final class CrossDimListRequestPacket {
+        public CrossDimListRequestPacket() {}
+
+        public static void encode(CrossDimListRequestPacket msg, FriendlyByteBuf buf) {}
+
+        public static CrossDimListRequestPacket decode(FriendlyByteBuf buf) {
+            return new CrossDimListRequestPacket();
+        }
+
+        public static void handle(CrossDimListRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                MinecraftServer server = player.getServer();
+                if (server == null) return;
+                List<String> dims = new ArrayList<>();
+                // 枚举所有已知维度（levelKeys 包含已注册但当前未加载的维度，比 getAllLevels 更全）
+                for (ResourceKey<Level> key : server.levelKeys()) {
+                    dims.add(key.location().toString());
+                }
+                // 主世界/下界/末地排前面，其余按字典序，方便查找
+                dims.sort((a, b) -> {
+                    boolean am = a.startsWith("minecraft:");
+                    boolean bm = b.startsWith("minecraft:");
+                    if (am != bm) return am ? -1 : 1;
+                    return a.compareTo(b);
+                });
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new CrossDimListPacket(dims));
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 服务器将维度列表回传给客户端用于构建 UI。 */
+    public static final class CrossDimListPacket {
+        private final List<String> dimensions;
+
+        public CrossDimListPacket(List<String> dimensions) {
+            this.dimensions = dimensions;
+        }
+
+        public static void encode(CrossDimListPacket msg, FriendlyByteBuf buf) {
+            buf.writeCollection(msg.dimensions, FriendlyByteBuf::writeUtf);
+        }
+
+        public static CrossDimListPacket decode(FriendlyByteBuf buf) {
+            return new CrossDimListPacket(buf.readList(FriendlyByteBuf::readUtf));
+        }
+
+        public static void handle(CrossDimListPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> CrossDimScreen.setServerDimensions(msg.dimensions));
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    // ========== 成就管理数据包类 ==========
+    // 注意：AchievementInfo 已提升为顶层类（com.infinitestats.network.AchievementInfo），
+    // 以避免 Forge ModuleClassLoader 对嵌套类二进制名（NetworkHandler$AchievementInfo）解析失败。
+
+    /**
+     * 请求成就列表数据包（客户端 → 服务器）
+     */
+    public static final class RequestAdvancementsPacket {
+        public RequestAdvancementsPacket() {}
+
+        public static void encode(RequestAdvancementsPacket msg, FriendlyByteBuf buf) {}
+
+        public static RequestAdvancementsPacket decode(FriendlyByteBuf buf) {
+            return new RequestAdvancementsPacket();
+        }
+
+        public static void handle(RequestAdvancementsPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                syncAdvancementsToClient(player);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 同步成就列表数据包（服务器 → 客户端）
+     */
+    public static final class SyncAdvancementsPacket {
+        private final List<AchievementInfo> achievements;
+
+        public SyncAdvancementsPacket(List<AchievementInfo> achievements) {
+            this.achievements = achievements;
+        }
+
+        public static void encode(SyncAdvancementsPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.achievements.size());
+            for (AchievementInfo info : msg.achievements) {
+                AchievementInfo.encode(info, buf);
+            }
+        }
+
+        public static SyncAdvancementsPacket decode(FriendlyByteBuf buf) {
+            int count = buf.readVarInt();
+            List<AchievementInfo> list = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                list.add(AchievementInfo.decode(buf));
+            }
+            return new SyncAdvancementsPacket(list);
+        }
+
+        public static void handle(SyncAdvancementsPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                // 存储到静态字段，由 AchievementManagerScreen 轮询读取
+                pendingAdvancements = msg.achievements;
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 切换成就状态数据包（客户端 → 服务器）
+     */
+    public static final class ToggleAdvancementPacket {
+        private final String advancementId;
+        private final boolean grant; // true=授予, false=撤销
+
+        public ToggleAdvancementPacket(String advancementId, boolean grant) {
+            this.advancementId = advancementId;
+            this.grant = grant;
+        }
+
+        public static void encode(ToggleAdvancementPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.advancementId);
+            buf.writeBoolean(msg.grant);
+        }
+
+        public static ToggleAdvancementPacket decode(FriendlyByteBuf buf) {
+            return new ToggleAdvancementPacket(buf.readUtf(), buf.readBoolean());
+        }
+
+        public static void handle(ToggleAdvancementPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                MinecraftServer server = player.getServer();
+                if (server == null) return;
+
+                ResourceLocation advId = ResourceLocation.tryParse(msg.advancementId);
+                if (advId == null) return;
+
+                Advancement advancement = server.getAdvancements().getAdvancement(advId);
+                if (advancement == null) return;
+
+                var playerAdvancements = player.getAdvancements();
+
+                if (msg.grant) {
+                    // 授予所有条件 → 完成成就
+                    for (String criterion : advancement.getCriteria().keySet()) {
+                        playerAdvancements.award(advancement, criterion);
+                    }
+                } else {
+                    // 撤销所有条件 → 取消成就
+                    for (String criterion : advancement.getCriteria().keySet()) {
+                        playerAdvancements.revoke(advancement, criterion);
+                    }
+                }
+
+                // 同步更新后的成就列表返回客户端
+                syncAdvancementsToClient(player);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    // ========== EMC 同步方法 ==========
+
+    /**
+     * 同步 EMC 数据到客户端
+     */
+    public static void syncEmcToClient(ServerPlayer player) {
+        player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+            CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                    new EmcSyncPacket(data.createSnapshot()));
+        });
+    }
+
+    // ========== 成就管理同步方法 ==========
+
+    /**
+     * 构建成就信息列表并同步到客户端
+     */
+    public static void syncAdvancementsToClient(ServerPlayer player) {
+        MinecraftServer server = player.getServer();
+        if (server == null) return;
+
+        List<AchievementInfo> list = new ArrayList<>();
+        for (Advancement adv : server.getAdvancements().getAllAdvancements()) {
+            var display = adv.getDisplay();
+            if (display == null) continue; // 跳过隐藏成就
+
+            String id = adv.getId().toString();
+            String name = display.getTitle().getString();
+            String desc = display.getDescription().getString();
+            String iconId = Registry.ITEM.getKey(display.getIcon().getItem()).toString();
+            boolean completed = player.getAdvancements().getOrStartProgress(adv).isDone();
+
+            list.add(new AchievementInfo(id, name, desc, iconId, completed));
+        }
+
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new SyncAdvancementsPacket(list));
+    }
+
+    // ========== 随身工作台 / 熔炉 联动 Refined Storage ==========
+
+    /** 工作台：JEI 一键转移配方时，按给定 3x3 材料布局从背包/存储网络补充材料。 */
+    public static final class CraftingRecipeFillPacket {
+        private final Ingredient[] ingredients = new Ingredient[9];
+
+        public CraftingRecipeFillPacket(Ingredient[] grid) {
+            System.arraycopy(grid, 0, ingredients, 0, 9);
+        }
+
+        public static void encode(CraftingRecipeFillPacket msg, FriendlyByteBuf buf) {
+            for (int i = 0; i < 9; i++) {
+                msg.ingredients[i].toNetwork(buf);
+            }
+        }
+
+        public static CraftingRecipeFillPacket decode(FriendlyByteBuf buf) {
+            CraftingRecipeFillPacket msg = new CraftingRecipeFillPacket(new Ingredient[9]);
+            for (int i = 0; i < 9; i++) {
+                msg.ingredients[i] = Ingredient.fromNetwork(buf);
+            }
+            return msg;
+        }
+
+        public static void handle(CraftingRecipeFillPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof PortableCraftingMenu m) {
+                    m.fillGridFromIngredients(msg.ingredients);
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 工作台：切换合成成品的去向（背包 / 存储空间）。 */
+    public static final class CraftingOutputModePacket {
+        public CraftingOutputModePacket() {
+        }
+
+        public static void encode(CraftingOutputModePacket msg, FriendlyByteBuf buf) {
+        }
+
+        public static CraftingOutputModePacket decode(FriendlyByteBuf buf) {
+            return new CraftingOutputModePacket();
+        }
+
+        public static void handle(CraftingOutputModePacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof PortableCraftingMenu m) m.toggleOutputToStorage();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 熔炉：从 RS 网络提取可熔炼矿物补入输入槽。 */
+    public static final class FurnaceRSRefillOrePacket {
+        public FurnaceRSRefillOrePacket() {
+        }
+
+        public static void encode(FurnaceRSRefillOrePacket msg, FriendlyByteBuf buf) {
+        }
+
+        public static FurnaceRSRefillOrePacket decode(FriendlyByteBuf buf) {
+            return new FurnaceRSRefillOrePacket();
+        }
+
+        public static void handle(FurnaceRSRefillOrePacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof PortableFurnaceMenu m) m.refillOreFromNetwork();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 熔炉：从 RS 网络提取燃料补入燃料槽。 */
+    public static final class FurnaceRSRefillFuelPacket {
+        public FurnaceRSRefillFuelPacket() {
+        }
+
+        public static void encode(FurnaceRSRefillFuelPacket msg, FriendlyByteBuf buf) {
+        }
+
+        public static FurnaceRSRefillFuelPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceRSRefillFuelPacket();
+        }
+
+        public static void handle(FurnaceRSRefillFuelPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof PortableFurnaceMenu m) m.refillFuelFromNetwork();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 收藏切换：切换属性的收藏状态（客户端 → 服务器）。
+     */
+    public static final class ToggleFavoritePacket {
+        private final String statId;
+
+        public ToggleFavoritePacket(String statId) { this.statId = statId; }
+
+        public static void encode(ToggleFavoritePacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.statId);
+        }
+
+        public static ToggleFavoritePacket decode(FriendlyByteBuf buf) {
+            return new ToggleFavoritePacket(buf.readUtf());
+        }
+
+        public static void handle(ToggleFavoritePacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(
+                        stats -> {
+                            if (StatType.fromId(msg.statId) == null) return;
+                            stats.toggleFavorite(msg.statId);
+                            syncToClient(player);
+                        });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 熔炉：将输出槽的成品存入 RS 网络。 */
+    public static final class FurnaceRSDepositPacket {
+        public FurnaceRSDepositPacket() {
+        }
+
+        public static void encode(FurnaceRSDepositPacket msg, FriendlyByteBuf buf) {
+        }
+
+        public static FurnaceRSDepositPacket decode(FriendlyByteBuf buf) {
+            return new FurnaceRSDepositPacket();
+        }
+
+        public static void handle(FurnaceRSDepositPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (player.containerMenu instanceof PortableFurnaceMenu m) m.depositProductsToNetwork();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    // ══════════ 网络库存查询 / 同步 ══════════
+
+    /**
+     * 客户端 → 服务端：请求当前可用的存储网络物品列表。
+     */
+    public static final class RequestNetworkItemsPacket {
+        public RequestNetworkItemsPacket() {}
+
+        public static void encode(RequestNetworkItemsPacket msg, FriendlyByteBuf buf) {}
+        public static RequestNetworkItemsPacket decode(FriendlyByteBuf buf) {
+            return new RequestNetworkItemsPacket();
+        }
+
+        public static void handle(RequestNetworkItemsPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                java.util.List<com.infinitestats.compat.NetworkHandle> nets =
+                        com.infinitestats.compat.NetworkIO.getNetworks(player);
+                java.util.List<ItemStack> items = com.infinitestats.compat.NetworkIO.listItems(nets);
+                java.util.List<String> ids = new java.util.ArrayList<>();
+                for (ItemStack s : items) {
+                    if (!s.isEmpty()) ids.add(
+                            net.minecraft.core.Registry.ITEM.getKey(
+                                    s.getItem()).toString());
+                }
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                        new SyncNetworkItemsPacket(ids));
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 服务端 → 客户端：同步当前存储网络的物品 ID 列表。
+     */
+    public static final class SyncNetworkItemsPacket {
+        private final java.util.List<String> itemIds;
+
+        public SyncNetworkItemsPacket(java.util.List<String> itemIds) { this.itemIds = itemIds; }
+
+        public static void encode(SyncNetworkItemsPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.itemIds.size());
+            for (String id : msg.itemIds) buf.writeUtf(id);
+        }
+
+        public static SyncNetworkItemsPacket decode(FriendlyByteBuf buf) {
+            int count = buf.readVarInt();
+            java.util.List<String> ids = new java.util.ArrayList<>(count);
+            for (int i = 0; i < count; i++) ids.add(buf.readUtf());
+            return new SyncNetworkItemsPacket(ids);
+        }
+
+        public static void handle(SyncNetworkItemsPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                com.infinitestats.compat.jei.PortableCraftingRecipeTransferHandler
+                        .cacheNetworkItems(msg.itemIds);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+
+        public java.util.List<String> getItemIds() { return itemIds; }
+    }
+
+    /**
+     * 单个槽位卖出数据包（客户端 → 服务器）
+     * Shift+左键点击背包槽位 → 卖出该槽位物品换取 EMC
+     */
+    public static final class EmcSellSlotPacket {
+        private final int slotIndex;
+
+        public EmcSellSlotPacket(int slotIndex) {
+            this.slotIndex = slotIndex;
+        }
+
+        public static void encode(EmcSellSlotPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.slotIndex);
+        }
+
+        public static EmcSellSlotPacket decode(FriendlyByteBuf buf) {
+            return new EmcSellSlotPacket(buf.readVarInt());
+        }
+
+        public static void handle(EmcSellSlotPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null || !Config.EMC_ENABLED.get()) return;
+
+                var menu = player.containerMenu;
+                if (!(menu instanceof EmcMenu)) return;
+
+                int slot = msg.slotIndex;
+                if (slot < 0 || slot >= menu.slots.size()) return;
+
+                ItemStack stack = menu.slots.get(slot).getItem();
+                if (stack.isEmpty()) return;
+
+                long emcValue = EmcDatabase.getEmc(stack);
+                if (emcValue <= 0) return;
+
+                ResourceLocation itemId = Registry.ITEM.getKey(stack.getItem());
+                int count = stack.getCount();
+                long totalEmc = EmcPricing.sellValue(player, stack, count);
+
+                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+                    if (!data.hasLearned(itemId)) {
+                        data.learnAndConvert(itemId, totalEmc, stack.getTag());
+                    } else {
+                        // 更新 NBT（可能放入了不同版本的手册）
+                        CompoundTag nbt = stack.getTag();
+                        if (nbt != null && !nbt.isEmpty()) {
+                            data.learnItem(itemId, nbt);
+                        }
+                        data.addEmc(totalEmc);
+                    }
+                    syncEmcToClient(player);
+                    player.displayClientMessage(
+                            Component.translatable("message.infinitestats.emc.converted",
+                                    stack.getHoverName(), totalEmc), false);
+                });
+
+                menu.slots.get(slot).set(ItemStack.EMPTY);
+                menu.broadcastChanges();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 自定义定价数据包（客户端 → 服务器）
+     * 给指定物品设置自定义 EMC 值（0 表示删除自定义值，恢复自动计算）
+     */
+    public static final class EmcSetPricePacket {
+        private final String itemId;
+        private final long emc;
+
+        public EmcSetPricePacket(String itemId, long emc) {
+            this.itemId = itemId;
+            this.emc = emc;
+        }
+
+        public static void encode(EmcSetPricePacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.itemId);
+            buf.writeVarLong(msg.emc);
+        }
+
+        public static EmcSetPricePacket decode(FriendlyByteBuf buf) {
+            return new EmcSetPricePacket(buf.readUtf(), buf.readVarLong());
+        }
+
+        public static void handle(EmcSetPricePacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null || !Config.EMC_ENABLED.get()) return;
+
+                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
+                if (itemId == null) return;
+
+                Item item = Registry.ITEM.get(itemId);
+                if (item == null) return;
+
+                if (!Registry.ITEM.containsKey(itemId) || item == net.minecraft.world.item.Items.AIR) return;
+                if (!EmcDatabase.setCustomEmc(itemId, msg.emc)) {
+                    player.sendSystemMessage(Component.literal("§cEMC 定价保存失败，请查看服务端日志"));
+                    return;
+                }
+                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+                    if (msg.emc > 0) {
+                        data.learnItem(itemId);
+                        syncEmcToClient(player);
+                    }
+                });
+                player.server.getPlayerList().getPlayers().forEach(NetworkHandler::syncEmcToClient);
+                if (msg.emc > 0) {
+                    player.displayClientMessage(
+                            Component.translatable("message.infinitestats.emc.priced",
+                                    new ItemStack(item).getHoverName(), msg.emc), false);
+                } else {
+                    player.displayClientMessage(
+                            Component.translatable("message.infinitestats.emc.price_removed",
+                                    new ItemStack(item).getHoverName()), false);
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    // ========== 随身工具枢纽 / 天气控制 / 区块强加载 ==========
+
+    /**
+     * 随身工具枢纽（客户端 → 服务器）：按属性 id 打开对应随身站点。
+     * <p>
+     * 只接受 {@link PortableGuis#openStation} 认得的白名单 id，并且必须先激活对应开关属性，
+     * 因此被改造的客户端无法借此打开任意菜单。
+     */
+    public static final class PortableToolOpenPacket {
+        private final String toolId;
+
+        public PortableToolOpenPacket(String toolId) {
+            this.toolId = toolId == null ? "" : toolId;
+        }
+
+        public static void encode(PortableToolOpenPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.toolId);
+        }
+
+        public static PortableToolOpenPacket decode(FriendlyByteBuf buf) {
+            return new PortableToolOpenPacket(buf.readUtf());
+        }
+
+        public static void handle(PortableToolOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    // 随身站点统一是 1 点解锁的开关：用「有效等级 > 0」判断是否激活，
+                    // 并同样尊重「功能开关」把整条关掉的情况。
+                    if (stats.getEffectiveStatLevel(msg.toolId) <= 0) {
+                        player.sendSystemMessage(Component.translatable(
+                                "message.infinitestats.tool_locked",
+                                Component.translatable("stat.infinitestats." + msg.toolId)));
+                        return;
+                    }
+                    // 未知 id 静默忽略：白名单在 PortableGuis 里，外部无法借此打开任意菜单
+                    PortableGuis.openStation(player, stats, msg.toolId);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 随身「进阶高级附魔台」的动作包（客户端 → 服务器）：附魔 / 修复 / 回收。
+     * <p>
+     * 客户端只会把「选了哪些附魔、各多少级、用哪种货币付款」发上来，<b>价格与合法性一律由服务端
+     * 现算</b>（{@link PortableInfuser} 与服务端同源）：客户端的列表是提示，不是凭据，
+     * 改过的客户端既不能白拿附魔，也不能少付钱。
+     * <p>
+     * 三道闸门：
+     * <ol>
+     *   <li>必须正开着附魔台菜单（{@link PortableInfuserMenu}）—— 否则连物品槽都不存在；</li>
+     *   <li>「随身附魔台」开关必须激活（被「功能开关」关掉时同样拦住）；</li>
+     *   <li>附魔条目数与等级都封顶，避免构造超长包刷内存。</li>
+     * </ol>
+     * 动作结果（成功或失败原因）统一用动作栏消息回给玩家，点数变化则整包同步一次属性数据。
+     */
+    public static final class InfuserActionPacket {
+
+        public static final int ACTION_ENCHANT = 0;
+        public static final int ACTION_REPAIR = 1;
+        public static final int ACTION_RECYCLE = 2;
+
+        /** 一次最多提交多少条附魔（远超任何物品的可选上限，纯粹防构造包）。 */
+        private static final int MAX_SELECTION = 512;
+
+        private final int action;
+        /** true = 用可用属性点数付款，false = 用经验等级付款。 */
+        private final boolean usePoints;
+        private final List<ResourceLocation> enchantmentIds;
+        private final List<Integer> levels;
+
+        public InfuserActionPacket(int action, boolean usePoints,
+                                   List<ResourceLocation> enchantmentIds, List<Integer> levels) {
+            this.action = action;
+            this.usePoints = usePoints;
+            this.enchantmentIds = enchantmentIds == null ? List.of() : enchantmentIds;
+            this.levels = levels == null ? List.of() : levels;
+        }
+
+        /** 附魔提交：选择表用 {@code Map<附魔, 目标等级>}（等级 0 表示拆掉）。 */
+        public static InfuserActionPacket enchant(boolean usePoints, Map<Enchantment, Integer> selection) {
+            List<ResourceLocation> ids = new ArrayList<>(selection.size());
+            List<Integer> values = new ArrayList<>(selection.size());
+            for (Map.Entry<Enchantment, Integer> entry : selection.entrySet()) {
+                ResourceLocation id = Registry.ENCHANTMENT.getKey(entry.getKey());
+                if (id == null) continue;
+                ids.add(id);
+                values.add(Math.max(0, entry.getValue()));
+            }
+            return new InfuserActionPacket(ACTION_ENCHANT, usePoints, ids, values);
+        }
+
+        public static InfuserActionPacket simple(int action, boolean usePoints) {
+            return new InfuserActionPacket(action, usePoints, List.of(), List.of());
+        }
+
+        public static void encode(InfuserActionPacket msg, FriendlyByteBuf buf) {
+            buf.writeByte(msg.action);
+            buf.writeBoolean(msg.usePoints);
+            int size = Math.min(msg.enchantmentIds.size(), MAX_SELECTION);
+            buf.writeVarInt(size);
+            for (int i = 0; i < size; i++) {
+                buf.writeResourceLocation(msg.enchantmentIds.get(i));
+                buf.writeVarInt(msg.levels.size() > i ? msg.levels.get(i) : 0);
+            }
+        }
+
+        public static InfuserActionPacket decode(FriendlyByteBuf buf) {
+            int action = buf.readByte();
+            boolean usePoints = buf.readBoolean();
+            // 先夹住条数再分配：恶意包可以写一个很大的 VarInt，不夹会直接按它建列表
+            int size = Math.min(Math.max(buf.readVarInt(), 0), MAX_SELECTION);
+            List<ResourceLocation> ids = new ArrayList<>(size);
+            List<Integer> levels = new ArrayList<>(size);
+            for (int i = 0; i < size; i++) {
+                ids.add(buf.readResourceLocation());
+                levels.add(Math.max(0, buf.readVarInt()));
+            }
+            return new InfuserActionPacket(action, usePoints, ids, levels);
+        }
+
+        public static void handle(InfuserActionPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                // 闸门一：必须是随身附魔台菜单
+                if (!(player.containerMenu instanceof PortableInfuserMenu menu)) return;
+
+                PlayerStats stats = player.getCapability(PlayerStatsProvider.PLAYER_STATS).orElse(null);
+                // 闸门二：开关属性必须激活
+                if (stats == null || !stats.isToggleActive(PortableGuis.STAT_ENCHANTING)) {
+                    player.displayClientMessage(Component.translatable(
+                            "message.infinitestats.tool_locked",
+                            Component.translatable("stat.infinitestats." + PortableGuis.STAT_ENCHANTING)), true);
+                    return;
+                }
+
+                PortableInfuser.Payment payment = msg.usePoints
+                        ? PortableInfuser.Payment.POINTS
+                        : PortableInfuser.Payment.LEVELS;
+
+                Component feedback = switch (msg.action) {
+                    case ACTION_ENCHANT -> PortableInfuser.performEnchant(player, menu.getInput(),
+                            selectionOf(msg), payment);
+                    case ACTION_REPAIR -> PortableInfuser.performRepair(player, menu.getInput(), payment);
+                    case ACTION_RECYCLE -> PortableInfuser.performRecycle(player, menu.getInput(), payment);
+                    default -> null;
+                };
+
+                if (feedback != null) {
+                    player.displayClientMessage(feedback, true);
+                }
+                // 用点数付款时数值变了，整包同步一次（经验等级原版自己会同步）
+                if (msg.usePoints) {
+                    syncToClient(player);
+                }
+                ((PortableInfuserMenu) player.containerMenu).broadcastChanges();
+            });
+            ctx.get().setPacketHandled(true);
+        }
+
+        /** 把「附魔 id + 等级」还原成选择表；认不出的 id（模组被移除等）静默丢弃。 */
+        private static Map<Enchantment, Integer> selectionOf(InfuserActionPacket msg) {
+            Map<Enchantment, Integer> selection = new java.util.LinkedHashMap<>();
+            for (int i = 0; i < msg.enchantmentIds.size() && i < msg.levels.size(); i++) {
+                Enchantment enchantment = Registry.ENCHANTMENT.get(msg.enchantmentIds.get(i));
+                if (enchantment != null) {
+                    selection.put(enchantment, msg.levels.get(i));
+                }
+            }
+            return selection;
+        }
+    }
+
+    /**
+     * 天气切换（客户端 → 服务器）：把**主世界**天气直接设成指定档位。
+     * <p>
+     * 档位 id：{@code clear} 晴 / {@code rain} 下雨 / {@code thunder} 雷暴；
+     * 传空串或认不出的值时退回旧行为（按 晴 → 雨 → 雷 → 晴 循环），
+     * 这样天气面板与旧的「一键循环」入口可以共用同一个包。
+     * <p>
+     * 天气本身是维度级的：玩家在下界 / 末地时切换的仍是主世界天气，这样入口在任何维度都有意义。
+     */
+    public static final class WeatherControlPacket {
+
+        /** 「晴天」档位 id。 */
+        public static final String CLEAR = "clear";
+        /** 「下雨」档位 id。 */
+        public static final String RAIN = "rain";
+        /** 「雷暴」档位 id。 */
+        public static final String THUNDER = "thunder";
+
+        /** 目标档位 id；空串 = 切下一档。 */
+        private final String weather;
+
+        public WeatherControlPacket() {
+            this("");
+        }
+
+        public WeatherControlPacket(String weather) {
+            this.weather = weather == null ? "" : weather;
+        }
+
+        public static void encode(WeatherControlPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.weather);
+        }
+
+        public static WeatherControlPacket decode(FriendlyByteBuf buf) {
+            return new WeatherControlPacket(buf.readUtf());
+        }
+
+        public static void handle(WeatherControlPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("weather_control")) {
+                        player.sendSystemMessage(
+                                Component.translatable("message.infinitestats.weather_locked"));
+                        return;
+                    }
+                    ServerLevel level = player.server.getLevel(Level.OVERWORLD);
+                    if (level == null) level = player.getLevel();
+                    int duration = Config.WEATHER_CYCLE_DURATION.get();
+
+                    String id = msg.weather.trim().toLowerCase(Locale.ROOT);
+                    if (id.isEmpty()) {
+                        // 认不出目标档位：按旧行为循环一档
+                        id = level.isThundering() ? CLEAR : level.isRaining() ? THUNDER : RAIN;
+                    }
+
+                    Component result = switch (id) {
+                        case CLEAR -> {
+                            level.setWeatherParameters(duration, 0, false, false);
+                            yield Component.translatable("message.infinitestats.weather.clear");
+                        }
+                        case RAIN -> {
+                            level.setWeatherParameters(0, duration, true, false);
+                            yield Component.translatable("message.infinitestats.weather.rain");
+                        }
+                        default -> {
+                            level.setWeatherParameters(0, duration, true, true);
+                            yield Component.translatable("message.infinitestats.weather.thunder");
+                        }
+                    };
+                    player.sendSystemMessage(
+                            Component.translatable("message.infinitestats.weather_set", result));
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 区块强加载动作（客户端 → 服务器）：加载 / 卸载 / 请求列表。
+     * <p>
+     * 坐标一律以**区块坐标**（chunkX / chunkZ）传递，客户端界面负责把方块坐标换算过来。
+     * 每次处理完都会把该维度的最新列表回推给玩家，因此界面无需自己猜测结果。
+     */
+    public static final class ChunkLoaderActionPacket {
+        public static final int ACTION_ADD = 0;
+        public static final int ACTION_REMOVE = 1;
+        public static final int ACTION_REQUEST = 2;
+
+        private final int action;
+        private final int chunkX;
+        private final int chunkZ;
+
+        public ChunkLoaderActionPacket(int action, int chunkX, int chunkZ) {
+            this.action = action;
+            this.chunkX = chunkX;
+            this.chunkZ = chunkZ;
+        }
+
+        public static void encode(ChunkLoaderActionPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.action);
+            buf.writeVarInt(msg.chunkX);
+            buf.writeVarInt(msg.chunkZ);
+        }
+
+        public static ChunkLoaderActionPacket decode(FriendlyByteBuf buf) {
+            return new ChunkLoaderActionPacket(buf.readVarInt(), buf.readVarInt(), buf.readVarInt());
+        }
+
+        public static void handle(ChunkLoaderActionPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    if (!stats.isToggleActive("chunk_loader")) {
+                        player.sendSystemMessage(
+                                Component.translatable("message.infinitestats.chunk_loader_locked"));
+                        return;
+                    }
+                    ServerLevel level = player.getLevel();
+                    int cx = msg.chunkX;
+                    int cz = msg.chunkZ;
+
+                    if (msg.action == ChunkLoaderActionPacket.ACTION_ADD
+                            || msg.action == ChunkLoaderActionPacket.ACTION_REMOVE) {
+                        ChunkPos pos = new ChunkPos(cx, cz);
+                        if (!level.getWorldBorder().isWithinBounds(pos)) {
+                            player.sendSystemMessage(
+                                    Component.translatable("message.infinitestats.chunk_loader.out_of_bounds"));
+                        } else if (msg.action == ChunkLoaderActionPacket.ACTION_ADD) {
+                            int max = Config.CHUNK_LOADER_MAX_FORCED_CHUNKS.get();
+                            var forced = level.getForcedChunks();
+                            if (!forced.contains(pos.toLong()) && forced.size() >= max) {
+                                player.sendSystemMessage(Component.translatable(
+                                        "message.infinitestats.chunk_loader.limit", max));
+                            } else {
+                                level.setChunkForced(cx, cz, true);
+                                player.sendSystemMessage(Component.translatable(
+                                        "message.infinitestats.chunk_loader.loaded", cx, cz));
+                            }
+                        } else {
+                            level.setChunkForced(cx, cz, false);
+                            player.sendSystemMessage(Component.translatable(
+                                    "message.infinitestats.chunk_loader.unloaded", cx, cz));
+                        }
+                    }
+
+                    syncForcedChunks(player, level);
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 区块强加载列表同步（服务器 → 客户端）。 */
+    public static final class ChunkLoaderSyncPacket {
+        private final List<Long> chunks;
+        private final String dimension;
+
+        public ChunkLoaderSyncPacket(List<Long> chunks, String dimension) {
+            this.chunks = chunks == null ? List.of() : chunks;
+            this.dimension = dimension == null ? "" : dimension;
+        }
+
+        public static void encode(ChunkLoaderSyncPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.dimension);
+            buf.writeVarInt(msg.chunks.size());
+            for (long packed : msg.chunks) {
+                buf.writeLong(packed);
+            }
+        }
+
+        public static ChunkLoaderSyncPacket decode(FriendlyByteBuf buf) {
+            String dimension = buf.readUtf();
+            int size = buf.readVarInt();
+            List<Long> chunks = new ArrayList<>(Math.max(0, size));
+            for (int i = 0; i < size; i++) {
+                chunks.add(buf.readLong());
+            }
+            return new ChunkLoaderSyncPacket(chunks, dimension);
+        }
+
+        public static void handle(ChunkLoaderSyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                pendingForcedChunks = new ArrayList<>(msg.chunks);
+                pendingForcedChunkDimension = msg.dimension;
+                forcedChunksVersion++;
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    // ==================================================================
+    // 传送点面板 × 传送石碑（Waystones）联动
+    //   打开面板 → 请求列表 → 服务端读「已激活的石碑」下发 → 点传送回传 UUID。
+    //   全部走反射（见 WaystonesCompat），没装传送石碑时列表恒为空。
+    // ==================================================================
+
+    /** 传送石碑列表请求（客户端 → 服务端）：打开传送点面板时发一次。 */
+    public static final class WaystoneListRequestPacket {
+
+        public WaystoneListRequestPacket() {}
+
+        public static void encode(WaystoneListRequestPacket msg, FriendlyByteBuf buf) {
+            // 无字段
+        }
+
+        public static WaystoneListRequestPacket decode(FriendlyByteBuf buf) {
+            return new WaystoneListRequestPacket();
+        }
+
+        public static void handle(WaystoneListRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                        new WaystoneListPacket(com.infinitestats.compat.WaystonesCompat.getActivated(player)));
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 传送石碑列表同步（服务端 → 客户端）：写进静态字段供面板读取。 */
+    public static final class WaystoneListPacket {
+
+        private final List<WaystoneEntry> waystones;
+
+        public WaystoneListPacket(List<WaystoneEntry> waystones) {
+            this.waystones = waystones == null ? List.of() : waystones;
+        }
+
+        public static void encode(WaystoneListPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.waystones.size());
+            for (WaystoneEntry entry : msg.waystones) {
+                buf.writeUUID(entry.uid);
+                buf.writeUtf(entry.name, 64);
+                buf.writeUtf(entry.dimension, 128);
+                buf.writeDouble(entry.x);
+                buf.writeDouble(entry.y);
+                buf.writeDouble(entry.z);
+            }
+        }
+
+        public static WaystoneListPacket decode(FriendlyByteBuf buf) {
+            int size = buf.readVarInt();
+            List<WaystoneEntry> list = new ArrayList<>(Math.max(0, size));
+            for (int i = 0; i < size; i++) {
+                UUID uid = buf.readUUID();
+                String name = buf.readUtf(64);
+                String dimension = buf.readUtf(128);
+                list.add(new WaystoneEntry(uid, name, dimension,
+                        buf.readDouble(), buf.readDouble(), buf.readDouble()));
+            }
+            return new WaystoneListPacket(list);
+        }
+
+        public static void handle(WaystoneListPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                pendingWaystones = new ArrayList<>(msg.waystones);
+                waystoneListVersion++;
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 传送请求（客户端 → 服务端）：把玩家免费（不扣经验、不进冷却）传送到指定石碑。
+     * <p>
+     * 服务端只认「该玩家已激活的石碑」——客户端递上来的 UUID 会被拿去和他自己的列表比对，
+     * 不在列表里就什么都不做（见 {@code WaystonesCompat#teleport}）。
+     */
+    public static final class WaystoneTeleportPacket {
+
+        private final UUID uid;
+
+        public WaystoneTeleportPacket(UUID uid) {
+            this.uid = uid;
+        }
+
+        public static void encode(WaystoneTeleportPacket msg, FriendlyByteBuf buf) {
+            buf.writeUUID(msg.uid);
+        }
+
+        public static WaystoneTeleportPacket decode(FriendlyByteBuf buf) {
+            return new WaystoneTeleportPacket(buf.readUUID());
+        }
+
+        public static void handle(WaystoneTeleportPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player != null) {
+                    com.infinitestats.compat.WaystonesCompat.teleport(player, msg.uid);
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：服务端 → 客户端，要求打开（或刷新）目标生物的面板。
+     * <p>
+     * 由服务端在「手持生物观察杖右键生物」时下发（见 {@code StatEventHandler#onEntityInteractWithWand}），
+     * 也用于每次切换开关后把权威状态推回客户端。属性数值从客户端本地那份实体数据里读，
+     * 开关状态则只能来自这里（那几个字段不在同步实体数据里）。
+     */
+    public static final class OpenEntityPanelPacket {
+        private final int entityId;
+        private final int applicableMask;
+        private final int enabledMask;
+        private final boolean editable;
+
+        public OpenEntityPanelPacket(int entityId, int applicableMask, int enabledMask, boolean editable) {
+            this.entityId = entityId;
+            this.applicableMask = applicableMask;
+            this.enabledMask = enabledMask;
+            this.editable = editable;
+        }
+
+        public static void encode(OpenEntityPanelPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeVarInt(msg.applicableMask);
+            buf.writeVarInt(msg.enabledMask);
+            buf.writeBoolean(msg.editable);
+        }
+
+        public static OpenEntityPanelPacket decode(FriendlyByteBuf buf) {
+            return new OpenEntityPanelPacket(buf.readVarInt(), buf.readVarInt(), buf.readVarInt(), buf.readBoolean());
+        }
+
+        public static void handle(OpenEntityPanelPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> EntityPanelScreen.openForEntity(
+                    msg.entityId, msg.applicableMask, msg.enabledMask, msg.editable));
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，请求切换目标生物的某个开关。
+     * <p>
+     * 只传「实体 id + 开关下标 + 想要的值」，真正能不能改由服务端说了算
+     * （属性是否激活、手里有没有观察杖、距离、配置开关都在这边查），
+     * 执行完再回一发 {@link OpenEntityPanelPacket} 把客户端刷新成权威状态 ——
+     * 所以客户端就算乱发包也只能改到自己有权改的生物，改不动就原地回弹。
+     */
+    public static final class EntityPanelActionPacket {
+        private final int entityId;
+        private final int index;
+        private final boolean value;
+
+        public EntityPanelActionPacket(int entityId, int index, boolean value) {
+            this.entityId = entityId;
+            this.index = index;
+            this.value = value;
+        }
+
+        public static void encode(EntityPanelActionPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeVarInt(msg.index);
+            buf.writeBoolean(msg.value);
+        }
+
+        public static EntityPanelActionPacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelActionPacket(buf.readVarInt(), buf.readVarInt(), buf.readBoolean());
+        }
+
+        public static void handle(EntityPanelActionPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                // 目标不一定还是生物 / 可能已经被打死或卸载
+                Entity target = player.level.getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity)) return;
+
+                if (canEditEntity(player, target)) {
+                    EntityPanelToggles.apply(target, msg.index, msg.value);
+                }
+                // 无论成功与否都回一发现状：客户端据此覆盖自己的乐观更新。
+                // 「可编辑」只反映配置允不允许改 —— 单次动作因距离等原因被拒绝时不能把整个面板
+                // 永久锁成只读（否则玩家会看到「一点开关就变成只读」）。
+                sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，把某条属性的**最终值**设为指定数值。
+     * <p>
+     * 包里传的是<b>玩家想看到的那个最终值</b>，服务端按原版公式反算出基础值再写
+     * （见 {@code AttributeValueMath#baseForFinal}）—— 因为只有基础值会被存档，
+     * 而修饰符属于药水 / 装备 / 其它模组，不能去动。
+     * <p>
+     * 与开关同一条权限链（{@link #canEditEntity}）；目标值会先夹进属性自己的取值范围
+     * （{@code RangedAttribute} 的 min / max），改「生命上限」后会把当前生命夹回上限之内。
+     * 属性值的同步走原版机制（{@code ClientboundUpdateAttributesPacket}），不需要额外回包 ——
+     * 客户端面板每 10 tick 重读一次本地实体，权威值会自动盖掉乐观更新。
+     */
+    public static final class EntityPanelAttributePacket {
+        private final int entityId;
+        private final String attributeId;
+        /** 目标**最终值**（不是基础值）。 */
+        private final double targetValue;
+
+        public EntityPanelAttributePacket(int entityId, String attributeId, double targetValue) {
+            this.entityId = entityId;
+            this.attributeId = attributeId;
+            this.targetValue = targetValue;
+        }
+
+        public static void encode(EntityPanelAttributePacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeUtf(msg.attributeId);
+            buf.writeDouble(msg.targetValue);
+        }
+
+        public static EntityPanelAttributePacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelAttributePacket(buf.readVarInt(), buf.readUtf(), buf.readDouble());
+        }
+
+        public static void handle(EntityPanelAttributePacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                Entity target = player.level.getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity living) || !canEditEntity(player, target)) return;
+
+                ResourceLocation id = ResourceLocation.tryParse(msg.attributeId);
+                net.minecraft.world.entity.ai.attributes.Attribute attribute =
+                        id == null ? null : Registry.ATTRIBUTE.get(id);
+                if (attribute == null) return;
+
+                AttributeInstance instance = living.getAttribute(attribute);
+                if (instance == null) return;
+
+                double wanted = msg.targetValue;
+                if (!Double.isFinite(wanted)) return;
+                // 取值范围：RangedAttribute 自带 min / max（没有范围的属性不夹）
+                if (attribute instanceof net.minecraft.world.entity.ai.attributes.RangedAttribute ranged) {
+                    wanted = Mth.clamp(wanted, ranged.getMinValue(), ranged.getMaxValue());
+                }
+                // 反算基础值：最终值 = (base + Σ加法) × (1 + Σ乘基) × Π(1 + Σ乘总)
+                double base = AttributeValueMath.baseForFinal(instance, wanted);
+                if (Double.isNaN(base)) return;
+
+                try {
+                    instance.setBaseValue(base);
+                } catch (Throwable ignored) {
+                    return; // 个别属性在特殊状态下会拒绝写入（如 dirty 锁定），当作没改
+                }
+                // 生命上限被改小后，当前生命要跟着夹回来，否则会顶着一截超出上限的血
+                if (attribute == net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH) {
+                    living.setHealth(Math.min(living.getHealth(), living.getMaxHealth()));
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 生物面板「改生物」的距离基数兜底值（格）。 */
+    private static final double EDIT_RANGE_BASE = 16.0D;
+
+    /** 当前生效的距离基数（配置项 Modules.entityPanelEditRange）。 */
+    private static double editRangeBase() {
+        try {
+            return Config.ENTITY_PANEL_EDIT_RANGE.get();
+        } catch (Throwable ignored) {
+            return EDIT_RANGE_BASE;
+        }
+    }
+
+    /** 诊断开关：{@code -Dinfinitestats.debugEntityPanel=true} 时，每次「改不动」都往日志打一行原因。 */
+    private static final boolean DEBUG_ENTITY_PANEL =
+            Boolean.getBoolean("infinitestats.debugEntityPanel");
+
+    /**
+     * 「生物面板」能不能改这个生物 —— 开关切换与属性编辑共用这一条链：
+     * 手里拿着观察杖 + 配置允许 + 目标在可达范围内 + 属性已激活。
+     *
+     * <h2>距离为什么按碰撞箱算、还要跟着 entity_reach 走</h2>
+     * 早先直接拿「生物原点（脚底）到玩家的距离 ≤ 8 格」当闸门，结果两类正常情况被误判成「改不了」：
+     * <ul>
+     *   <li><b>巨型 / 飞行生物</b>：玩家明明贴着碰撞箱右键，但本体原点可能在十几格外；</li>
+     *   <li><b>加了「实体交互距离」属性</b>：本模组自己就能把交互距离拉到 8 格以上，
+     *       能右键开出面板，却因为这个 8 格限制一次都改不动。</li>
+     * </ul>
+     * 现在按「碰撞箱 → 玩家眼睛」的距离算，上限取 {@link #EDIT_RANGE_BASE} 与
+     * 「玩家实体交互距离 + 4 格」的较大者 —— 仍然拦得住远程改别人基地里的生物，
+     * 但不会再拦掉手边这只。真正的闸门还是配置 {@code EntityPanel.allowEntityEditing}。
+     */
+    private static boolean canEditEntity(ServerPlayer player, Entity target) {
+        // 这里只要求「身上有观察杖」，不要求「此刻正拿在手上」：
+        // 面板本来就是手持它右键打开的，而界面打开期间玩家根本换不了手 ——
+        // 早期版本卡「必须还拿在手里」，一旦手持物品被别的模组改 NBT / 同步抖动，
+        // 就会出现「面板开着但一次都改不动」这种说不通的失败，没必要。
+        boolean held = EntityPanelWand.hasWand(player);
+        boolean config = Config.ALLOW_ENTITY_EDITING.get();
+        boolean active = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .map(stats -> stats.isToggleActive(EntityPanelWand.STAT_ID))
+                .orElse(false);
+
+        double reach = editRangeBase();
+        AttributeInstance reachAttribute = player.getAttribute(
+                net.minecraftforge.common.ForgeMod.REACH_DISTANCE.get());
+        if (reachAttribute != null) reach = Math.max(reach, reachAttribute.getValue() + 4.0D);
+
+        double distanceSqr = target.getBoundingBox().getCenter().distanceToSqr(player.getEyePosition());
+        boolean near = distanceSqr <= reach * reach;
+
+        boolean allowed = held && config && active && near;
+        if (!allowed && DEBUG_ENTITY_PANEL) {
+            System.out.println("[InfiniteStats][EntityPanel] 拒绝编辑 " + target.getType()
+                    + " —— held=" + held + " config=" + config + " active=" + active
+                    + " 距离=" + String.format(java.util.Locale.ROOT, "%.2f", Math.sqrt(distanceSqr))
+                    + " 上限=" + reach);
+        }
+        return allowed;
+    }
+}
