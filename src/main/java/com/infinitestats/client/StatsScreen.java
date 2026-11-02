@@ -19,6 +19,9 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.ai.attributes.Attribute;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.RangedAttribute;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import org.lwjgl.glfw.GLFW;
@@ -527,6 +530,10 @@ public class StatsScreen extends PanelScreen {
                 externalGroups.computeIfAbsent(ns, k -> new ArrayList<>()).add(stat);
             }
             buildExternalDisplayList();
+        } else {
+            // 外部属性被全部排除（黑名单 / 关闭发现）时，别把上一轮的列表留在界面上
+            externalGroups.clear();
+            externalDisplayList.clear();
         }
     }
 
@@ -1072,6 +1079,20 @@ public class StatsScreen extends PanelScreen {
         rebuildAllWidgets();
     }
 
+    /**
+     * 外部属性列表被服务端替换后重建界面。
+     * <p>
+     * 由 {@link com.infinitestats.network.ExternalStatsSyncPacket} 在登录 / 热重扫后调用：
+     * 客户端手上的 {@link StatType#ALL_STATS} 已经换了一份，这里把分类缓存、分组与按钮全部按新列表重算。
+     */
+    public void reloadExternalStats() {
+        if (minecraft == null) return;
+        cachedStats = getPlayerStats();
+        buildCategoryMap();
+        updateMaxScroll();
+        rebuildAllWidgets();
+    }
+
     // ======================== 渲染主循环 ========================
 
     @Override
@@ -1565,9 +1586,55 @@ public class StatsScreen extends PanelScreen {
                 tooltipLines.add(Component.translatable("screen.infinitestats.per_point",
                         stat.formatValue(stat.getPerPointValue())).getString());
             }
+            appendExternalDetail(tooltipLines, stat);
         }
 
         if (!tooltipLines.isEmpty()) renderWrappedTooltip(g, tooltipLines, screenMouseX, screenMouseY);
+    }
+
+    /**
+     * 外部属性的补充信息：所属模组、属性自身区间、玩家身上的实际总值。
+     * <p>
+     * 外部属性的每点值是自动推导的，光看名字猜不出「还能加多高」：把属性区间摆出来，
+     * 再对照玩家当前总值，才知道继续投点是否还有意义（有些属性的上限只有 1.0）。
+     */
+    private void appendExternalDetail(List<String> lines, StatType stat) {
+        if (stat.getCategory() != StatCategory.EXTERNAL) return;
+
+        lines.add(Component.translatable("screen.infinitestats.tooltip_external_mod",
+                extractModNamespace(stat)).getString());
+
+        Attribute attribute = stat.getAttribute();
+        if (attribute == null) return;
+
+        if (attribute instanceof RangedAttribute ranged) {
+            double min = ranged.getMinValue();
+            double max = ranged.getMaxValue();
+            if (Double.isFinite(min) && Double.isFinite(max)) {
+                lines.add(Component.translatable("screen.infinitestats.tooltip_external_range",
+                        formatAttributeNumber(min), formatAttributeNumber(max)).getString());
+            }
+        }
+
+        if (minecraft != null && minecraft.player != null) {
+            AttributeInstance instance = minecraft.player.getAttribute(attribute);
+            if (instance != null) {
+                lines.add(Component.translatable("screen.infinitestats.tooltip_external_total",
+                        formatAttributeNumber(instance.getValue())).getString());
+            }
+        }
+    }
+
+    /** 属性数值的紧凑显示：整数不带小数点，小数最多两位并去掉尾零。 */
+    private static String formatAttributeNumber(double value) {
+        if (!Double.isFinite(value)) return String.valueOf(value);
+        if (value == Math.floor(value) && Math.abs(value) < 1.0e9D) {
+            return String.format("%.0f", value);
+        }
+        String text = String.format("%.2f", value);
+        while (text.endsWith("0")) text = text.substring(0, text.length() - 1);
+        if (text.endsWith(".")) text = text.substring(0, text.length() - 1);
+        return text;
     }
 
     /**
@@ -1759,6 +1826,10 @@ public class StatsScreen extends PanelScreen {
      * 直接摆到玩家面前。
      */
     private String getStatDisplayName(StatType stat) {
+        // 覆盖配置里手写的显示名优先（一般是整合包作者给外部属性补的中文）
+        String custom = stat.getCustomDisplayName();
+        if (custom != null) return custom;
+
         String key = stat.getTranslationKey();
         String translated = Component.translatable(key).getString();
         if (!translated.equals(key)) return translated;
@@ -1778,6 +1849,12 @@ public class StatsScreen extends PanelScreen {
      * 获取属性的描述文本（优先翻译键，回退到属性注册名）
      */
     private String getStatDescription(StatType stat) {
+        // 外部属性：覆盖配置里手写的说明优先（内置属性仍走 lang 的 .desc 键）
+        if (stat.getCategory() == StatCategory.EXTERNAL) {
+            String custom = stat.getDescription();
+            if (custom != null && !custom.isBlank()) return custom;
+        }
+
         String descKey = stat.getTranslationKey() + ".desc";
         String translated = Component.translatable(descKey).getString();
         // 如果翻译就是键本身（没找到翻译），回退到注册名

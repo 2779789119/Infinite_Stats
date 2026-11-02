@@ -149,7 +149,47 @@ public final class ModServerCommands {
                                                 .then(Commands.argument("amount", LongArgumentType.longArg(
                                                                 0L, 1_000_000_000_000L))
                                                         .executes(ModServerCommands::pointsSetTargets)))))
+                        // 外部属性热重扫：/infstats reload [external]
+                        // 改完 config/infinitestats/external_attributes.json 后执行，不用重启游戏
+                        .then(Commands.literal("reload")
+                                .requires(source -> source.hasPermission(2))
+                                .executes(ModServerCommands::reloadExternalStats)
+                                .then(Commands.literal("external")
+                                        .executes(ModServerCommands::reloadExternalStats)))
         );
+    }
+
+    /**
+     * /infstats reload [external] —— 重新读取外部属性配置并重扫属性注册表。
+     * <p>
+     * 只动「外部属性」这一块：内置属性、玩家等级与已投入点数都不受影响
+     * （玩家数据按 statId 存，重扫前后 id 相同）。重扫后在线玩家的属性修饰符立即按新数值重写，
+     * 并把新的列表下发给所有客户端，面板无需重开。
+     */
+    private static int reloadExternalStats(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        if (!Config.ENABLE_ATTRIBUTE_DISCOVERY.get()) {
+            source.sendFailure(Component.literal(
+                    "自动发现外部属性在配置里是关闭的（Compatibility.enableAttributeDiscovery），先开启再重扫。"));
+            return 0;
+        }
+
+        int total = StatType.reloadExternalAttributes();
+        MinecraftServer server = source.getServer();
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                // 每点值 / 上限可能变了，先让按玩家缓存的数值失效，再重写属性修饰符
+                stats.refreshFeatureMode();
+                AttributeHandler.applyAllAttributes(player, stats);
+                NetworkHandler.syncToClient(player);
+            });
+        }
+        NetworkHandler.broadcastExternalStats(server);
+
+        String error = com.infinitestats.stats.ExternalAttributeConfig.getLastError();
+        source.sendSuccess(() -> Component.literal("外部属性已重扫：" + total + " 条"
+                + (error.isEmpty() ? "" : "（配置解析失败，沿用上一份：" + error + "）")), true);
+        return 1;
     }
 
     /**

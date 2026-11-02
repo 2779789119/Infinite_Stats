@@ -80,7 +80,8 @@ public final class NetworkHandler {
     // 25：新增 EntityPanelAttributePacket（改生物某条属性的基础值）
     // 26：新增传送石碑三个包（列表请求 / 列表同步 / 传送）
     // 27：EntityPanelAttributePacket 的语义改成「目标最终值」（旧客户端拿来当基础值写会算错，故升版本）
-    private static final String PROTOCOL_VERSION = "27";
+    // 28：新增 ExternalStatsSyncPacket（服务端下发权威的外部属性列表，旧客户端收不到会少一批卡片）
+    private static final String PROTOCOL_VERSION = "28";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -128,6 +129,12 @@ public final class NetworkHandler {
                 SyncStatsPacket::encode,
                 SyncStatsPacket::decode,
                 SyncStatsPacket::handle);
+
+        // 外部属性列表（服务器 → 客户端）：登录 / 热重扫后下发一次
+        CHANNEL.registerMessage(packetId++, ExternalStatsSyncPacket.class,
+                ExternalStatsSyncPacket::encode,
+                ExternalStatsSyncPacket::decode,
+                ExternalStatsSyncPacket::handle);
 
         // ========== 传送点面板 × 传送石碑（Waystones）联动 ==========
         // 列表请求（客户端 → 服务器）
@@ -748,6 +755,26 @@ public final class NetworkHandler {
             CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                     new OreVisionConfigPacket(stats.getOreVisionConfig()));
         });
+    }
+
+    /**
+     * 单独下发「外部属性列表」（登录 / 热重扫后）。
+     * <p>
+     * 这份列表不随 {@link #syncToClient} 走：它是按属性注册表算出来的静态数据，
+     * 只有登录和 {@code /infstats reload external} 两种情况会变。
+     */
+    public static void syncExternalStats(ServerPlayer player) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new ExternalStatsSyncPacket(StatType.externalSnapshot()));
+    }
+
+    /** 把外部属性列表广播给所有在线玩家（热重扫后调用）。 */
+    public static void broadcastExternalStats(MinecraftServer server) {
+        if (server == null) return;
+        ExternalStatsSyncPacket packet = new ExternalStatsSyncPacket(StatType.externalSnapshot());
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+        }
     }
 
     /** 单独下发连锁挖掘设置（设置提交后的回同步）。 */

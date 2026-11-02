@@ -1683,6 +1683,8 @@ public final class StatEventHandler {
             stats.recalculateAvailablePoints();
             stats.sanitizeAvailablePoints();
             NetworkHandler.syncToClient(player);
+            // 外部属性列表以服务端为准（黑名单 / 数值覆盖都在服务端配置里），登录时下发一次
+            NetworkHandler.syncExternalStats(player);
             HandlerRegistry.loginAll(player, stats);
         });
     }

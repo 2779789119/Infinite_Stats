@@ -3,6 +3,7 @@ package com.infinitestats.stats;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.attributes.RangedAttribute;
 import net.minecraftforge.registries.ForgeRegistries;
 
 import javax.annotation.Nullable;
@@ -37,6 +38,9 @@ public final class StatType {
     private final int defaultMaxLevel;
     private final String description;
     private final boolean hidden;
+    /** 覆盖配置里手写的显示名（外部属性专用）；为 null 时继续用翻译键。 */
+    @Nullable
+    private final String customDisplayName;
 
     /**
      * 属性行为类型
@@ -91,6 +95,7 @@ public final class StatType {
                 : builder.calculator;
         this.description = builder.description;
         this.hidden = builder.hidden;
+        this.customDisplayName = builder.customDisplayName;
     }
 
     // ========== Builder ==========
@@ -113,6 +118,7 @@ public final class StatType {
         private int maxLevel = Integer.MAX_VALUE;
         private String description = "";
         private boolean hidden = false;
+        private String customDisplayName = null;
 
         public Builder(String id) {
             this.id = id;
@@ -184,6 +190,15 @@ public final class StatType {
             return this;
         }
 
+        /**
+         * 自定义显示名（外部属性专用）：覆盖「注册名 / 翻译键」那条路径。
+         * 留空时仍走 {@code getDescriptionId()} 的翻译。
+         */
+        public Builder displayName(String name) {
+            this.customDisplayName = (name == null || name.isBlank()) ? null : name;
+            return this;
+        }
+
         public Builder toggle() {
             return behavior(StatBehavior.TOGGLE).maxLevel(1).perPointValue(0);
         }
@@ -240,6 +255,11 @@ public final class StatType {
         STAT_LOOKUP.put(stat.getId(), stat);
     }
 
+    /** 玩家根本不消费的生物专属属性：不收录，免得白占面板。 */
+    private static final Set<String> EXCLUDED_ATTRIBUTES = Set.of(
+            "minecraft:generic.follow_range",
+            "minecraft:generic.flying_speed");
+
     /**
      * 动态发现其他模组注册的属性
      * 应在 FMLCommonSetup 中调用，此时 ForgeRegistries 已完成填充
@@ -248,57 +268,119 @@ public final class StatType {
         if (discoveryDone) return;
         discoveryDone = true;
 
+        // 覆盖配置先读：发现阶段要用它决定排除谁、改写谁的数值
+        ExternalAttributeConfig.reload();
+        int added = discoverExternalInternal();
+
+        // 重建 ALL_STATS
+        ALL_STATS = ALL_STATS_LIST.toArray(new StatType[0]);
+        logExternalSummary(added);
+    }
+
+    /**
+     * 热重扫外部属性：清掉现有外部条目后按「当前注册表 + 当前配置文件」重新生成。
+     * <p>
+     * 内置属性、玩家等级与已投入的点数都不动 —— 玩家数据按 statId 存，重扫后 id 不变，
+     * 点数继续生效。被黑名单排除的属性只是从列表里消失，NBT 里的点数仍保留，
+     * 之后从黑名单里移掉就会恢复。
+     *
+     * @return 重扫后收录的外部属性总数
+     */
+    public static synchronized int reloadExternalAttributes() {
+        ALL_STATS_LIST.removeIf(stat -> stat.getCategory() == StatCategory.EXTERNAL);
+        rebuildLookups();
+        ExternalAttributeConfig.reload();
+        int total = discoverExternalInternal();
+        ALL_STATS = ALL_STATS_LIST.toArray(new StatType[0]);
+        logExternalSummary(0);
+        return total;
+    }
+
+    /** 重建 ID 查找表与「已覆盖属性」集合（外部条目增删后必须调一次）。 */
+    private static void rebuildLookups() {
+        STAT_LOOKUP.clear();
+        COVERED_ATTRIBUTES.clear();
+        for (StatType stat : ALL_STATS_LIST) {
+            STAT_LOOKUP.put(stat.getId(), stat);
+            if (stat.getAttributeName() != null) {
+                COVERED_ATTRIBUTES.add(stat.getAttributeName());
+            }
+            COVERED_ATTRIBUTES.addAll(stat.getMirrorAttributeNames());
+        }
+    }
+
+    /**
+     * 扫描属性注册表，把尚未覆盖且未被配置排除的属性注册成外部属性。
+     *
+     * @return 本次新增条数
+     */
+    private static int discoverExternalInternal() {
         int added = 0;
-        for (Map.Entry<net.minecraft.resources.ResourceKey<Attribute>, Attribute> entry : ForgeRegistries.ATTRIBUTES.getEntries()) {
+        for (Map.Entry<net.minecraft.resources.ResourceKey<Attribute>, Attribute> entry
+                : ForgeRegistries.ATTRIBUTES.getEntries()) {
             ResourceLocation rl = entry.getKey().location();
             String attrName = rl.toString();
-            // 玩家不消费生物的追踪范围，避免删除后又作为外部属性出现。
-            if ("minecraft:generic.follow_range".equals(attrName)
-                    || "minecraft:generic.flying_speed".equals(attrName)) continue;
 
-            // 跳过已覆盖的属性
+            if (EXCLUDED_ATTRIBUTES.contains(attrName)) continue;
+            // 跳过已覆盖的属性（内置属性自己占用的注册名 + 镜像属性）
             if (COVERED_ATTRIBUTES.contains(attrName)) continue;
+            if (!ExternalAttributeConfig.isAllowed(attrName)) continue;
 
             // 生成唯一的 stat ID
             String statId = "attr." + rl.getNamespace() + "." + rl.getPath();
-
-            // 跳过已存在的
             if (STAT_LOOKUP.containsKey(statId)) continue;
 
-            // 跳过 player 命名空间下过于通用的基础属性（已在内置列表中覆盖）
-            if (rl.getNamespace().equals("minecraft")) {
-                // 原版属性但不在内置列表中的——仍然添加
-                // 例如 follow_range, max_absorption, step_height, gravity 等
-            }
-
-            // 自动决定合理的每点值
-            float defaultValue = guessDefaultPerPoint(rl);
-
-            // 翻译键直接复用属性自带的 getDescriptionId()：模组的语言文件里通常已经
-            // 有这个键的翻译（游戏内显示属性名用的就是它），因此外部属性无需再手工补译文。
-            // 仅在该键缺失（模组自己都没提供翻译）时回退到本模组的自建键。
-            String descId = entry.getValue().getDescriptionId();
-            String translationKey = (descId != null && !descId.isBlank())
-                    ? descId
-                    : "stat.infinitestats." + statId;
-
-            StatType newStat = builder(statId)
-                    .translationKey(translationKey)
-                    .category(StatCategory.EXTERNAL)
-                    .attribute(attrName)
-                    .perPointValue(defaultValue)
-                    .description("")
-                    .build();
-
+            StatType newStat = createExternalStat(rl, entry.getValue());
             registerStat(newStat);
             COVERED_ATTRIBUTES.add(attrName);
             added++;
         }
+        return added;
+    }
 
-        // 重建 ALL_STATS
-        ALL_STATS = ALL_STATS_LIST.toArray(new StatType[0]);
+    /**
+     * 按「自动推导 + 覆盖配置」造一条外部属性。
+     * <p>
+     * 数值来源优先级：覆盖配置里手写的值 &gt; 属性自身取值范围推导 &gt; 注册名关键字经验值。
+     */
+    private static StatType createExternalStat(ResourceLocation rl, Attribute attribute) {
+        String attrName = rl.toString();
+        String statId = "attr." + rl.getNamespace() + "." + rl.getPath();
+        ExternalAttributeConfig.Override override = ExternalAttributeConfig.get(attrName);
 
-        // 统计有多少外部属性能直接复用其所属模组自带的译文（翻译键 = getDescriptionId()）
+        float perPoint = (override != null && override.getPerPoint() != null)
+                ? override.getPerPoint().floatValue()
+                : inferPerPoint(attribute, rl);
+        int maxPoints = (override != null && override.getMaxPoints() != null)
+                ? override.getMaxPoints()
+                : inferMaxPoints(attribute, perPoint);
+
+        // 翻译键直接复用属性自带的 getDescriptionId()：模组的语言文件里通常已经
+        // 有这个键的翻译（游戏内显示属性名用的就是它），因此外部属性无需再手工补译文。
+        // 仅在该键缺失（模组自己都没提供翻译）时回退到本模组的自建键。
+        String descId = attribute.getDescriptionId();
+        String translationKey = (descId != null && !descId.isBlank())
+                ? descId
+                : "stat.infinitestats." + statId;
+
+        Builder builder = builder(statId)
+                .translationKey(translationKey)
+                .category(StatCategory.EXTERNAL)
+                .attribute(attrName)
+                .perPointValue(perPoint)
+                .maxLevel(maxPoints)
+                .description("");
+
+        if (override != null) {
+            if (override.getDisplayName() != null) builder.displayName(override.getDisplayName());
+            if (override.getDescription() != null) builder.description(override.getDescription());
+            if (override.isHidden()) builder.hidden();
+        }
+        return builder.build();
+    }
+
+    /** 打印外部属性总览；{@code added > 0} 时顺手导出缺译文的清单。 */
+    private static void logExternalSummary(int added) {
         int external = 0, translated = 0;
         for (StatType stat : ALL_STATS_LIST) {
             if (stat.getCategory() != StatCategory.EXTERNAL) continue;
@@ -306,13 +388,124 @@ public final class StatType {
             String key = stat.getTranslationKey();
             if (!net.minecraft.network.chat.Component.translatable(key).getString().equals(key)) translated++;
         }
-        System.out.println("[InfiniteStats] Discovered " + added + " external attributes ("
-                + translated + "/" + external + " auto-translated from their own mods)");
+        System.out.println("[InfiniteStats] External attributes: " + external
+                + " (" + translated + " auto-translated from their own mods"
+                + (added > 0 ? ", " + added + " newly discovered" : "") + ")");
 
         // 生成翻译模板文件（仅首次发现时）
         if (added > 0) {
             generateTranslationTemplate();
         }
+    }
+
+    /**
+     * 一条可序列化的外部属性快照（服务端 → 客户端同步用）。
+     * <p>
+     * 客户端必须和服务端看到<b>同一份列表</b>：否则面板上会多出服务端已经排除的属性
+     * （点下去没有效果），或者少掉服务端刚热重扫出来的属性。因此登录与
+     * {@code /infstats reload external} 之后都由服务端下发这份快照覆盖客户端自己的发现结果。
+     */
+    public static final class ExternalSpec {
+        private final String attributeName;
+        private final String translationKey;
+        @Nullable
+        private final String displayName;
+        @Nullable
+        private final String description;
+        private final float perPoint;
+        private final int maxPoints;
+        private final boolean hidden;
+
+        public ExternalSpec(String attributeName, String translationKey, @Nullable String displayName,
+                            @Nullable String description, float perPoint, int maxPoints, boolean hidden) {
+            this.attributeName = attributeName;
+            this.translationKey = translationKey;
+            this.displayName = displayName;
+            this.description = description;
+            this.perPoint = perPoint;
+            this.maxPoints = maxPoints;
+            this.hidden = hidden;
+        }
+
+        public String getAttributeName() {
+            return attributeName;
+        }
+
+        public String getTranslationKey() {
+            return translationKey;
+        }
+
+        @Nullable
+        public String getDisplayName() {
+            return displayName;
+        }
+
+        @Nullable
+        public String getDescription() {
+            return description;
+        }
+
+        public float getPerPoint() {
+            return perPoint;
+        }
+
+        public int getMaxPoints() {
+            return maxPoints;
+        }
+
+        public boolean isHidden() {
+            return hidden;
+        }
+    }
+
+    /** 服务端当前的全部外部属性（供网络下发）。 */
+    public static List<ExternalSpec> externalSnapshot() {
+        List<ExternalSpec> list = new ArrayList<>();
+        for (StatType stat : ALL_STATS_LIST) {
+            if (stat.getCategory() != StatCategory.EXTERNAL || stat.getAttributeName() == null) continue;
+            list.add(new ExternalSpec(stat.getAttributeName(), stat.getTranslationKey(),
+                    stat.getCustomDisplayName(), stat.getDescription(),
+                    stat.getPerPointValue(), stat.getMaxLevel(), stat.isHidden()));
+        }
+        return list;
+    }
+
+    /**
+     * 客户端按服务端下发的快照重建外部属性列表。
+     * <p>
+     * 属性在本客户端没注册（两边模组不一致）或 id 冲突的条目会被跳过 —— 面板宁可少一条，
+     * 也不能出现「点了没反应」的条目。
+     */
+    public static synchronized void applyExternalSnapshot(List<ExternalSpec> specs) {
+        ALL_STATS_LIST.removeIf(stat -> stat.getCategory() == StatCategory.EXTERNAL);
+        rebuildLookups();
+
+        for (ExternalSpec spec : specs) {
+            ResourceLocation rl = ResourceLocation.tryParse(spec.getAttributeName());
+            if (rl == null || ForgeRegistries.ATTRIBUTES.getValue(rl) == null) continue;
+
+            String statId = "attr." + rl.getNamespace() + "." + rl.getPath();
+            if (STAT_LOOKUP.containsKey(statId)) continue;
+
+            Builder builder = builder(statId)
+                    .translationKey(spec.getTranslationKey() != null
+                            ? spec.getTranslationKey()
+                            : "stat.infinitestats." + statId)
+                    .category(StatCategory.EXTERNAL)
+                    .attribute(spec.getAttributeName())
+                    .perPointValue(spec.getPerPoint())
+                    .maxLevel(Math.max(1, spec.getMaxPoints()))
+                    .description(spec.getDescription() != null ? spec.getDescription() : "");
+
+            if (spec.getDisplayName() != null) builder.displayName(spec.getDisplayName());
+            if (spec.isHidden()) builder.hidden();
+
+            StatType stat = builder.build();
+            registerStat(stat);
+            COVERED_ATTRIBUTES.add(spec.getAttributeName());
+        }
+
+        ALL_STATS = ALL_STATS_LIST.toArray(new StatType[0]);
     }
 
     /**
@@ -374,49 +567,118 @@ public final class StatType {
     }
 
     /**
-     * 根据属性名猜测合理的每点默认值
+     * 自动推导「每点数值」。
+     * <p>
+     * 两步走：
+     * <ol>
+     *   <li>先用注册名关键字拿一个<b>经验值</b>（内置属性多年调出来的量级：
+     *       伤害 0.05 / 生命 2.0 / 速度 0.001 …）；</li>
+     *   <li>再用属性<b>自身的取值范围</b>纠正 —— 关键字是按「宽范围属性」调的，
+     *       照搬到 {@code 0~1} 的抗性 / 减伤 / 概率上，十几个点就顶满，等于白送。</li>
+     * </ol>
+     * 属性没有 {@code RangedAttribute} 的上下限（或无界）时只能信关键字；
+     * 关键字也没命中时才退回 1.0（与旧版行为一致）。
      */
-    private static float guessDefaultPerPoint(ResourceLocation rl) {
-        String path = rl.getPath().toLowerCase();
+    private static float inferPerPoint(Attribute attribute, ResourceLocation rl) {
+        float hint = keywordPerPoint(rl.getPath().toLowerCase(Locale.ROOT));
+        double[] range = attributeRange(attribute);
+        if (range == null) {
+            return Float.isNaN(hint) ? 1.0f : hint;
+        }
 
-        // 移动速度类 → 微小增量
-        if (path.contains("speed") || path.contains("movement")) return 0.001f;
+        double span = range[1] - range[0];
+        // 窄范围：按「1000 点走完全程」的量级定值（0~1 → 0.001）
+        if (span <= 4.0D) {
+            float byRange = niceFloor(span / 1000.0D);
+            if (Float.isNaN(hint)) return byRange;
+            // 关键字值 20 点内就能顶满 → 明显是宽范围的经验值，改用范围推导
+            return hint > span / 20.0D ? byRange : hint;
+        }
 
-        // 伤害/攻击类 → 0.05~0.1
+        // 宽范围：关键字命中且不会 20 点内顶满，就用经验值
+        if (!Float.isNaN(hint) && hint <= span / 20.0D) return hint;
+
+        // 无先验 / 先验过粗：按「500 点吃下四分之一范围」起步，并钳在合理量级
+        float byRange = niceFloor(span / 2000.0D);
+        return Math.min(2.0f, Math.max(0.0001f, byRange));
+    }
+
+    /**
+     * 自动推导「可投入点数上限」。
+     * <p>
+     * 属性最终值会被原版 {@code RangedAttribute} 钳在 {@code [min, max]}，投到超过容量的
+     * 点数纯属浪费 —— 这里按「从默认值加到上下限需要多少点」定上限，刚好打满即停。
+     * 无界属性继续返回 {@link Integer#MAX_VALUE}（保持无限加点）。
+     */
+    private static int inferMaxPoints(Attribute attribute, float perPoint) {
+        double[] range = attributeRange(attribute);
+        if (range == null || perPoint <= 0) return Integer.MAX_VALUE;
+
+        double base = attribute.getDefaultValue();
+        double capacity = 0;
+        if (range[1] > base) capacity = Math.max(capacity, (range[1] - base) / perPoint);
+        if (range[0] < base) capacity = Math.max(capacity, (base - range[0]) / perPoint);
+        if (!Double.isFinite(capacity) || capacity <= 0) return Integer.MAX_VALUE;
+
+        // 1e6 只是 int 溢出保护，正常属性远远到不了
+        double capped = Math.min(capacity, 1_000_000.0D);
+        return (int) Math.max(20.0D, Math.ceil(capped));
+    }
+
+    /**
+     * 取属性的有效取值范围；不是 {@code RangedAttribute}、上下限无效或范围大到等同无界时返回 null。
+     */
+    @Nullable
+    private static double[] attributeRange(Attribute attribute) {
+        if (!(attribute instanceof RangedAttribute ranged)) return null;
+        double min = ranged.getMinValue();
+        double max = ranged.getMaxValue();
+        if (!Double.isFinite(min) || !Double.isFinite(max) || max <= min) return null;
+        if (max - min > 1.0e7D) return null;
+        return new double[] {min, max};
+    }
+
+    /**
+     * 向下取整到 1/2/5 × 10^n 的「顺眼数值」，避免导出 0.001333 这种读不懂的每点值。
+     */
+    private static float niceFloor(double value) {
+        if (!(value > 0.0D) || !Double.isFinite(value)) return 0.0001f;
+        double exponent = Math.floor(Math.log10(value));
+        double base = Math.pow(10.0D, exponent);
+        double mantissa = value / base;
+        double nice = mantissa >= 5.0D ? 5.0D : mantissa >= 2.0D ? 2.0D : 1.0D;
+        double result = nice * base;
+        // 浮点误差下别把 0.005 变成 0.0049999998
+        return (float) (Math.round(result * 1.0e6D) / 1.0e6D);
+    }
+
+    /**
+     * 注册名关键字先验（内置属性的经验值）。返回 {@link Float#NaN} 表示没命中任何规则。
+     * <p>
+     * 顺序有讲究：必须从具体词走到泛化词 —— {@code attack_speed} 要走速度分支（0.001），
+     * 不能因为带 {@code attack} 就按伤害（0.05）算。
+     */
+    private static float keywordPerPoint(String path) {
+        if (path.contains("speed") || path.contains("movement") || path.contains("velocity")) return 0.001f;
+        if (path.contains("regen") || path.contains("heal")) return 0.02f;
+        if (path.contains("resist") || path.contains("reduction")) return 0.01f;
+        if (path.contains("absorption")) return 0.01f;
         if (path.contains("damage") || path.contains("attack")) return 0.05f;
-
-        // 血量/生命类 → 2.0
-        if (path.contains("health") || path.contains("life") || path.contains("max")) return 2.0f;
-
-        // 护甲类 → 0.5
-        if (path.contains("armor")) return 0.5f;
-
-        // 韧性类 → 0.25
+        if (path.contains("health") || path.contains("life")) return 2.0f;
+        if (path.contains("armor") || path.contains("defence") || path.contains("defense")) return 0.5f;
         if (path.contains("toughness")) return 0.25f;
-
-        // 抗性类 → 0.01
-        if (path.contains("resist") || path.contains("knockback")) return 0.01f;
-
-        // 距离类 → 0.5
+        if (path.contains("crit")) return 0.005f;
+        if (path.contains("penetrat") || path.contains("pierc")) return 0.01f;
         if (path.contains("reach") || path.contains("range") || path.contains("distance")) return 0.5f;
-
-        // 幸运类 → 0.1
         if (path.contains("luck")) return 0.1f;
-
-        // 步高/跳跃类 → 0.5
         if (path.contains("step") || path.contains("jump")) return 0.5f;
-
-        // 飞行类 → 0.002
         if (path.contains("fly")) return 0.002f;
-
-        // 吸收类 → 1.0
-        if (path.contains("absorption")) return 1.0f;
-
-        // 重力 → 0.001
         if (path.contains("gravity")) return 0.001f;
-
-        // 默认值
-        return 1.0f;
+        if (path.contains("cooldown") || path.contains("charge")) return 0.005f;
+        if (path.contains("energy") || path.contains("mana") || path.contains("soul")) return 5.0f;
+        if (path.contains("knockback")) return 0.01f;
+        if (path.contains("max")) return 2.0f;
+        return Float.NaN;
     }
 
     // ========== 属性注册 ==========
@@ -1137,9 +1399,11 @@ public final class StatType {
     }
 
     /**
-     * 把配置文件中的「每点数值 / 点数上限」应用到所有已注册属性（内置 + 外部）。
+     * 把配置文件中的「每点数值 / 点数上限」应用到内置属性。
      * <p>
-     * 外部属性（{@code attr.*}）不会生成独立配置项，传入的是出厂默认值，因此等于不变。
+     * <b>外部属性不参与</b>：它们的数值由属性自身取值范围与
+     * {@code config/infinitestats/external_attributes.json} 决定。Forge 配置项是按内置属性表
+     * 静态生成的，外部属性没有对应键；如果这里照样覆盖，会把配置文件里的手写值冲掉。
      * 配置读取失败（尚未加载）时保留当前值，不会把属性打成 0。
      *
      * @return 实际发生变化的属性数量（用于日志）
@@ -1147,6 +1411,7 @@ public final class StatType {
     public static int applyTuningFromConfig() {
         int changed = 0;
         for (StatType stat : ALL_STATS_LIST) {
+            if (stat.category == StatCategory.EXTERNAL) continue;
             float perPoint = com.infinitestats.Config.statPerPoint(stat.id, stat.defaultPerPointValue);
             int maxPoints = com.infinitestats.Config.statMaxPoints(stat.id, stat.defaultMaxLevel);
             if (maxPoints < 1) maxPoints = stat.defaultMaxLevel;
@@ -1269,6 +1534,9 @@ public final class StatType {
      * 获取属性显示名称（外部属性显示注册名，等翻译文件内置后由翻译键接管）
      */
     public String getDisplayName() {
+        if (customDisplayName != null) {
+            return customDisplayName;
+        }
         if (category == StatCategory.EXTERNAL && attributeName != null) {
             return attributeName;
         }
@@ -1279,10 +1547,19 @@ public final class StatType {
      * 获取属性显示名称的翻译回退键
      */
     public String getDisplayFallback() {
+        if (customDisplayName != null) {
+            return customDisplayName;
+        }
         if (category == StatCategory.EXTERNAL && attributeName != null) {
             return attributeName;
         }
         return id;
+    }
+
+    /** 覆盖配置里手写的显示名；没配过时为 null（此时继续走翻译键）。 */
+    @Nullable
+    public String getCustomDisplayName() {
+        return customDisplayName;
     }
 
     // ========== 工具方法 ==========
