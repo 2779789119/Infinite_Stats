@@ -102,6 +102,18 @@ public class EmcPlayerData {
     }
 
     /**
+     * 遗忘一个已学物品：移出已学列表并丢弃其 NBT，**不返还 EMC**。
+     * 遗忘后该物品重新变回「未学」，可以再放一次进学习槽重新学（并再次结算 EMC）。
+     *
+     * @return 之前是否确实学过（未学 / 已忘过返回 {@code false}）
+     */
+    public boolean forgetItem(ResourceLocation itemId) {
+        if (itemId == null || !learnedItems.remove(itemId)) return false;
+        itemNbt.remove(itemId);
+        return true;
+    }
+
+    /**
      * 获取已学物品的 NBT 数据
      */
     public CompoundTag getItemNbt(ResourceLocation itemId) {

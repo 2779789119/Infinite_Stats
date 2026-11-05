@@ -1430,15 +1430,32 @@ public final class StatEventHandler {
 
     // ========== 负面效果拦截 ==========
 
+    /** 效果拦截排查开关：{@code -Dinfinitestats.debugEffects=true} 时打印被拦 / 被绕过的效果。 */
+    private static final boolean DEBUG_EFFECTS = Boolean.getBoolean("infinitestats.debugEffects");
+
     /**
      * 在药水效果施加前直接拦截（debuff_immunity 开关）
      * 支持玩家自定义过滤列表（黑名单/白名单模式），可选择过滤所有效果（包括正面buff和负面debuff）
      * <p>
      * 注意：绝不拦截本模组自己的 Utility 效果（夜视、隐身等），
      * 否则 UtilityHandler 施加的效果会被这里反向拦截，导致 toggle 功能失效。
+     * <p>
+     * <b>为什么挂两次（HIGHEST + LOWEST）：</b>{@code Event#setResult} 只是覆盖一个字段，
+     * 谁最后写谁生效；而 eventbus 遇到 {@code ALLOW} 还可能停止后续投递。两头各挂一个，
+     * 无论别的模组是在我们之前还是之后调 {@code setResult(ALLOW)}，都还有一次机会把 DENY 写回去。
+     * 仍然拦不住的（直接改 {@code activeEffects} 表、或 ALLOW 把传播掐断）由每 tick 的硬清扫兜底。
      */
-    @SubscribeEvent
-    public static void onMobEffectApplicable(MobEffectEvent.Applicable event) {
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onMobEffectApplicableHigh(MobEffectEvent.Applicable event) {
+        denyBlockedEffect(event);
+    }
+
+    @SubscribeEvent(priority = EventPriority.LOWEST)
+    public static void onMobEffectApplicableLow(MobEffectEvent.Applicable event) {
+        denyBlockedEffect(event);
+    }
+
+    private static void denyBlockedEffect(MobEffectEvent.Applicable event) {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
 
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
@@ -1452,6 +1469,37 @@ public final class StatEventHandler {
 
             if (stats.shouldBlockEffect(effectId)) {
                 event.setResult(net.minecraftforge.eventbus.api.Event.Result.DENY);
+                if (DEBUG_EFFECTS) {
+                    System.out.println("[InfiniteStats][Effects] DENY " + effectId
+                            + " (amplifier=" + event.getEffectInstance().getAmplifier()
+                            + ", duration=" + event.getEffectInstance().getDuration() + ")");
+                }
+            }
+        });
+    }
+
+    /**
+     * 效果写入后的诊断点（不做拦截）。
+     * <p>
+     * {@code MobEffectEvent.Added} 是在写进 {@code activeEffects} 表<b>之前</b>触发的，而且
+     * {@code MobEffectInstance} 没有公开的时长 setter，所以这里既阻止不了也改写不了 ——
+     * 真正的兜底是 {@link com.infinitestats.handler.DefenseHandler} 的每 tick 硬清扫。
+     * 监听它只为了在打开 {@code -Dinfinitestats.debugEffects} 时把「绕过了 Applicable 仍被写进来」
+     * 的效果打出来，方便定位是哪个模组干的。
+     */
+    @SubscribeEvent
+    public static void onMobEffectAdded(MobEffectEvent.Added event) {
+        if (!DEBUG_EFFECTS) return;
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+            if (!stats.isToggleActive("debuff_immunity")) return;
+            String effectId = net.minecraftforge.registries.ForgeRegistries.MOB_EFFECTS
+                    .getKey(event.getEffectInstance().getEffect()).toString();
+            if (isOwnUtilityEffect(stats, effectId)) return;
+            if (stats.shouldBlockEffect(effectId)) {
+                System.out.println("[InfiniteStats][Effects] ADDED-PAST-FILTER " + effectId
+                        + "（Applicable 的 DENY 被绕过或顶掉，等待硬清扫）");
             }
         });
     }
@@ -1494,8 +1542,24 @@ public final class StatEventHandler {
 
     @SubscribeEvent
     public static void onPlayerTick(TickEvent.PlayerTickEvent event) {
-        if (event.phase != TickEvent.Phase.END || event.player.level().isClientSide) return;
+        if (event.player.level().isClientSide) return;
         if (!(event.player instanceof ServerPlayer player)) return;
+
+        // START 阶段只做一件事：黑名单硬清扫。
+        // 别的模组常在自己的 tick 里给玩家补效果（辐射、诅咒、标记类），只靠 END 扫的话，
+        // 客户端会先收到 add 包、看到一个「0 秒还在」的影子。两个阶段各扫一次把空窗压到半个 tick。
+        // 开关没开 / 名单为空时在方法内第一行短路，开销可以忽略。
+        if (event.phase == TickEvent.Phase.START) {
+            player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                try {
+                    DefenseHandler.applyDebuffImmunity(player, stats);
+                } catch (Throwable t) {
+                    t.printStackTrace();
+                }
+            });
+            return;
+        }
+        if (event.phase != TickEvent.Phase.END) return;
 
         long tickCount = player.tickCount;
 

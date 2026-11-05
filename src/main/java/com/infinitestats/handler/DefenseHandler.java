@@ -8,6 +8,7 @@ import com.infinitestats.stats.StatCategory;
 import com.infinitestats.stats.StatType;
 import com.infinitestats.util.TeleportUtil;
 import net.minecraft.core.BlockPos;
+import net.minecraft.network.protocol.game.ClientboundRemoveMobEffectPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -151,12 +152,19 @@ public class DefenseHandler implements StatEffectHandler {
     }
 
     /**
-     * 驱散负面药水效果（debuff_immunity 开关 + 黑名单模式），每 tick 调用。
+     * 驱散负面药水效果（debuff_immunity 开关 + 黑名单模式）。
      * <p>
      * 支持玩家自定义过滤列表（ID / {@code ns:*} 通配 / {@code #标签}），
      * 可选择过滤所有效果（包括正面buff和负面debuff）。
+     * <p>
+     * 每 tick 调用两次（玩家 tick 的 START 与 END 各一次，见
+     * {@code StatEventHandler#onPlayerTick}）：别的模组常在自身 tick 里给玩家补效果，
+     * 只在 END 扫的话客户端会先收到 add 包、闪一下「0 秒还在」的影子。
+     * <p>
+     * 移除走 {@link #hardRemoveEffect}：其它模组可以用可取消的
+     * {@code MobEffectEvent.Remove} 驳回普通 {@code removeEffect}，那样每 tick 重试都会失败。
      */
-    private void applyDebuffImmunity(ServerPlayer player, PlayerStats stats) {
+    public static void applyDebuffImmunity(ServerPlayer player, PlayerStats stats) {
         if (!stats.isToggleActive("debuff_immunity") || !stats.hasBlockingEffects()) return;
 
         var effects = player.getActiveEffects();
@@ -171,8 +179,44 @@ public class DefenseHandler implements StatEffectHandler {
             // 否则名单里写 minecraft:* 或 * 会把自己刚加上的效果每 2 秒清一次（闪烁）
             if (StatEventHandler.isOwnUtilityEffect(stats, effectId)) continue;
             if (stats.shouldBlockEffect(effectId)) {
-                player.removeEffect(inst.getEffect());
+                hardRemoveEffect(player, inst.getEffect());
             }
+        }
+    }
+
+    /**
+     * 强制移除一个效果，绕过 {@code MobEffectEvent.Remove}。
+     * <p>
+     * 为什么需要：黑名单的「清除」原先只走 {@code removeEffect}，而它第一步就发
+     * {@code MobEffectEvent.Remove}（{@code @Cancelable}）。别的模组只要取消这个事件，
+     * 我们每 tick 重试、每 tick 被驳回 —— 效果永远清不掉（辐射类效果尤其典型：
+     * curative items 是空的，设计上就不允许外力解除）。
+     * <p>
+     * 做法：先走正常 API（完整触发 {@code onEffectRemoved}：属性修饰符、客户端 remove 包、
+     * {@code effectsDirty} 标记都由原版处理）；只有被驳回时才直接改 {@code activeEffects} 表，
+     * 并手工补上原版在 {@code onEffectRemoved} 里做的事 —— 尤其是**客户端 remove 包**，
+     * 漏发的话服务端没了、客户端还挂着一个 0 秒的影子。
+     */
+    static void hardRemoveEffect(ServerPlayer player, MobEffect effect) {
+        if (effect == null) return;
+        MobEffectInstance current = player.getEffect(effect);
+        if (current == null) return;
+
+        if (player.removeEffect(effect)) return;
+
+        // 被 MobEffectEvent.Remove 驳回（或别的模组在事件里做了什么）：直接删表
+        if (player.removeEffectNoUpdate(effect) == null) return;
+        try {
+            effect.removeAttributeModifiers(player, player.getAttributes(), current.getAmplifier());
+            // removeEffectNoUpdate 不经过 onEffectRemoved，客户端包必须自己补
+            if (player.connection != null) {
+                player.connection.send(new ClientboundRemoveMobEffectPacket(player.getId(), effect));
+            }
+            // 原版在 effectsDirty 之后重算这两个显示标志，硬删不经过它，这里手动对齐
+            player.setInvisible(player.hasEffect(MobEffects.INVISIBILITY));
+            player.setGlowingTag(player.hasEffect(MobEffects.GLOWING));
+        } catch (Throwable t) {
+            t.printStackTrace();
         }
     }
 

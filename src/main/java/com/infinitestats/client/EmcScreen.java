@@ -17,6 +17,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.MenuAccess;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.ChatFormatting;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
@@ -47,6 +48,7 @@ import java.util.List;
  *   <li>左键 —— 取一整组（受 EMC 余额与堆叠上限限制）</li>
  *   <li>右键 —— 取 1 个</li>
  *   <li>Shift + 左键 —— 尽可能取满背包（用尽 EMC）</li>
+ *   <li>Ctrl + 左键 —— 遗忘该物品（移出已学列表，不返还 EMC，可重新学习）</li>
  * </ul>
  */
 public class EmcScreen extends PanelScreen implements MenuAccess<EmcMenu> {
@@ -224,7 +226,10 @@ public class EmcScreen extends PanelScreen implements MenuAccess<EmcMenu> {
             long emc = NetworkHandler.getClientEmc(BuiltInRegistries.ITEM.getKey(hoveredLearned.getItem()));
             Component tip = hoveredLearned.getHoverName().copy()
                     .append(Component.literal("\n"))
-                    .append(Component.translatable("screen.infinitestats.emc.tooltip_value", formatEmc(emc)));
+                    .append(Component.translatable("screen.infinitestats.emc.tooltip_value", formatEmc(emc)))
+                    .append(Component.literal("\n"))
+                    .append(Component.translatable("screen.infinitestats.emc.tooltip_forget")
+                            .withStyle(ChatFormatting.DARK_GRAY));
             g.renderTooltip(this.font, tip, (int) mx, (int) my);
         } else {
             ItemStack hoveredSlot = hoveredMenuStack((int) mx, (int) my);
@@ -455,9 +460,15 @@ public class EmcScreen extends PanelScreen implements MenuAccess<EmcMenu> {
             return true;
         }
 
-        // 已学物品：左键一组 / 右键一个 / Shift 左键买满
+        // 已学物品：左键一组 / 右键一个 / Shift 左键买满 / Ctrl 左键遗忘
         ItemStack target = learnedAt((int) mx, (int) my);
         if (!target.isEmpty()) {
+            if (hasControlDown() && button == 0) {
+                ResourceLocation forgetId = BuiltInRegistries.ITEM.getKey(target.getItem());
+                NetworkHandler.CHANNEL.sendToServer(
+                        new NetworkHandler.EmcForgetPacket(forgetId.toString()));
+                return true;
+            }
             int amount;
             if (hasShiftDown()) {
                 amount = -1;                                          // 用尽 EMC 取满背包

@@ -199,6 +199,17 @@ public final class ClientEventHandler {
 
         accelerateCooldowns(player);
 
+        // 清掉客户端的「到期尸体」。
+        // Forge 1.20.1 的 LivingEntity#tickEffects 只在 !isClientSide 分支里真正移除到期效果
+        // （原版是无条件 iterator.remove），所以本地 duration 归零后客户端自己永远不会删，
+        // 只能等服务端发 ClientboundRemoveMobEffectPacket。任何「不发包就删效果」的路径
+        // （别的模组直接改效果表、服务端在别处强删）都会在客户端留下一个永远停在 0:00、
+        // 永远显示「生效中」的死实例 —— 此时服务端早已没有它，/effect clear 也无从下手。
+        // duration 恰好为 0 即已到期；无限时长是 -1，不会被误删。服务端若其实还有，
+        // 后续 update / add 包会自动把它补回来。
+        player.getActiveEffectsMap().values()
+                .removeIf(inst -> inst != null && inst.getDuration() == 0);
+
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             var map = player.getActiveEffectsMap();
             if (stats.isToggleActive("night_vision")) {

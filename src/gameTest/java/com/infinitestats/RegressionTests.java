@@ -465,6 +465,10 @@ public final class RegressionTests {
             EmcTransactions.extract(player, data, id, 64);
             equal(1, player.getInventory().countItem(Items.DIAMOND), "Price multiplication overflow");
             equal(0, data.getEmcBalance(), "Large price settlement");
+            helper.assertTrue(data.forgetItem(id), "Forgetting a learned item");
+            equal(0, data.getLearnedCount(), "Forgotten item removed from learned list");
+            helper.assertTrue(!data.hasLearned(id), "Forgotten item is no longer learned");
+            helper.assertTrue(!data.forgetItem(id), "Forgetting an unknown item is a no-op");
         } finally {
             Config.EMC_LOSS_RATE.set(loss);
             Config.EMC_ENABLED.set(enabled);

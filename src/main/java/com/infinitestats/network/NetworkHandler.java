@@ -81,7 +81,8 @@ public final class NetworkHandler {
     // 26：新增传送石碑三个包（列表请求 / 列表同步 / 传送）
     // 27：EntityPanelAttributePacket 的语义改成「目标最终值」（旧客户端拿来当基础值写会算错，故升版本）
     // 28：新增 ExternalStatsSyncPacket（服务端下发权威的外部属性列表，旧客户端收不到会少一批卡片）
-    private static final String PROTOCOL_VERSION = "28";
+    // 29：新增 EmcForgetPacket（客户端请求遗忘某个已学物品）
+    private static final String PROTOCOL_VERSION = "29";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -264,6 +265,12 @@ public final class NetworkHandler {
                 EmcExtractPacket::encode,
                 EmcExtractPacket::decode,
                 EmcExtractPacket::handle);
+
+        // 遗忘数据包（客户端 → 服务器）：把某个物品移出已学列表（不返还 EMC）
+        CHANNEL.registerMessage(packetId++, EmcForgetPacket.class,
+                EmcForgetPacket::encode,
+                EmcForgetPacket::decode,
+                EmcForgetPacket::handle);
 
         // 一键卖出数据包（客户端 → 服务器）：把背包内所有可转化物品倾销成 EMC
         CHANNEL.registerMessage(packetId++, EmcSellAllPacket.class,
@@ -976,6 +983,45 @@ public final class NetworkHandler {
                     if (player.containerMenu != null) {
                         player.containerMenu.broadcastChanges();
                     }
+                });
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 遗忘数据包（客户端 → 服务器）
+     * 把指定物品移出玩家的已学列表（连同其 NBT），不返还 EMC；之后可重新学习。
+     */
+    public static final class EmcForgetPacket {
+        private final String itemId;
+
+        public EmcForgetPacket(String itemId) {
+            this.itemId = itemId;
+        }
+
+        public static void encode(EmcForgetPacket msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.itemId);
+        }
+
+        public static EmcForgetPacket decode(FriendlyByteBuf buf) {
+            return new EmcForgetPacket(buf.readUtf());
+        }
+
+        public static void handle(EmcForgetPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null || !Config.EMC_ENABLED.get()) return;
+
+                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
+                if (itemId == null) return;
+
+                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
+                    if (!data.forgetItem(itemId)) return;
+                    syncEmcToClient(player);
+                    Component name = new ItemStack(BuiltInRegistries.ITEM.get(itemId)).getHoverName();
+                    player.displayClientMessage(
+                            Component.translatable("message.infinitestats.emc.forgotten", name), false);
                 });
             });
             ctx.get().setPacketHandled(true);
