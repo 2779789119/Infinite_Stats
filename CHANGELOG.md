@@ -1,5 +1,22 @@
 # 更新日志 (Changelog)
 
+## [1.81.5] - 2026-11-05
+
+### 👻 修：效果图标「0:00 还挂着、怎么清都清不掉」（同步上游 1.80.2）
+
+Forge 1.19.2 的 `LivingEntity#tickEffects` 也把移除分支改成了只在
+`!level.isClientSide` 执行（原版是无条件 `iterator.remove()`）—— 所以本地 duration
+归零后**客户端自己永远不会删**，只认服务端发来的 `ClientboundRemoveMobEffectPacket`。
+
+于是只要有一条移除路径没发包（别的模组直接改效果表、服务端在别处强删），客户端就会留下
+一个**永远停在 0:00、永远显示「生效中」的死实例**：服务端其实早就没有它了，所以
+`/effect clear`、牛奶桶全都无从下手，只有重新登录才会消失。
+
+- 客户端每 tick 兜底清掉 `duration == 0` 的本地实例（`ClientEventHandler#purgeExpiredEffects`）；
+  本模组的常驻效果（长时长 + `noCounter`）不会被误删。
+- 服务端若其实还在，后续 update / add 包会自动补回来，不会误清真的效果。
+- 版本号 `1.81.4 → 1.81.5`。
+
 ## [1.81.4] - 2026-11-02
 
 ### 🖱️ 随身工具面板右键关不掉

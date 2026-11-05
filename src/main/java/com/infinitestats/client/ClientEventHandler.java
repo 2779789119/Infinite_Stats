@@ -181,6 +181,27 @@ public final class ClientEventHandler {
         return false;
     }
 
+    // ========== 客户端清掉「0 秒尸体」 ==========
+
+    /**
+     * 清掉客户端的「到期尸体」。
+     * <p>
+     * Forge 1.19.2 的 {@code LivingEntity#tickEffects} 只在 {@code !level.isClientSide}
+     * 分支里真正 {@code iterator.remove()}（原版是无条件移除），所以本地 duration 归零后
+     * 客户端自己永远不会删，只认服务端发来的 {@code ClientboundRemoveMobEffectPacket}。
+     * <p>
+     * 只要有一条移除路径没发包（别的模组直接改效果表、服务端在别处强删），客户端就会留下
+     * 一个永远停在 0:00、永远显示「生效中」的死实例：服务端其实早就没有它了，
+     * 所以 /effect clear、牛奶桶全都无从下手，只有重新登录才会消失。
+     * <p>
+     * duration 恰好为 0 即已到期；本模组的常驻效果（{@link PermanentEffects}）是长时长 +
+     * noCounter，不会被误删。服务端若其实还在，后续 update / add 包会自动补回来。
+     */
+    private static void purgeExpiredEffects(LocalPlayer player) {
+        player.getActiveEffectsMap().values().removeIf(
+                inst -> inst != null && inst.getDuration() == 0 && !PermanentEffects.isPermanent(inst));
+    }
+
     // ========== 客户端强制维持夜视（彻底绕过任何模组拦截） ==========
 
     /**
@@ -201,6 +222,8 @@ public final class ClientEventHandler {
         if (player == null) return;
 
         accelerateCooldowns(player);
+        // 清掉 0:00 还挂着的死实例（见 purgeExpiredEffects）
+        purgeExpiredEffects(player);
 
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             var map = player.getActiveEffectsMap();
