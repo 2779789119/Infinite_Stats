@@ -122,6 +122,21 @@ public class EmcPlayerData {
         return learnedItems.size();
     }
 
+    /**
+     * 遗忘一个已学物品：从已学列表移除，并丢弃它保存的 NBT。
+     * <p>
+     * <b>不返还 EMC</b>：遗忘只是清掉这条知识，不是退货 —— 学习时已经到账的 EMC 不会扣回，
+     * 也不会多给，因此不存在「学一遍 → 遗忘 → 再学」的刷 EMC 空子。
+     * 遗忘也不碰数据库里的定价，不影响背包里已有的实物。
+     *
+     * @return 是否真的移除了（本来没学过返回 false）
+     */
+    public boolean forgetItem(ResourceLocation itemId) {
+        if (itemId == null) return false;
+        itemNbt.remove(itemId);
+        return learnedItems.remove(itemId);
+    }
+
     // ==================== NBT 序列化 ====================
 
     public CompoundTag serializeNBT() {

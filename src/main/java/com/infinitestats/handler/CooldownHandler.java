@@ -88,7 +88,7 @@ public class CooldownHandler implements StatEffectHandler {
 
         if (reduction >= 1.0f) {
             stats.setCooldownAccum(0);
-            clearVisibleCooldowns(cooldowns, player.getInventory());
+            clearVisibleCooldowns(cooldowns, player);
             return;
         }
 
@@ -102,13 +102,20 @@ public class CooldownHandler implements StatEffectHandler {
      * 清除玩家身上的物品冷却。
      * <p>
      * {@link ItemCooldowns} 没有公开的「列出全部冷却」接口，所以这里遍历玩家自己的物品栏
-     * （主栏 + 护甲 + 副手，约 41 格）。触发冷却的物品几乎必然在玩家身上，因此覆盖足够；
-     * 代价是每 tick 固定几十次 {@code HashMap.remove}，可忽略。
+     * （主栏 + 护甲 + 副手，约 41 格）<b>以及 Curios 饰品栏</b>。触发冷却的物品几乎必然在这两处，
+     * 因此覆盖足够；代价是每 tick 固定几十次 {@code HashMap.remove}，可忽略。
+     * <p>
+     * 饰品栏必须单独扫：放在 Curios 槽里的东西（护符、戒指、望远镜之类）同样会进冷却，
+     * 而它们不在 {@link Inventory} 里 —— 漏掉就会表现为「满了 100% 缩短后饰品那件还是转圈」。
      */
-    private static void clearVisibleCooldowns(ItemCooldowns cooldowns, Inventory inventory) {
+    private static void clearVisibleCooldowns(ItemCooldowns cooldowns, Player player) {
+        Inventory inventory = player.getInventory();
         removeAll(cooldowns, inventory.items);
         removeAll(cooldowns, inventory.armor);
         removeAll(cooldowns, inventory.offhand);
+        // 装了 Curios 才扫；未安装时 forEachStack 是空实现
+        com.infinitestats.compat.CuriosBridge.forEachStack(player,
+                stack -> cooldowns.removeCooldown(stack.getItem()));
     }
 
     private static void removeAll(ItemCooldowns cooldowns, List<ItemStack> stacks) {

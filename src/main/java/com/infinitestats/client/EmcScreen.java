@@ -604,6 +604,11 @@ public class EmcScreen extends PanelScreen implements MenuAccess<EmcMenu> {
         g.drawCenteredString(this.font, ">", nextX + 6, navY + 1, 0xFFFFFFFF);
         String pageStr = (L.page + 1) + "/" + L.pages;
         g.drawString(this.font, pageStr, left + 38, navY + 1, 0xFFF8F8F8, false);
+        // Ctrl+左键遗忘的提示：与翻页同一行右侧，不额外占高度
+        g.drawString(this.font,
+                net.minecraft.network.chat.Component.translatable("screen.infinitestats.emc.forget_hint")
+                        .getString(),
+                left + 70, navY + 1, 0xFF6A6A6A, false);
     }
 
     private void renderCursor(GuiGraphics g, int mx, int my) {
@@ -701,8 +706,24 @@ public class EmcScreen extends PanelScreen implements MenuAccess<EmcMenu> {
         return ItemStack.EMPTY;
     }
 
+    /**
+     * 右键已学物品 = 快捷买入「买满」（用尽 EMC）。
+     * <p>
+     * 必须走右键钩子：右键在基类里默认被拿去拖动面板，从 {@code onPanelClick} 里判
+     * {@code button == 1} 永远收不到（那条分支在分发到子类之前就 return 了）。
+     */
+    @Override
+    protected boolean onPanelRightClick(int mx, int my) {
+        ItemStack target = getLearnedItemAt(mx, my);
+        if (target.isEmpty()) return false;
+        ResourceLocation id = BuiltInRegistries.ITEM.getKey(target.getItem());
+        NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcExtractPacket(id.toString(), -1));
+        return true;
+    }
+
     @Override
     protected boolean onPanelClick(int mx, int my, int button) {
+        if (button != 0) return false;
         // 翻页按钮（背景框底部）
         int left = leftPos;
         int top = topPos;
@@ -719,11 +740,14 @@ public class EmcScreen extends PanelScreen implements MenuAccess<EmcMenu> {
         // 点击已学列表中的物品 → 消耗 EMC 提取（Shift+左键取一组，否则取 1 个）
         ItemStack target = getLearnedItemAt(mx, my);
         if (!target.isEmpty()) {
-            int amount;
-            if (button == 1) amount = -1;                                   // 右键：快捷买入「买满」（用尽 EMC）
-            else if (button == 0 && hasShiftDown()) amount = 64;            // Shift+左键：买一组
-            else amount = 1;                                                // 左键：买 1 个
             ResourceLocation id = BuiltInRegistries.ITEM.getKey(target.getItem());
+            // Ctrl + 左键：遗忘（不返还 EMC）—— 已学列表只增不减会挤满网格，
+            // 带 NBT 的物品学错版本时也需要重新学习的入口
+            if (hasControlDown()) {
+                NetworkHandler.CHANNEL.sendToServer(new com.infinitestats.network.EmcForgetPacket(id.toString()));
+                return true;
+            }
+            int amount = hasShiftDown() ? 64 : 1;                           // Shift+左键：买一组；左键：买 1 个
             NetworkHandler.CHANNEL.sendToServer(
                     new NetworkHandler.EmcExtractPacket(id.toString(), amount));
             return true;

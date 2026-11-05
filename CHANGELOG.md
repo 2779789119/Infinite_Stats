@@ -3,6 +3,401 @@
 > 版本线说明：本仓库是**同一模组的高版本分支**（NeoForge `1.21.1`），编号 `0.1.x`；
 > 下方 `1.x` 条目为该模组 Forge 分支（`1.20.1` → `26.2`）的历史日志，两条分支的编号各自独立、不连续。
 
+## [0.20.4] - 2026-11-05
+
+### 🎯 修：「攻击/建造距离」与「实体触及距离」加了没效果
+
+两条属性一直绑着 **Forge 时代**的属性名：
+
+- `reach` → `forge:block_reach`
+- `entity_reach` → `forge:entity_reach`
+
+1.20.5 起原版把 Forge 的 `reach_distance` / `attack_range` 收编成了自己的属性，1.21.1 里
+**根本没有这两个 Forge 注册名**。于是 `BuiltInRegistries.ATTRIBUTE.get(...)` 返回 null，
+修饰符挂不上去，`AttributeHandler` 又在这时静默 `return` —— 面板照样显示 +16.0，实际毫无作用。
+
+现在改用原版注册名（这两个属性只注册在 `Player` 上）：
+
+- `reach` → `minecraft:player.block_interaction_range`（默认 4.5，上限 64）
+- `entity_reach` → `minecraft:player.entity_interaction_range`（默认 3.0，上限 64）
+
+数值不变（每点 0.04，400 点 = +16 格）；`statId` 没动，所以**旧存档里已投入的点数会直接开始生效**，
+不需要重置。顺带把其余内置属性的注册名逐个核对了一遍（`generic.max_health` / `generic.armor` /
+`generic.attack_damage` 等在 1.21.1 仍然带 `generic.` 前缀，均正常），只错这两个。
+
+## [0.20.3] - 2026-11-05
+
+### 📄 模组详情：启动器里补上名字、版本与描述
+
+现象：在 PCL 的模组详情里只看到一行 jar 文件名和大小，没有模组名 / 版本 / 描述 / 图标。
+
+原因：NeoForge 1.20.5+ 只写 `META-INF/neoforge.mods.toml`，而不少启动器（PCL 等）的模组解析仍按
+Forge 时代的 `META-INF/mods.toml` 找元数据 —— 找不到就退化成一个「未知模组」，只显示文件名。
+
+- `processResources` 现在在打包时把 `neoforge.mods.toml` **复制一份为 `META-INF/mods.toml`**
+  （内容一致、`${version}` 已展开）。NeoForge 自己只读 `neoforge.mods.toml`，多这份副本不改变加载行为。
+- 描述改为**中英双语**（中文在前）：功能列表、可选联动、面板快捷键、随身工作站、多人支持、前置依赖。
+- 修掉一个隐藏坑：描述原本想写成单行 `"…\n…"`，但 Gradle 的 `expand` 会把 `\n` 变成**真实换行**，
+  导致 TOML 非法（`Illegal character '\n'`）。改用多行字面量 `'''…'''`，两边解析器都能读。
+
+## [0.20.2] - 2026-11-05
+
+### 🖱️ 修：右键操作被「拖动面板」整条吃掉
+
+现象：随身工具面板标题写着「左键打开 · 右键开启 / 关闭」，但右键怎么点都没反应。
+
+根因在 `PanelScreen`：右键在基类里<b>无条件</b>进入「拖动面板」分支并 `return true`，
+子类的 `onPanelClick` 里判 `button == 1` 永远收不到 —— 同一个坑还埋着另外两处。
+
+- `PanelScreen` 新增 `onPanelRightClick` 钩子：右键先问子类，**未被消费**才拖动面板。
+  只在 `onPanelClick` 里判右键的写法现在明确收不到（注释里已写明）。
+- **随身工具**：右键开启 / 关闭恢复。顺带把行命中改为「按坐标现算」，
+  不再依赖渲染时的 `hoveredRow`（那是上一帧的快照，鼠标刚移进某行就点会点到上一行）。
+- **效果过滤**：右键「模式」按钮切换「重生继承」恢复。
+- **EMC 转化桌**：右键已学物品「买满」恢复（Shift+左键买一组、左键买 1 个、Ctrl+左键遗忘不变）。
+
+## [0.20.1] - 2026-11-05
+
+### 🧩 「连锁挖掘设置」界面重写
+
+旧版面在加了「每格经验消耗」之后行数超出一页：最后两行与底部三个按钮**整块叠在一起**，
+左下角那个「恢复默认」还被压成半截；底部按钮用的是原版 `Button`（灰底 + 外框），
+与面板的深色主题也不搭。
+
+- 版面按「**名称 | &lt; 值 &gt;**」三段定列重排：名称列固定宽度并按需截断，
+  值区居中显示（长文本先截断，永远不会压到箭头），箭头各占固定 14px 列。
+- 面板高度 306 → 328，14 行完全装下；底部提示、按钮、边框各留出独立间距，不再重叠。
+- 底部三个按钮（恢复默认 / 保存 / 关闭）改为**自绘**：等宽、等距、深色底 + 主题色上边框，
+  悬停时整块提亮；不再引入原版按钮的灰底和箭头。
+- 底部加一行灰色提示「改完点『保存』才会提交给服务端」，避免改完直接关掉以为生效了。
+
+### 🧹 属性面板页脚去掉重复的「传送点管理」
+
+页脚导航栏已有「传送」入口，下面那行又摆了一个「传送点管理」，和「重置 / 全部」挤在一起。
+删掉重复的那个（传送点功能不受影响）。
+
+## [0.20.0] - 2026-11-05
+
+> 收尾批：外部属性下发、覆盖项生效、效果过滤行内状态、分类整组隐藏、冷却清理补饰品栏。
+
+### 🌐 外部属性：服务端下发 + 覆盖项真正生效
+
+- 新增 **`ExternalStatsSyncPacket`**（服务器 → 客户端）：登录与热重扫时各发一次，
+  客户端用服务端那份覆盖自己扫出来的结果。此前两端各扫各的，专用服务器上会出现
+  「面板有这条、点下去服务端不认识」或数值对不上的情况。
+- `overrides` 的 **`displayName` / `description` 现在真的生效**：面板里的属性名与浮窗说明
+  优先用配置里手写的文本，没写才回退到属性自带的翻译键 / 注册名。
+- 面板正开着时热重扫会**立刻重建列表**（不用关掉重开）。
+- **协议变更**：`7 → 8`。
+
+### 🛡️ 效果过滤：行内实时状态 + 覆盖计数
+
+- 列表里**通配 / 标签条目**（`somemod:*`、`*`、`#forge:boss_effects`）后面会显示
+  「覆盖 N 个效果」—— 此前这类条目只是一个字符串，玩家看不出一条 `*` 到底会影响多少条。
+- **实时状态**：条目此刻正作用在自己身上时，行首亮起一条绿色竖条（不占文本宽度）。
+- 单条匹配逻辑抽成 `PlayerStats.entryMatches` / `countEffectsMatching`，界面与服务端判定共用同一份规则。
+
+### 🗂️ 属性面板：分类整组隐藏
+
+- 新增 `[GUI].hiddenCategories`（分类枚举名，如 `ATTACK`、`EXTERNAL`）：被隐藏的分类
+  **页签不再绘制**，数字键 1~9 也切不过去（页签宽度与快捷键映射用同一份可见数组，不会错位）。
+- 已投入的点数仍保留、效果照常生效，只是面板不再显示这一组；当前选中的分类若被隐藏，
+  会自动回退到第一个可见分类。
+
+### ❄️ 冷却缩减满额时补扫饰品栏
+
+- 「冷却缩减」满 100% 时会把身上的物品冷却直接清空，此前只扫主栏 / 护甲 / 副手 ——
+  放在 Curios 槽里的护符、戒指、望远镜这些不在原版 `Inventory` 里，会继续转圈。
+  现在一并扫 Curios 饰品栏（未装 Curios 时是空实现）。
+
+### ❎ 本轮明确没做
+
+- **物品编辑器的 Curios 饰品槽位**：本机只有 Curios `5.x / 1.20.1` 的 jar，1.21.1 的 Curios 9 把
+  饰品属性存在自己的数据组件里，格式无法核对 —— 盲写会损坏物品数据，所以先不做。
+
+## [0.19.0] - 2026-11-05
+
+### 🌐 外部属性：覆盖配置 + 热重扫
+
+- 新增 **`config/infinitestats/external_attributes.json`**（首次启动自动生成带注释的模板）：
+  - `blacklist` / `whitelist`：支持 `mod:attr`、整个命名空间 `mod:*`、以及 `*`；白名单非空时只收录列出的属性；
+  - `overrides`：逐条覆盖自动推导的 `perPoint`（每点数值）、`maxPoints`（可投入上限）、
+    `hidden`（只在开启「显示隐藏属性」时可见）、`enabled=false`（等价于拉黑）。
+- **解析失败保留上一份配置**：一条手滑的 JSON 不会把整个外部属性分类清空，错误会打印到日志，
+  并在 `/infstats reload external` 的反馈里带出来。
+- **`/infstats reload external`（OP）**：重新读配置 + 重扫属性注册表 + 给在线玩家重写一遍属性修饰符 +
+  重新同步，改完不用重启。内置属性、等级与已投入点数都不受影响（玩家数据按 statId 存，重扫前后 id 不变）；
+  被拉黑的属性只是从列表里消失，NBT 里的点数仍保留，移出黑名单就恢复。
+- 未接入：`displayName` / `description` 两个字段只解析、暂不参与面板显示（显示名继续用属性自带的翻译键）。
+
+### 🧭 矿透入口改到属性面板页脚
+
+- **移除矿透的 K 快捷键**（不再额外占用按键位）；改为属性面板页脚导航栏的「矿透」按钮，
+  未解锁时给出提示而不是静默失败。
+- 页脚导航栏改为「入口 + 面板 id」表驱动：命中 `GUI.hiddenPanels` 的入口**直接不画**，
+  按钮宽度按剩余入口数均分（不会因为新增入口把面板挤出去）。这是「面板入口隐藏」在按钮层的落地，
+  与快捷键层（`ClientEventHandler` 里的同名判定）共用同一份配置。
+
+### 🔧 顺带
+
+- 矿透的默认半径 / 描边上限直接复用已有的 `[OreVision]` 配置段，不再另开一段。
+
+## [0.18.0] - 2026-11-05
+
+> 对齐 1.20.1 主版本 **1.70 → 1.80** 的其余批次：配置开放、矿透、效果过滤、外部属性、EMC 遗忘、死亡闸门。
+
+### ⚙️ 配置补充
+
+- 新增 `[GUI].hiddenPanels`：按面板 id 隐藏入口（`stats` / `emc` / `item_editor` / `achievements` /
+  `waypoint` / `ore_vision` / `portable_tools` / `weather` / `chunk_loader` / `vein_miner` /
+  `entity_panel` / `debuff_filter`）。
+- `[Stats]` 逐属性调参、`[Combat]`、`[Progression]`、`[OreVision]` 等段沿用既有实现，本轮未改。
+  `[Combat]` 的上限项（暴击 / 护穿 / 吸血 / 闪避 / 格挡 / 减伤 / 反伤等）见 `0.17.0`。
+
+### ⛏️ 新属性「矿石透视」（`ore_vision`，1 点解锁）
+
+- 把周围**已加载区块**里的矿石描出边框，并且**穿透方块**显示。扫描全在客户端完成，
+  服务端不收任何方块查询；先用 `PalettedContainer#maybeHas` 跳过没有矿石的 section。
+- 穿透靠自己拿 `BufferBuilder` 画（不用 `RenderType`）—— 走 `RenderType.lines()` 时它自带的
+  深度测试会把外面关掉的又打开，边框照样被石头挡住。
+- **光影兼容**：开光影时世界阶段画的东西会被 final pass 整屏覆盖，自动改到 HUD 阶段
+  用同一套投影 + 相机姿态重画（`ShaderCompat` 反射探测 Iris / Oculus / OptiFine）。
+- 按矿物分组上色（煤 / 铁 / 铜 / 金 / 红石 / 青金石 / 钻石 / 绿宝石 / 石英 / 残骸 / 其他），
+  分组可逐类关掉；支持「需潜行才显示」、扫描半径 8~64、描边上限分档。
+- 设置入口在**属性面板页脚导航栏的「矿透」按钮**（不占用快捷键；同样受 `GUI.hiddenPanels` 控制）；
+  设置跟着角色存档走（`OreVisionConfig` 进玩家 NBT），登录 / 换维度时单独下发
+  （`OreVisionConfigPacket`），提交走 `UpdateOreVisionConfigPacket`。
+- 协议版本 `6 → 7`。
+
+### 🛡️ 效果过滤：黑名单「清不掉 / 拦不住」的修正
+
+- **拦截挂两份**：`MobEffectEvent.Applicable` 是 HasResult 事件，`setResult` 谁最后写谁生效；
+  现在在 HIGHEST 与 LOWEST 各判一次，别的模组 `setResult(ALLOW)` 强制放行时还有一次机会驳回。
+- **清除改为硬清**：正常 `removeEffect` 被驳回时直接改效果表（`removeEffectNoUpdate`），
+  并补上原版在移除时做的事 —— 属性修饰符、**客户端 remove 包**、隐身 / 发光标志。
+  漏发 remove 包会表现为「服务端已经没了、客户端还挂着一个 0 秒影子」。
+- **每 tick 扫两次**：玩家 tick 的 START 与 END 各清一次（别的模组常在自己的 tick 里补效果）。
+  名单为空时零开销（新增 `hasBlockingEffects()` 短路）。
+- **客户端每 tick 兜底清掉 `duration == 0` 的本地实例**：1.20.1 起原版把移除分支改成只在服务端执行，
+  客户端只认 remove 包；只要有一条移除路径没发包，就会留下永远停在 0:00 的死实例。
+  无限时长是 `-1`，不会被误删。
+
+### 🧠 EMC 转化桌：遗忘已学物品
+
+- **`Ctrl + 左键`** 点击已学物品即可**遗忘**：从已学列表移除，同时丢弃该物品保存的 NBT，
+  之后重新放进学习槽就能再学一次（正常结算 EMC）。
+- **不返还 EMC**：遗忘只是清掉这条知识，不是退货，因此不存在「学一遍 → 遗忘 → 再学」的刷 EMC 空子。
+  也不碰数据库里的定价与背包里的实物。
+- 已学列表底部新增灰色提示「Ctrl + 左键：遗忘（不返还 EMC）」；遗忘由服务端执行并重新下发快照。
+- **协议变更**：新增 `EmcForgetPacket`。
+
+### 🌐 外部属性：数值自动推导
+
+- **每点数值：关键字先验 + 范围纠正**。先按注册名取经验量级（伤害 0.05 / 生命 2.0 / 速度 0.001 …），
+  再用 `RangedAttribute` 的 `min/max` 纠正：`0~1` 这类窄范围按「1000 点走完全程」收敛；
+  宽范围但没命中关键字时按「500 点吃下四分之一范围」起步，并归整到 1/2/5 × 10ⁿ。
+- **点数上限：按属性容量自动对齐**。上限 = 从默认值加到属性 `min/max` 所需点数（最少 20），
+  避免投到被原版 clamp 之后白花点数；无界属性仍然返回 `Integer.MAX_VALUE`。
+
+### 🚪 玩家死亡总闸门（`PlayerDieMixin`）
+
+- 在 `Player#die` 的入口加了一道通用闸门，用已有的致死闪避 / 格挡判定拦截。
+  判定成功时整个死亡流程一行都不执行：不掉落、不写 `dead` 标记、不广播死亡动画、不进死亡界面。
+- 为什么是 `Player` 而不是 `LivingEntity`：`Player` 覆写了 `die`，只拦父类的话子类在 super
+  返回后仍会继续跑。
+- 不绑定任何第三方类名：无论哪个模组、用什么方式想让玩家死，最终都要经过这里。
+  与事件层的判定共用同一份按攻击来源去重的缓存，不会因为多了一层而让闪避率翻倍。
+
+### 🧾 新增指令 `/infstats points`
+
+- `/infstats points` / `points get [玩家]`：查询等级、可用点数、已分配（查询对所有人开放）。
+- `/infstats points add <数量>` / `add <玩家> <数量>`：增减可用点数（OP）。
+- `/infstats points set <玩家> <数量>`：直接设为指定值（OP）。
+- **点数不再丢**：写入走玩家数据里新增的「额外授予」记账（`grantedPoints`），
+  升级 / 登录重算公式变成「等级产出 + 额外授予 − 已消耗」，因此指令发的点数不会被等级公式抹掉，
+  也不会变成负数。旧存档读档时按当前可用点数反推这份记账，已发出去的点数不丢。
+
+## [0.17.0] - 2026-11-05
+
+> 对齐 1.20.1 主版本 **1.67 → 1.80** 的战斗内核第一批。
+
+### ⚔️ 真实伤害重做：只认攻击方数值，不再被第三方限伤吞掉
+
+旧实现把真伤算在「护甲 / 附魔 / 限伤都结算完」的数值上，实机表现是：装了带单次伤害上限的
+模组后真伤跟着一起被削，等于没加。现在：
+
+- **基数**换成「命中阶段的原始伤害快照 × 本模组暴击 / 弹射物加成」；近战再与攻击者面板估算
+  （攻击力 × 蓄力）**取大值**，目标在 `hurt()` 里怎么钳都影响不到基数。
+- 真伤**不再叠加进主伤害数值**，而是直接扣血 —— 后续的抗性提升 / 保护附魔 / 吸收护盾 /
+  第三方限伤都削不到它。
+- 扣到 0 时由本模组**强制收尾死亡**：走 `die()` 正常结算掉落 / 经验 / 击杀归属；若死亡被第三方
+  复活类模组取消，补发一次死亡事件并手动补掉落结算，再移除实体 —— 「真伤一高，实体直接消失且
+  没有掉落」不再出现。
+- 直接扣血被目标锁血（`setHealth` 无效）时，退回本模组的 `direct_damage` 走一次 `hurt()`，
+  跳过「在 hurt() 里钳上限」的实现。
+- 新增排查开关 `-Dinfinitestats.debugTrueDamage=true`。
+
+### 💨 闪避 / 格挡覆盖全部伤害路径
+
+- 判定整体**上移到命中事件**（`LivingIncomingDamageEvent`）：在这里取消就是「这一击没打中」，
+  与第三方在伤害数值上的取消彻底分开，真伤不会再被别家的取消一并吞掉。
+- 同一次攻击按「**直接来源实体**」缓存一次判定（近战是攻击者、远程是弹射物），命中层 / 伤害层 /
+  死亡层 / 弹射物命中层共用同一个结果 —— 多层事件不再各 roll 一次导致实际概率翻倍。
+- 弹射物命中改用 `ProjectileImpactEvent` 拦截：闪避后箭**原样穿过去**，而不是插在玩家身上。
+- 本模组真伤对玩家的直接扣血也补一次闪避 / 格挡判定（那条路径根本不经过 `hurt()`）。
+- 顺序固定为「先闪避、后格挡」：闪避的语义是攻击根本不存在，所以优先。
+
+### 🛡️ 攻击侧结算上移到护甲之前（顺带修掉护甲穿透的巨额增伤）
+
+- 暴击 / 弹射物加成 / 处决 / 范围攻击 / 削生命上限 / 真伤基数**全部改到命中事件**
+  （`LivingIncomingDamageEvent`）里结算，时机等同于 1.20.1 分支用 `LivingHurtEvent` 的位置。
+- 旧实现把它们放在护甲**之后**的伤害数值事件里，直接引出一个恶性 bug：护甲穿透要「反解出
+  护甲前的输入」，而那个值在护甲后阶段会被当作最终扣血量 —— 穿透点数越高，伤害离谱地越大。
+  现在恢复为「按穿透后的护甲结算」，穿透就是穿透。
+- 会被无敌帧吞掉的一击不再叠加攻击属性（与主伤害的节奏一致）；「取消无敌帧」开关仍然优先
+  （它在更早的优先级先把 `invulnerableTime` 清零，所以本判定放行）。
+
+### 🩹 零血兜底 + 致死预拦截
+
+- **致死预拦截**：在伤害结算阶段就判断「这一下会打死玩家」，命中直接复活并把伤害清零 ——
+  玩家完全不进入死亡流程，`/kill`、绕过无敌的致死伤害、以及其它模组挂在 `die` 上的逻辑
+  都不会再有执行机会。
+- **零血兜底**：tick 末尾检查「血量为 0、但死亡流程尚未真正开始（姿态不是 `DYING`）」的玩家，
+  按上一 tick 的血量快照恢复。专门对付「直接 `setHealth(0)` 并在死亡事件上以最低优先级
+  撤销别人取消」的处决实现。
+- 复活血量保底 1 点：最大生命被其它模组压到 1~3 点时不会再算出 0 血复活。
+
+### 🕳️ 虚空脱困
+
+- 掉出世界（默认为世界最低点下方 8 格，主世界 y < -72）时直接拉回重生点，
+  **不检查、不消耗复活冷却** —— 虚空伤害每 tick 都在跳，靠死亡复活一次人还在虚空里。
+- 20 tick 防抖，避免传送确认前每 tick 传一次；落点会避开岩浆与实心方块；
+  拉回时按复活百分比回一点血并给一段伤害免疫。
+- 拆出 `isOutOfWorld` / `teleportToSafety` / `findSafeSpot`，跨维度走已有的
+  `TeleportUtil.forceTeleportTo`，不触发其它模组的维度黑名单门控。
+
+### ⚙️ 战斗数值开放为配置（新增 `[Combat]` 段）
+
+暴击基础倍率 / 暴击率上限 / 满蓄力阈值 / 护甲穿透上限 / 吸血上限 / 闪避率上限 / 格挡率上限 /
+伤害减免上限 / 反伤上限 / 范围吸血半径与两个比例 / 额外打击次数上限 / 范围攻击伤害比例 /
+处决血量阈值 / 无敌回血间隔 / 吸收护盾刷新间隔。**默认值一律等于改动前的硬编码值**，
+不改配置就完全维持旧手感；此前闪避 / 格挡 / 吸血 / 反伤这几个是完全不封顶的。
+
+### 🔧 其它
+
+- 「排斥」改为只推**敌对生物**（`Enemy` 或注册为 `MONSTER` 的生物）以及它们射出的弹道：
+  动物 / 村民 / NPC / 其他玩家不再被弹开，推力沿用 SWRG 护盾的公式并乘击退抗性系数。
+- 「攻击减血上限」不再给攻击者自己扣上限（兜底）。
+- 新增 Mixin 访问器 `LivingEntityAccessor`：暴露 `dropAllDeathLoot(ServerLevel, DamageSource)`
+  （1.21.1 比 1.20.1 多了 `ServerLevel` 参数）。
+- 语言文件补 `message.infinitestats.auto_revive_void`（中 / 英）。
+
+## [0.16.4] - 2026-10-15
+
+### 🌐 补齐漏翻的界面文案
+
+对照 1.20.1 逐键核查后补入：
+
+- **配置界面缺 2 个分类名** —— `config.infinitestats.category.InfiniteEnergy` /
+  `category.CreateStress`，游戏内配置界面这两页的按钮原本直接显示原始键名；
+- **配置界面缺 4 条说明** —— `InfiniteEnergy.infiniteEnergyBlocks` / `energyBlockRadius` /
+  `energyBlockInterval`、`CreateStress.infiniteStressCapacity`，同样是原始键名；
+- **`en_us.json` 缺 3 个界面键**（中文有、英文没有，切英文的玩家会看到键名）——
+  `gui.infinitestats.crafting.output_bag_tip`、`screen.infinitestats.jei.missing_materials`、
+  `screen.infinitestats.search`；
+- **`hint_inherit` 缺失** —— 新做的「重生继承」按钮需要它做悬停说明，从 1.20.1 补入。
+
+补完后 `config.infinitestats.category.` 下的键数（20）与 `Config.java` 的分节数一一对应；
+所有拼接前缀（`gui.infinitestats.furnace.` / `infuser.` / `weather.` / `message.infinitestats.infuser.` …）
+的 zh_cn / en_us 键数已逐项对齐。
+
+### 🔘 「重生继承」从右键隐藏入口改为可见按钮
+
+1.20.1 的效果过滤面板顶栏有一个可见的「重生继承: 开 / 关」按钮，本分支移植时把它降级成了
+**右键「模式」按钮**的隐藏操作（当时注释称"顶栏没位置"），结果就是没人找得到这个开关。
+
+重新量过布局：顶栏（`topPos + 4`）除了右侧 96px 的「模式」按钮，整条都是空的 ——
+按 1.20.1 的位置公式摆一个 116px 的按钮（x = 198~314）并不会和标题冲突。现在改为：
+
+- 顶栏常显按钮，开 / 关状态直接写在按钮上，不用悬停才知道；
+- 悬停给出说明（只作用于保护模式、开 / 关分别意味着什么）；
+- **右键「模式」按钮的旧入口保留**，两种方式都能切换。
+
+### 🎯 修：属性面板的悬停提示跑到面板右下角
+
+鼠标停在列表中部（例如「护甲穿透」），提示框却出现在面板右下角 —— 差得离谱。
+
+根因是坐标系用了两遍：`PanelScreen#drawPanel` 是在
+`translate(origin) + scale(uiScale)` **之内**调用 `renderPanelOverlay` 的，
+而 `StatsScreen` 又先把鼠标位置换算成屏幕坐标再交给 `GuiGraphics#renderTooltip`，
+于是被变换了两次。面板放大到 115% 时偏移尤其明显（`origin + (origin + 面板坐标 × 1.15) × 1.15`）。
+
+现在统一用**面板坐标**交给 `renderTooltip`，并把这对方形参（`screenMouseX/Y`）直接删掉 ——
+留着只会让人再踩一次。
+
+排查过其余面板：`EmcScreen` / `PortableFurnaceScreen` / `PortableInfuserScreen` /
+`FurnaceOrePriorityScreen` 等要么走原版 `Screen#renderTooltip`（屏幕坐标系），
+要么用 `EditorUi.tooltip` 自绘（面板坐标自绘），都不受这个 bug 影响。
+
+### 🎛️ 效果过滤：黑白名单拆成两份，并补上通配 / 标签
+
+**原来黑白名单共用同一份名单**（这就是"切模式后互相串名单"的根因）：`PlayerStats` 只有一个
+`buffFilterList`，`setBuffFilterList()` 直接 `clear() + addAll()` —— 在黑名单里勾了一堆效果，
+切到白名单后**同一份名单变成了「保护这些」**，切回来又变回「拦截这些」。
+
+现在拆成 `buffBlacklist` / `buffWhitelist` 两份，由 `buffActiveList()` 按当前模式取用：
+
+- **面板刷新 / 提交**（`DebuffFilterScreen`）、**网络同步**（`SyncStatsPacket` 的字段 + 编解码）、
+  **存档**、**`StatsSnapshot`**、**`copyFrom`** 全部按两份走；
+- **存档键**换成 `debuffBlacklist` / `debuffWhitelist`；旧存档的单份 `debuffFilterList`
+  会按当前模式归入对应名单（不让玩家白勾一场）；
+- 切回黑名单时**立即作废保护快照**（否则切回来时会凭空补回早已消失的效果）。
+
+**顺带补上通配 / 标签**：名单条目现在支持四种写法 ——
+
+| 写法 | 含义 |
+|---|---|
+| `minecraft:poison` | 单个效果，精确匹配 |
+| `somemod:*` | 该模组（命名空间）下的所有效果 |
+| `*` | 所有效果（慎用：正面 Buff 也会一起处理） |
+| `#forge:boss_effects` | 效果标签归属 |
+
+匹配走 `matchesAnyEntry()`：先走 `contains` 精确快速路径，只有通配 / 标签才进慢路径；
+`#标签` 的 `TagKey` 结果按条目缓存（一次运行内标签不会变）。输入框提示同步改成「ID/通配/标签」。
+
+**仍未做**：清单条目在列表里显示「覆盖 N 个效果」与行内实时状态（1.20.1 的
+`matchCount` / `liveEffect`）—— 逻辑层已支持通配，只是界面还没把命中数画出来。
+
+> **补记（同一版本内修掉）**：只把存储拆成两份还不算完 —— `DebuffFilterScreen#toggleMode()`
+> 切换模式后**没有重新读取名单**，界面上的 `filteredEffects` 里装的仍是上一个模式的勾选，
+> `sendFilterUpdate()` 还会顺手把它写进新模式，所以看起来依然"没分开"。
+> 现已补上 `reloadSelection()`：切换模式后按新模式重读名单、重建自定义条目、重筛列表，与 1.20.1 一致。
+
+### 🧹 属性面板：按 1.20.1 的顺序重排属性定义
+
+面板的显示顺序 = `StatType#registerAllStats()` 里属性的**定义顺序**。本分支每加一批属性都往
+文件尾部追加，从没回填到对应分类里 —— 结果攻击类的 `multi_shot` / `extra_strike` /
+`infinite_ammo` / `no_heat` / `no_recoil`、机动类的 `multi_jump` / `climb_speed`，
+以及 20 个功能类属性全堆在列表末尾，面板上显得东一个西一个。
+
+现在按 1.20.1 主线的顺序重排（**只挪位置，不改任何内容**）：
+
+- **攻击（21）**：`infinite_arrows` 之后补上 `infinite_ammo` / `no_heat` / `no_recoil` /
+  `multi_shot` / `extra_strike`；
+- **防御（17）**：`block_chance` / `dodge_chance` / `absorption_shield` / `auto_revive`
+  提到四个免疫之前；
+- **机动（10）**：`multi_jump` 插到 `jump_height` 之后、`climb_speed` 插到 `fly` 之后；
+- **功能（64）**：整段重组 —— `double_loot` / `item_magnet` / `xp_magnet` / `auto_deposit` /
+  `vein_miner` / `auto_smelt` / `auto_fish` / `instant_bite` / `breed_no_cooldown` /
+  `instant_grow` 归位到前半段；`night_vision` / `water_breathing` / `no_hunger` /
+  `always_eat` / `invisibility` / `keep_inventory` / `keep_xp` 归位到后半段；
+  11 个 `portable_*` 与 `enchant_limit` 集中到随身工具区。
+
+重排后两侧的属性 id 序列**逐位完全一致**（112 个 / 顺序完全一致 = `True`），
+面板顺序与 1.20.1 主线对齐。
+
+版本号 `0.16.3 → 0.16.4`。
+
 ## [0.16.3] - 2026-10-15
 
 ### ⚖️ 协议统一为 GPL-3.0-only
@@ -398,6 +793,24 @@
   `StatsScreen`（面板过滤）、`NetworkHandler`（加点服务端兜底）、
   `ModServerCommands`（feature 子命令）、`StatEventHandler`（登录时应用作者预设）。
 - **下一批**：Cloth Config 配置界面（模组列表的 Config 按钮）、界面自适应（`PanelScreen` 缩放基类 + 各面板接入）。
+
+## [0.16.4] - 2026-10-17
+
+### 🔧 NeoForge 目标版本下调：21.1.234 → 21.1.219
+
+- **改动**：`gradle.properties` 的 `neo_version` / `loader_version` → `21.1.219`；
+  `src/main/resources/META-INF/neoforge.mods.toml` 的 NeoForge 依赖下限 `[21.1.234,)` → `[21.1.219,)`。
+- **为什么可以降**：`21.1.219` 与 `21.1.234` 依赖**同一个 neoform 版本**（`1.21.1-20240808.144430`，
+  已核对 219 的 Gradle 模块元数据），Minecraft 侧产物完全一致；它需要的 FancyModLoader `4.0.42` 本机已有缓存。
+- **验证（实跑）**：`gradle compileJava` 在 **21.1.219** 下 `BUILD SUCCESSFUL`、**0 错误**、**未改动任何 Java 代码**。
+  也就是说本模组用到的全部 API 在 21.1.219 里都已存在，包括这几批新写的：
+  `Enchantment.getFullname(Holder,int)`（静态）、`ItemEnchantments.Mutable`、`DataComponents.CUSTOM_DATA` / `LORE`、
+  `BuiltInRegistries.ATTRIBUTE` + `Holder<Attribute>`、`BlockState#spawnAfterBreak`、`Registry#getTagNames`、
+  `PlayerInteractEvent#setUseBlock(TriState)`、`RenderLevelStageEvent#getPartialTick()`（`DeltaTracker`）、
+  `Attributes.BLOCK_INTERACTION_RANGE`。
+- **影响范围**：`gradle.properties`、`src/main/resources/META-INF/neoforge.mods.toml`（仅版本声明）。
+- **后续注意**：编译用的 API 面现在以 **21.1.219** 为准 —— 不要使用 21.1.220~21.1.234 之间才新增的 API，
+  否则玩家用 21.1.219 时会 `NoSuchMethodError`；新写的代码如果只在这条线的高版本能编译过，说明下限还能再确认。
 
 ## [0.10.0] - 2026-10-15
 

@@ -11,48 +11,37 @@ authors="佚名既无名"
 # 游戏内「模组列表」的图标，路径相对 jar 根目录（src/main/resources/logo.png）
 logoFile="logo.png"
 description='''
-A Terraria-like infinite stat point system for Minecraft 1.21.1 (NeoForge).
+无限加点 —— 类泰拉瑞亚的无限属性点系统（Minecraft 1.21.1 / NeoForge）。
 
-Kill mobs and gain passive XP to level up, then freely allocate attribute
-points into any stat - there is no level cap, and points can always be
-refunded and re-spent.
+击杀生物、积累被动经验即可升级，点数可自由分配到任意属性；没有等级上限，也随时可以全额退还重投。
 
-- 112 built-in stats in 4 categories: Attack / Defense / Mobility / Utility
-- Auto-discovery: attributes registered by other mods appear as an
-  "External" category and can be leveled exactly like built-in ones,
-  with Chinese translations shipped for 30+ mods so raw keys like
-  [gunsmithlib:bullet_damage] are never shown
-- Toggle abilities: Flight, Night Vision, Vein Miner, Auto Smelt, Auto Fish,
-  Eat When Full, Multi Shot, Extra Strike, Multi Jump, Climb Speed,
-  Keep Inventory, Keep XP, Trade Discount, Instant Restock, Instant Growth
-  and many more
-- Mod integration - every entry below is optional and does nothing when the
-  target mod is absent: Create (infinite stress), Superb Warfare (infinite ammo,
-  zero heat, no recoil, infinite vehicle health), Curios (accessories are kept
-  on death), Waystones (activated waystones show up in the waypoint panel),
-  Goety (infinite soul energy), Thirst Was Taken (no thirst), Cold Sweat
-  (no temperature), Iron's Spells / Ars Nouveau / Botania (infinite mana),
-  NeoForge Energy (infinite energy for FE/RF machines, items and vehicles),
-  Apotheosis (its enchant level caps are honoured), SlashBlade (in-game blade
-  editor)
-- Panels: Stats (P), HUD (H), Item Editor (O), EMC Transmutation (V),
-  Achievements (U) and Waypoints (Y)
-- Portable stations: crafting table, furnace, anvil, enchanting table,
-  stonecutter, loom, cartography table, grindstone, ender chest
-  (materials can be pulled from Refined Storage / AE2 / other storage networks)
-- Per-player feature switches (pack authors can gate content and unlock it
-  later with /infstats feature)
-- Full multiplayer support: stats, EMC and waypoints are stored per player
-  and synced to the server
-- No required dependencies. Optional: cloth_config draws the in-game config
-  screen, pinyin_search powers the pinyin search boxes - without either one
-  the corresponding feature degrades gracefully
+- 112 条内置属性，分攻击 / 防御 / 机动 / 功能四类
+- 自动发现其它模组注册的属性，作为「外部属性」分类，可像内置属性一样加点
+  （30+ 模组自带中文译名，不会显示 gunsmithlib:bullet_damage 这种原始键）
+- 开关型能力：飞行、夜视、连锁挖掘、自动冶炼、自动钓鱼、满饱食进食、
+  多重射击、额外打击、多段跳、死亡不掉落、保留经验、交易折扣、瞬间补货等
+- 可选联动（未装目标模组时自动失效）：机械动力（无限应力）、
+  卓越前线（无限弹药 / 零过热 / 无后坐力 / 载具无限耐久）、Curios（死亡保留饰品）、
+  Goety（无限灵魂能量）、NeoForge 能量（FE/RF 无限）、
+  Apotheosis（遵循其附魔等级上限）、拔刀剑（游戏内编辑器）
+- 面板：属性(P)、HUD(H)、物品编辑(O)、EMC 转化桌(V)、成就(U)、传送点(Y)，
+  以及矿透与连锁挖掘设置
+- 随身工作站：工作台、熔炉、铁砧、附魔台、切石机、织布机、制图台、砂轮、末影箱
+  （材料可从精炼存储 / AE2 等网络直接取）
+- 完整多人支持：属性、EMC、传送点均按玩家存储并同步
+- 无必需前置；cloth_config 提供图形配置界面，pinyin_search 提供拼音搜索，
+  二者缺失时对应功能自动降级
+
+A Terraria-like infinite stat point system: level up by fighting, spend points on
+any attribute, no level cap, refund at will. 112 built-in stats, auto-discovered
+attributes from other mods, dozens of toggles, portable stations, per-player
+feature switches and full multiplayer support. No required dependencies.
 '''
 
 [[dependencies.infinitestats]]
 modId="neoforge"
 type="required"
-versionRange="[21.1.234,)"
+versionRange="[21.1.219,)"
 ordering="NONE"
 side="BOTH"
 

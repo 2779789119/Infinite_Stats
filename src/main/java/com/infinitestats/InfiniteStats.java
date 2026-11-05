@@ -39,6 +39,9 @@ public final class InfiniteStats {
         // 注册事件总线
         modEventBus.addListener(this::setup);
 
+        // 配置加载 / 重载后把「属性逐项调参」灌进 StatType（不需要重启）
+        modEventBus.addListener(this::onConfigLoaded);
+
         // 注册网络载荷（RegisterPayloadHandlersEvent 属于 MOD 总线）
         modEventBus.addListener(NetworkHandler::register);
 
@@ -61,6 +64,8 @@ public final class InfiniteStats {
 
     private void setup(final FMLCommonSetupEvent event) {
         event.enqueueWork(() -> {
+            // 属性逐项调参：配置此时已加载，先灌一遍（重载事件里还会再灌）
+            StatType.applyTuningFromConfig();
             // 动态发现其他模组注册的属性
             if (Config.ENABLE_ATTRIBUTE_DISCOVERY.get()) {
                 StatType.discoverModdedAttributes();
@@ -69,5 +74,13 @@ public final class InfiniteStats {
                     + StatType.getBuiltinCount() + " built-in + "
                     + (StatType.ALL_STATS.length - StatType.getBuiltinCount()) + " external stats");
         });
+    }
+
+    /** 配置加载 / 重载：把 `[Stats]` 段里的每点数值与点数上限写回属性定义。 */
+    private void onConfigLoaded(final net.neoforged.fml.event.config.ModConfigEvent event) {
+        int changed = StatType.applyTuningFromConfig();
+        if (changed > 0) {
+            System.out.println("[InfiniteStats] 属性调参已应用：" + changed + " 项");
+        }
     }
 }

@@ -105,6 +105,18 @@ processResources {
     filteringCharset = 'UTF-8'
     inputs.property 'version', project.version
     filesMatching('META-INF/neoforge.mods.toml') { expand version: project.version }
+
+    // 兼容只认旧文件名的第三方工具（PCL 等启动器的「模组详情」读的是 META-INF/mods.toml）。
+    // NeoForge 1.20.5+ 只解析 neoforge.mods.toml，多这一份副本不会改变加载行为，
+    // 但能让启动器正确显示模组名、版本与描述，而不是只显示一个 jar 文件名。
+    doLast {
+        // Gradle 9 移除了 destinationDir，这里按约定的输出目录取（processResources 未被重定向）
+        def metaDir = project.layout.buildDirectory.dir('resources/main/META-INF').get().asFile
+        def source = new File(metaDir, 'neoforge.mods.toml')
+        if (source.exists()) {
+            new File(metaDir, 'mods.toml').bytes = source.bytes
+        }
+    }
 }
 
 tasks.configureEach {

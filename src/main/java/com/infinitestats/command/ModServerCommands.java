@@ -13,8 +13,11 @@ import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.Waypoint;
 import com.infinitestats.util.TeleportUtil;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.LongArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.registries.Registries;
@@ -90,6 +93,38 @@ public final class ModServerCommands {
                                                 .executes(ctx -> featureSet(ctx, true)))
                                         .then(Commands.literal("off")
                                                 .executes(ctx -> featureSet(ctx, false)))))
+                        // 外部属性热重扫：/infstats reload external（OP）
+                        // 改完 config/infinitestats/external_attributes.json 后执行，无需重启
+                        .then(Commands.literal("reload")
+                                .requires(source -> source.hasPermission(2))
+                                .then(Commands.literal("external")
+                                        .executes(ctx -> reloadExternal(ctx.getSource()))))
+                        // 属性点数：/infstats points [get|add|set]
+                        // 查询对所有人开放（只能查自己，OP 可查别人）；add / set 是 OP 工具，
+                        // 整合包的任务奖励也走这里（例如 /infstats points add @p 50）。
+                        .then(Commands.literal("points")
+                                .executes(ModServerCommands::pointsShowSelf)
+                                .then(Commands.literal("get")
+                                        .executes(ModServerCommands::pointsShowSelf)
+                                        .then(Commands.argument("targets", EntityArgument.players())
+                                                .executes(ModServerCommands::pointsShowTargets)))
+                                .then(Commands.literal("add")
+                                        .requires(source -> source.hasPermission(2))
+                                        // 先给「只填数量 = 给自己」的简写，再给「目标 + 数量」的完整形式。
+                                        // 两个子节点参数类型不同（long / 玩家），Brigadier 会按输入自动分流。
+                                        .then(Commands.argument("amount", LongArgumentType.longArg(
+                                                        -1_000_000_000L, 1_000_000_000L))
+                                                .executes(ModServerCommands::pointsAddSelf))
+                                        .then(Commands.argument("targets", EntityArgument.players())
+                                                .then(Commands.argument("amount", LongArgumentType.longArg(
+                                                                -1_000_000_000L, 1_000_000_000L))
+                                                        .executes(ModServerCommands::pointsAddTargets))))
+                                .then(Commands.literal("set")
+                                        .requires(source -> source.hasPermission(2))
+                                        .then(Commands.argument("targets", EntityArgument.players())
+                                                .then(Commands.argument("amount", LongArgumentType.longArg(
+                                                                0L, 1_000_000_000_000L))
+                                                        .executes(ModServerCommands::pointsSetTargets)))))
         );
     }
 
@@ -256,6 +291,150 @@ public final class ModServerCommands {
         }
         source.sendSuccess(() -> Component.literal("§a「功能开关」模式已切换为 §f" + mode.getId()), true);
         return 1;
+    }
+
+    // ========== 外部属性热重扫 ==========
+
+    /**
+     * {@code /infstats reload external}：重新读配置 + 重扫属性注册表 + 刷新在线玩家。
+     * <p>
+     * 改完 {@code config/infinitestats/external_attributes.json} 不必重启：内置属性、等级与已投入的点数
+     * 都不受影响（玩家数据按 statId 存，重扫前后 id 不变），只是外部属性列表按新配置重建，
+     * 然后给每个在线玩家重写一遍属性修饰符并把新列表同步给客户端。
+     */
+    private static int reloadExternal(CommandSourceStack source) {
+        String error = com.infinitestats.stats.ExternalAttributeConfig.getLastError();
+        int total = com.infinitestats.stats.StatType.reloadExternalAttributes();
+
+        int players = 0;
+        for (ServerPlayer player : source.getServer().getPlayerList().getPlayers()) {
+            PlayerStats stats = PlayerStatsProvider.of(player).orElse(null);
+            if (stats == null) continue;
+            com.infinitestats.handler.AttributeHandler.applyAllAttributes(player, stats);
+            NetworkHandler.syncToClient(player);
+            // 外部属性清单变了：客户端必须用新的那份覆盖自己扫的结果
+            NetworkHandler.syncExternalStats(player);
+            players++;
+        }
+
+        String message = "外部属性已重扫：" + total + " 条，已刷新 " + players + " 名在线玩家";
+        if (error != null && !error.isEmpty()) {
+            message += "（配置文件解析失败，已沿用上一次配置：" + error + "）";
+        }
+        String finalMessage = message;
+        source.sendSuccess(() -> Component.literal(finalMessage), true);
+        return total;
+    }
+
+    // ========== 属性点数（查询 / 增加 / 设置） ==========
+
+    /** /infstats points：查看自己的等级与可用点数。 */
+    private static int pointsShowSelf(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal(
+                    "控制台请用 /infstats points get <玩家> 查询指定玩家"));
+            return 0;
+        }
+        PlayerStats stats = PlayerStatsProvider.of(player).orElse(null);
+        if (stats == null) return 0;
+        sendPointsLine(source, player, stats);
+        return 1;
+    }
+
+    /** /infstats points get <玩家>：查看指定玩家的等级与可用点数。 */
+    private static int pointsShowTargets(CommandContext<CommandSourceStack> ctx)
+            throws CommandSyntaxException {
+        CommandSourceStack source = ctx.getSource();
+        Collection<? extends ServerPlayer> targets = EntityArgument.getPlayers(ctx, "targets");
+        int shown = 0;
+        for (ServerPlayer target : targets) {
+            PlayerStats stats = PlayerStatsProvider.of(target).orElse(null);
+            if (stats == null) continue;
+            sendPointsLine(source, target, stats);
+            shown++;
+        }
+        return shown;
+    }
+
+    /** /infstats points add <数量>：给自己增加（负数为扣除）。 */
+    private static int pointsAddSelf(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal(
+                    "控制台请用 /infstats points add <玩家> <数量>"));
+            return 0;
+        }
+        long amount = LongArgumentType.getLong(ctx, "amount");
+        return applyPoints(source, List.of(player), amount, false);
+    }
+
+    /** /infstats points add <玩家> <数量>：给指定玩家增加（负数为扣除）。 */
+    private static int pointsAddTargets(CommandContext<CommandSourceStack> ctx)
+            throws CommandSyntaxException {
+        CommandSourceStack source = ctx.getSource();
+        Collection<? extends ServerPlayer> targets = EntityArgument.getPlayers(ctx, "targets");
+        long amount = LongArgumentType.getLong(ctx, "amount");
+        return applyPoints(source, targets, amount, false);
+    }
+
+    /** /infstats points set <玩家> <数量>：把可用点数设成指定值。 */
+    private static int pointsSetTargets(CommandContext<CommandSourceStack> ctx)
+            throws CommandSyntaxException {
+        CommandSourceStack source = ctx.getSource();
+        Collection<? extends ServerPlayer> targets = EntityArgument.getPlayers(ctx, "targets");
+        long amount = LongArgumentType.getLong(ctx, "amount");
+        return applyPoints(source, targets, amount, true);
+    }
+
+    /**
+     * 写入可用点数并同步客户端。
+     *
+     * @param amount   增量（absolute=false）或目标值（absolute=true）
+     * @param absolute true = 直接设为该值，false = 在当前值上增减
+     */
+    private static int applyPoints(CommandSourceStack source, Collection<? extends ServerPlayer> targets,
+                                   long amount, boolean absolute) {
+        int changed = 0;
+        for (ServerPlayer target : targets) {
+            PlayerStats stats = PlayerStatsProvider.of(target).orElse(null);
+            if (stats == null) continue;
+
+            // 写入走 PlayerStats 的「额外授予」记账：差额会落进 NBT，
+            // 因此退出存档再进来（登录重算）或之后升级都不会被等级公式覆盖。
+            if (absolute) {
+                stats.setAvailablePoints(amount);
+            } else {
+                stats.addAvailablePoints(amount);
+            }
+            NetworkHandler.syncToClient(target);
+
+            final long newValue = stats.getAvailablePoints();
+            final String shown = absolute
+                    ? String.valueOf(newValue)
+                    : (amount >= 0 ? "+" + amount : String.valueOf(amount));
+            source.sendSuccess(() -> Component.literal("§a已为 §f" + target.getScoreboardName()
+                    + (absolute ? " §a设置可用点数为 §f" : " §a添加 §f")
+                    + shown + " §a点§7（当前 §f" + newValue + "§7）"), false);
+            changed++;
+        }
+        if (changed == 0) {
+            source.sendFailure(Component.literal("没有可修改的在线玩家"));
+        }
+        return changed;
+    }
+
+    private static void sendPointsLine(CommandSourceStack source, ServerPlayer player, PlayerStats stats) {
+        final String name = player.getScoreboardName();
+        final long level = stats.getLevel();
+        final long available = stats.getAvailablePoints();
+        final long allocated = stats.getTotalAllocatedPoints();
+        source.sendSuccess(() -> Component.literal("§6" + name
+                + " §7等级 §f" + level
+                + " §7· 可用点数 §a" + available
+                + " §7· 已分配 §f" + allocated), false);
     }
 
     private static int crossDim(CommandContext<CommandSourceStack> ctx) {

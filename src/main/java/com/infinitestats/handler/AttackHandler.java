@@ -1,31 +1,41 @@
 package com.infinitestats.handler;
 
 import com.infinitestats.Config;
+import com.infinitestats.mixin.LivingEntityAccessor;
 import com.infinitestats.stats.PlayerStats;
+import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatCategory;
 import com.infinitestats.stats.StatType;
-import net.minecraft.core.Holder;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.damagesource.DamageSource;
-import net.minecraft.world.damagesource.CombatRules;
 import net.minecraft.tags.DamageTypeTags;
-import net.minecraft.tags.TagKey;
+import net.minecraft.world.damagesource.CombatRules;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageType;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.MobCategory;
+import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 
-import java.util.List;
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
  * 攻击类属性处理器
- * 处理：暴击、护甲穿透、弹射物伤害、生命偷取、范围吸血、法力窃取
+ * 处理：暴击、护甲穿透、弹射物伤害、生命偷取、范围吸血、真实伤害
  */
 public class AttackHandler implements StatEffectHandler {
 
@@ -37,6 +47,19 @@ public class AttackHandler implements StatEffectHandler {
     public static final ResourceKey<DamageType> DIRECT_DAMAGE =
             ResourceKey.create(Registries.DAMAGE_TYPE, ResourceLocation.fromNamespaceAndPath("infinitestats", "direct_damage"));
 
+    /** 排查开关：-Dinfinitestats.debugTrueDamage=true */
+    private static final boolean DEBUG_TRUE_DAMAGE =
+            Boolean.getBoolean("infinitestats.debugTrueDamage");
+
+    /**
+     * 「重放死亡事件」的防重入标记。
+     * <p>
+     * 重放会再次触发所有监听器；如果某个监听器在事件里反过来调用 {@code hurt} / {@code die}，
+     * 就会形成嵌套重放。用这个标记把重放限制在单层。
+     */
+    private static final ThreadLocal<Boolean> REPLAYING_DEATH =
+            ThreadLocal.withInitial(() -> false);
+
     /**
      * 判断伤害来源是否为本模组的"直接伤害"，用于防止范围/真实伤害二次
      * 触发 StatEventHandler 的玩家攻击逻辑造成递归与无限循环。
@@ -45,14 +68,91 @@ public class AttackHandler implements StatEffectHandler {
         return src.is(DIRECT_DAMAGE);
     }
 
-    // 一次 hurt 的两个 Forge 阶段用目标与同一个 DamageSource 配对；次级攻击各自独立。
+    // 一次 hurt 的两个阶段用目标与同一个 DamageSource 配对；次级攻击各自独立。
     private static final ThreadLocal<Map<LivingEntity, Map<DamageSource, Float>>> PENDING_TRUE_DAMAGE =
+            ThreadLocal.withInitial(IdentityHashMap::new);
+
+    /**
+     * 一次 hurt 的「原始伤害」快照，由命中事件（{@code LivingIncomingDamageEvent}）的最高优先级写入。
+     * <p>
+     * 真伤基数必须取「攻击方本来该打出的伤害」：在那个时间点，{@code getAmount()} 还没有被
+     * 任何模组的限伤 / 减伤 / 易伤动过，也还没有过护甲与附魔减免。若等护甲结算之后再读，
+     * 拿到的已经是受击方防御的结算结果，真伤就会跟着被削 —— 这正是要避免的。
+     */
+    private static final ThreadLocal<Map<LivingEntity, Map<DamageSource, Float>>> RAW_HURT =
             ThreadLocal.withInitial(IdentityHashMap::new);
 
     public static float calculateTrueDamage(PlayerStats stats, float baseDamage) {
         float percent = stats.getStatValue("true_damage");
         if (baseDamage <= 0 || percent <= 0 || !Float.isFinite(baseDamage) || !Float.isFinite(percent)) return 0;
         return (float) Math.min(Float.MAX_VALUE, (double) baseDamage * percent);
+    }
+
+    /** 记录本次 hurt 的原始伤害（命中阶段）。 */
+    public static void rememberRawHurt(LivingEntity target, DamageSource source, float amount) {
+        if (!Float.isFinite(amount) || amount < 0) return;
+        RAW_HURT.get().computeIfAbsent(target, ignored -> new IdentityHashMap<>()).put(source, amount);
+    }
+
+    /** 取走本次 hurt 的原始伤害快照；没有快照时返回 0，调用方回退到事件里的数值。 */
+    public static float takeRawHurt(LivingEntity target, DamageSource source) {
+        Map<LivingEntity, Map<DamageSource, Float>> byTarget = RAW_HURT.get();
+        Map<DamageSource, Float> hits = byTarget.get(target);
+        if (hits == null) return 0;
+        Float amount = hits.remove(source);
+        if (hits.isEmpty()) byTarget.remove(target);
+        return amount == null ? 0 : amount;
+    }
+
+    /**
+     * 攻击者侧的近战面板伤害估算：面板攻击力 × 蓄力系数。
+     * <p>
+     * 为什么需要它：有些模组的「单次伤害上限 / 减伤」是在实体自己的 {@code hurt()} 覆盖里改 amount 的，
+     * 发生在任何伤害事件之前，事件里读到的数值都已经被钳过。真伤要无视这类限伤，
+     * 基数就只能自己按攻击者面板算。与 vanilla {@code Player#attack} 的口径一致，
+     * 只是不含原版暴击（暴击由本模组的暴击倍率另行处理，且事件链上会用 {@code max(快照, 面板估算)} 兜住）。
+     * <p>
+     * 1.21.1 的 {@code EnchantmentHelper#getDamageBonus} 已随附魔数据驱动化被移除，
+     * 这里只按面板攻击力估算 —— 附魔加成只会让实际伤害更高，由原始伤害快照兜住。
+     */
+    public static float estimateMeleeDamage(ServerPlayer player, LivingEntity target) {
+        float base = (float) player.getAttributeValue(Attributes.ATTACK_DAMAGE);
+        base *= player.getAttackStrengthScale(0.5f);
+        return Float.isFinite(base) && base > 0 ? base : 0;
+    }
+
+    /** 本次攻击是否算「满蓄力」（吃暴击与面板真伤估算）。 */
+    public static boolean isFullCharge(ServerPlayer player) {
+        float threshold;
+        try {
+            threshold = Config.FULL_CHARGE_THRESHOLD.get().floatValue();
+        } catch (Throwable ignored) {
+            threshold = 0.9f;
+        }
+        return player.getAttackStrengthScale(0.5f) > threshold;
+    }
+
+    /**
+     * 估算这次攻击「本来该打出的伤害」，供真伤取基数。
+     * <p>
+     * 取命中阶段的原始伤害快照（可能已被目标在 {@code hurt()} 里钳过）与攻击者面板估算的
+     * <b>较大值</b>：面板估算不会被任何限伤影响，快照则能带上原版暴击 / 附魔之外的加成。
+     * 两者取大，既不会被限伤压小，也不会因为面板估算偏低而缩水。
+     *
+     * @param amount 当前可改的伤害值（已含本模组的暴击 / 弹射物加成）
+     */
+    public static float calculateProjectedTrueDamage(ServerPlayer player, PlayerStats stats,
+                                                     LivingEntity target, DamageSource source, float amount) {
+        float raw = takeRawHurt(target, source);
+        if (!(raw > 0)) raw = amount;
+        if (source.getDirectEntity() instanceof ServerPlayer) {
+            raw = Math.max(raw, estimateMeleeDamage(player, target));
+        }
+        boolean isProjectile = source.getDirectEntity() instanceof Projectile;
+        float projected = raw
+                * calculateCritMultiplier(player, stats, isFullCharge(player))
+                * calculateProjectileBonus(stats, isProjectile);
+        return calculateTrueDamage(stats, projected);
     }
 
     public static void rememberTrueDamage(LivingEntity target, DamageSource source, float amount) {
@@ -71,6 +171,8 @@ public class AttackHandler implements StatEffectHandler {
 
     public static void clearPendingTrueDamage() {
         PENDING_TRUE_DAMAGE.remove();
+        RAW_HURT.remove();
+        REPLAYING_DEATH.remove();
     }
 
     @Override
@@ -85,7 +187,7 @@ public class AttackHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
-        // 排斥：持续推开周围的敌对生物
+        // 排斥：持续推开周围的敌对生物与它们射出的弹射物
         applyRepulsion(player, stats, tickCount);
     }
 
@@ -116,9 +218,10 @@ public class AttackHandler implements StatEffectHandler {
         if (!isFullAttack) return 1.0f;
 
         float critChance = stats.getStatValue(StatType.fromId("crit_chance"));
+        critChance = Math.min(critChance, Config.CRIT_CHANCE_CAP.get().floatValue());
         if (critChance > 0 && player.getRandom().nextFloat() < critChance) {
             float critDamage = stats.getStatValue(StatType.fromId("crit_damage"));
-            return 1.5f + critDamage;
+            return Config.CRIT_BASE_MULTIPLIER.get().floatValue() + critDamage;
         }
         return 1.0f;
     }
@@ -128,7 +231,8 @@ public class AttackHandler implements StatEffectHandler {
      */
     public static float applyArmorPenetration(PlayerStats stats, LivingEntity target,
                                              DamageSource source, float amount) {
-        float penetration = Math.min(1, Math.max(0, stats.getStatValue("armor_penetration")));
+        float cap = Config.ARMOR_PENETRATION_CAP.get().floatValue();
+        float penetration = Math.min(cap, Math.max(0, stats.getStatValue("armor_penetration")));
         if (penetration == 0 || amount <= 0 || source.is(DamageTypeTags.BYPASSES_ARMOR)) return amount;
         return compensateArmor(target, source, amount, target.getArmorValue(),
                 (float) target.getAttributeValue(Attributes.ARMOR_TOUGHNESS), penetration);
@@ -139,7 +243,7 @@ public class AttackHandler implements StatEffectHandler {
         if (armor <= 0 || penetration <= 0 || !Float.isFinite(amount)) return amount;
         float desired = CombatRules.getDamageAfterAbsorb(target, amount, source,
                 armor * (1 - Math.min(1, penetration)), toughness);
-        // LivingHurt 在原版护甲结算之前发生，反求输入以得到穿透后的实际伤害。
+        // 护甲结算发生在伤害数值改动之前，反求输入以得到穿透后的实际伤害。
         float low = amount;
         float high = Math.max(amount, desired * 5);
         for (int i = 0; i < 32; i++) {
@@ -162,11 +266,11 @@ public class AttackHandler implements StatEffectHandler {
      * 应用生命偷取效果
      *
      * @param damageAmount 结算后的实际伤害（护甲 / 减伤已扣除）。传入面板伤害会导致
-     *                     打高护甲或带限伤的目标时严重虚高，调用点见
-     *                     {@code StatEventHandler#onLivingDamage}。
+     *                     打高护甲或带限伤的目标时严重虚高。
      */
     public static void applyLifeSteal(ServerPlayer player, PlayerStats stats, float damageAmount) {
-        float lifeSteal = stats.getStatValue(StatType.fromId("life_steal"));
+        float lifeSteal = Math.min(stats.getStatValue(StatType.fromId("life_steal")),
+                Config.LIFE_STEAL_CAP.get().floatValue());
         if (lifeSteal > 0 && damageAmount > 0) {
             player.heal(damageAmount * lifeSteal);
         }
@@ -179,7 +283,7 @@ public class AttackHandler implements StatEffectHandler {
         float aoeSteal = stats.getStatValue(StatType.fromId("life_steal_aoe"));
         if (aoeSteal <= 0 || damageAmount <= 0) return;
 
-        double range = 5.0;
+        double range = Config.AOE_LIFE_STEAL_RANGE.get();
         AABB area = new AABB(
                 target.getX() - range, target.getY() - range, target.getZ() - range,
                 target.getX() + range, target.getY() + range, target.getZ() + range
@@ -190,9 +294,10 @@ public class AttackHandler implements StatEffectHandler {
 
         float totalAoeDamage = 0;
         for (LivingEntity nearbyMob : nearby) {
-            float aoeDmg = damageAmount * aoeSteal * 0.3f;
+            float aoeDmg = (float) (damageAmount * aoeSteal
+                    * Config.AOE_LIFE_STEAL_DAMAGE_RATIO.get());
             // 使用本模组"直接伤害"类型：因其 message_id 命中 isDirectDamageSource，
-            // 受击实体再次进入 onLivingHurt 时会被拦截，避免对周围实体造成 playerAttack
+            // 受击实体再次进入伤害事件时会被拦截，避免对周围实体造成 playerAttack
             // 伤害后反复重入攻击分支形成同步无限递归（最终 StackOverflow 并崩溃）。
             float before = nearbyMob.getHealth() + nearbyMob.getAbsorptionAmount();
             applyDirectDamage(player, nearbyMob, aoeDmg);
@@ -203,7 +308,7 @@ public class AttackHandler implements StatEffectHandler {
         }
 
         if (totalAoeDamage > 0) {
-            player.heal(totalAoeDamage * 0.5f);
+            player.heal((float) (totalAoeDamage * Config.AOE_LIFE_STEAL_HEAL_RATIO.get()));
         }
     }
 
@@ -212,7 +317,7 @@ public class AttackHandler implements StatEffectHandler {
      *
      * 注意：这是「独立结算」入口，内部仍走正式 hurt() 流程（为了有原版结算收尾），
      * 因此在该流程之外触发的限伤仍可能削减它。事件链上的真伤不走这里，
-     * 而是由 {@link #applyUnavoidableTrueDamage(LivingEntity, float, boolean)} 直接扣血。
+     * 而是由 {@link #calculateProjectedTrueDamage} + {@link #applyUnavoidableTrueDamage} 直接扣血。
      */
     public static void applyTrueDamage(ServerPlayer player, PlayerStats stats, float baseDamage, LivingEntity target) {
         float trueDmg = calculateTrueDamage(stats, baseDamage);
@@ -222,29 +327,202 @@ public class AttackHandler implements StatEffectHandler {
     }
 
     /**
-     * 真伤专用结算：直接扣血，完全脱离伤害管线。
+     * 真伤落地：直接扣血，完全脱离伤害管线。
+     * <p>
+     * 为什么不能叠加进伤害事件的可改数值：那样真伤仍在管线内，会被后续环节
+     * 连带削减 —— 同优先级注册顺序靠后的监听器、原版在事件之后才执行的抗性提升 / 保护附魔
+     * 与吸收（absorption）、以及任何 Mixin 到 {@code actuallyHurt} 的「单次伤害上限」实现。
+     * <p>
+     * 在 {@code LivingDamageEvent.Pre} 里扣血是安全的：原版紧接着执行
+     * {@code setHealth(getHealth() - 主伤害)}，读的是当前血量，提前扣掉的部分不会丢失；
+     * 随后的 {@code isDeadOrDying()} 判定与 {@code die(玩家伤害来源)} 照常触发。
+     * <p>
+     * 死亡处理按目标类型分开：
+     * <ul>
+     *   <li><b>非玩家目标</b>：血量扣到 0 时由本模组强制收尾死亡（{@link #forceKill}）——
+     *       掉落 / 经验 / 击杀归属走 {@code die} 的正常结算；若死亡被第三方复活类模组取消，
+     *       直接移除实体，但移除前手动补一次死亡结算，保证「真伤击杀不可被别家取消」且不掉落。</li>
+     *   <li><b>玩家目标</b>：先过本模组的闪避 / 格挡与致死预拦截（自动复活），没拦住才扣血；
+     *       扣到 0 走原版 {@code die}，玩家死亡与重生流程保持标准。</li>
+     * </ul>
      *
-     * 为什么不能叠加进 LivingDamageEvent.getAmount()：那样真伤仍在管线内，会被后续环节
-     * 连带削减——同优先级（LOWEST）注册顺序靠后的监听器、原版在 LivingDamageEvent 之后
-     * 才执行的 getDamageAfterMagicAbsorb（抗性提升 / 保护附魔）与吸收（absorption）、
-     * 以及任何 Mixin 到 actuallyHurt 的「单次伤害上限（限伤）」实现。
-     *
-     * 死亡归属不受影响：原版 actuallyHurt 结尾是 setHealth(getHealth() - f3)，读取的是
-     * 当前血量，提前扣掉的部分不会丢失；紧随其后的 getHealth() <= 0 判定照常触发
-     * 图腾检查与 die(playerSource)，掉落 / 成就 / 击杀进度归属正常。
-     *
-     * @param vanillaWillResolveDeath 主伤害是否有效（进入事件时 amount > 0）。
-     *        为 false 时原版会在 LivingHurtEvent 后提前 return，不走死亡判定，
-     *        此时最多扣到 0.01，避免出现「0 血存活」的实体。
+     * @param attacker 伤害归属玩家，不可为 null（真伤只在玩家攻击分支里产生）
      */
-    public static void applyUnavoidableTrueDamage(LivingEntity target, float amount, boolean vanillaWillResolveDeath) {
-        if (amount <= 0 || !Float.isFinite(amount) || target.isDeadOrDying()) return;
+    public static void applyUnavoidableTrueDamage(LivingEntity target, float amount, ServerPlayer attacker) {
+        if (attacker == null || amount <= 0 || !Float.isFinite(amount)) return;
+        if (target.isRemoved() || target.isDeadOrDying()) return;
         double hp = target.getHealth();
         if (hp <= 0) return;
 
-        double after = Math.max(0.0, hp - amount);
-        if (after <= 0 && !vanillaWillResolveDeath) after = 0.01;
-        target.setHealth((float) after);
+        DamageSource source = attacker.damageSources().playerAttack(attacker);
+
+        if (target instanceof ServerPlayer victim) {
+            // 闪避 / 格挡：真伤是直接扣血、完全不走 hurt() 的实现，命中层的判定接不到，
+            // 必须在这里补一次。挡住就直接返回 —— 血量一点不动，也不会调用 die。
+            byte avoid = PlayerStatsProvider.of(victim)
+                    .map(stats -> DefenseHandler.tryAvoid(victim, stats, source))
+                    .orElse(DefenseHandler.AVOID_NONE);
+            if (avoid != DefenseHandler.AVOID_NONE) return;
+
+            // 真伤穿盾：按「不扣吸收护盾」的口径判致死，否则有盾挡着也会白耗一次复活冷却。
+            boolean revived = PlayerStatsProvider.of(victim)
+                    .map(stats -> DefenseHandler.handleLethalDamage(
+                            victim, stats, (float) Math.min(hp, amount), false))
+                    .orElse(false);
+            if (revived) return;
+
+            victim.setHealth((float) Math.max(0.0, hp - amount));
+            if (victim.getHealth() <= 0.0F) {
+                victim.setLastHurtByPlayer(attacker);
+                victim.die(source);
+            }
+            return;
+        }
+
+        // 期望血量：伤害高于当前血量时直接 clamp 到 0，下面的校验必须拿这个值来比。
+        double expected = Math.max(0.0, hp - amount);
+        target.setHealth((float) expected);
+        // 校验直接扣血是否真的生效：个别模组的 Boss 会锁血 / 在 setHealth 上做手脚。
+        // 这时退回正规伤害流程 —— 本模组的 direct_damage 带 bypasses_invulnerability，
+        // 能跳过那类「在 hurt() 里钳上限」的实现。
+        // 必须与 clamp 之后的 expected 比较：直接拿 hp - amount 比时，致死伤害的右边是负数，
+        // 条件恒真 —— 每一次高伤秒杀都会多绕一遍 hurt()，在已经 0 血的目标上触发第三方
+        // 免死 / 复活 / 掉落保护逻辑，随后又被 forceKill 强杀移除，
+        // 表现就是「真伤一高，实体直接消失且没有掉落」。
+        if (target.getHealth() > expected + 1.0E-4) {
+            hurtAsFallback(target, amount, attacker);
+        }
+        if (target.getHealth() <= 0.0F) {
+            forceKill(target, attacker);
+        }
+    }
+
+    /**
+     * 直接扣血无效时的兜底：用本模组的 {@code direct_damage} 走一次 {@code hurt()}。
+     * <p>
+     * 这个调用发生在原版本次主伤害<b>之后</b>（{@code LivingDamageEvent.Pre} 里），
+     * {@code hurt()} 会把目标的 {@code invulnerableTime} 拉满 —— 主伤害已经在结算中，
+     * 不受影响；但为了不影响紧随其后的其它次级伤害，调用后立刻清零。
+     */
+    private static void hurtAsFallback(LivingEntity target, float amount, ServerPlayer attacker) {
+        if (amount <= 0 || !Float.isFinite(amount)) return;
+        var holder = attacker.level().registryAccess().registryOrThrow(Registries.DAMAGE_TYPE)
+                .getHolderOrThrow(DIRECT_DAMAGE);
+        DamageSource source = new DamageSource(holder, attacker, attacker);
+        float before = target.getHealth();
+        target.hurt(source, amount);
+        target.invulnerableTime = 0;
+        if (DEBUG_TRUE_DAMAGE) {
+            System.out.println("[InfiniteStats][TrueDamage] fallback-hurt target="
+                    + target.getName().getString()
+                    + " amount=" + amount + " hp=" + before + "->" + target.getHealth()
+                    + " max=" + target.getMaxHealth()
+                    + " class=" + target.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * 强制收尾真伤击杀：走 {@code die} 的正常结算（掉落 / 经验 / 击杀归属 / 成就）。
+     * <p>
+     * 正常走完会把姿态置为 {@code DYING}；若被第三方复活类模组取消（事件在 {@code die} 开头就被
+     * 拦下），则停在原姿态 —— 真伤击杀不接受别家拦截，仍然移除实体，但移除前必须手动补一次
+     * 死亡结算（见 {@link #settleDeathRewardsManually}），否则玩家拿不到掉落与经验。
+     */
+    private static void forceKill(LivingEntity target, ServerPlayer attacker) {
+        if (target.isRemoved() || target.getPose() == Pose.DYING) return;
+        DamageSource source = attacker.damageSources().playerAttack(attacker);
+        target.setLastHurtByPlayer(attacker);
+        target.setHealth(0.0F);
+        target.die(source);
+        // 正常死亡收尾：die 已经把掉落 / 经验 / 击杀归属都结算完，姿态也会被置为 DYING。
+        if (target.isRemoved() || target.getPose() == Pose.DYING) return;
+        // die 被第三方取消（给生物挂「复活」词条的模组、死亡拦截插件等）：原版在
+        // LivingDeathEvent 之后立刻 return，掉落 / 经验 / 击杀统计全都没结算。真伤击杀
+        // 仍然不接受别家拦截（继续移除实体），但必须先手动补一次死亡结算 ——
+        // 否则这里 remove(KILLED) 抹掉实体后，玩家什么都拿不到。
+        settleDeathRewardsManually(target, attacker, source);
+        target.remove(Entity.RemovalReason.KILLED);
+    }
+
+    /**
+     * 死亡被第三方取消时，手动补一次「原版 {@code die()} 里被跳过的那部分结算」。
+     * <p>
+     * {@code dropAllDeathLoot} 在 1.21.1 里是 {@code protected} 且多了一个 {@code ServerLevel}
+     * 参数，通过 {@link LivingEntityAccessor} 暴露；它内部已经包含 {@code dropExperience()}
+     * 与掉落事件，所以只调这一个就够。掉落是否按玩家击杀 roll 取决于 {@code lastHurtByPlayerTime}，
+     * 调用前已由 {@link #forceKill} 设好。
+     * <p>
+     * 但掉血事件覆盖不到「在 {@code LivingDeathEvent} 里直接发物品」的模组，
+     * 所以掉落之前还要补发一次死亡事件，见 {@link #replayLivingDeath}。
+     */
+    private static void settleDeathRewardsManually(LivingEntity target, ServerPlayer attacker,
+                                                   DamageSource source) {
+        // 与 die() 的顺序保持一致：先记击杀统计 / 成就，再结算掉落。
+        // 每一步单独兜异常 —— killedEntity 会触发成就 / 统计 / 第三方钩子，那里抛异常
+        // 不能把后面的掉落一起吃掉（否则又是一条「实体被移除但没掉落」的路）。
+        try {
+            if (target.level() instanceof ServerLevel serverLevel) {
+                attacker.killedEntity(serverLevel, target);
+            }
+        } catch (Throwable t) {
+            reportManualDropFailure(target, t);
+        }
+        // 第一次 die() 里的事件被取消后，排在取消者之后的监听器没收到过死亡通知；
+        // 补发一次，让「在 LivingDeathEvent 里发特殊掉落」的模组也有机会执行。
+        replayLivingDeath(target, source);
+        try {
+            if (target.level() instanceof ServerLevel serverLevel) {
+                ((LivingEntityAccessor) target).infinitestats$dropAllDeathLoot(serverLevel, source);
+            }
+        } catch (Throwable t) {
+            reportManualDropFailure(target, t);
+        }
+        if (DEBUG_TRUE_DAMAGE) {
+            System.out.println("[InfiniteStats][TrueDamage] manual-drops target="
+                    + target.getName().getString()
+                    + " class=" + target.getClass().getSimpleName()
+                    + " hp=" + target.getHealth());
+        }
+    }
+
+    /** 补结算某一步失败时的统一上报：只打日志，绝不冒泡到事件总线。 */
+    private static void reportManualDropFailure(LivingEntity target, Throwable t) {
+        System.err.println("[infinitestats] 真伤击杀补结算失败（已抑制）：target="
+                + target.getName().getString() + " class=" + target.getClass().getName());
+        t.printStackTrace();
+    }
+
+    /**
+     * 死亡已被第三方取消时，补发一次 {@code LivingDeathEvent}。
+     * <p>
+     * 为什么必须补：事件总线在事件被取消后，不再分发给 {@code receiveCanceled = false} 的监听器。
+     * 第一次 {@code die()} 里的死亡事件被复活类模组取消后，排在它后面的监听器全部被跳过 ——
+     * 手动补 {@code dropAllDeathLoot} 只能覆盖战利品表 / 装备 / 经验，覆盖不到
+     * 「在死亡事件里直接发物品」的模组。
+     * <p>
+     * <b>局限</b>：如果取消者在补发时依然取消（无冷却、无限次复活），排在它后面的监听器仍然
+     * 收不到 —— 补发只能覆盖「一次性 / 有冷却」的复活实现。<b>副作用</b>：优先级高于取消者的
+     * 监听器会执行两次。这是「真伤击杀不接受别家拦截」明确选择的代价。
+     */
+    private static void replayLivingDeath(LivingEntity target, DamageSource source) {
+        if (REPLAYING_DEATH.get()) return;
+        REPLAYING_DEATH.set(true);
+        try {
+            NeoForge.EVENT_BUS.post(new LivingDeathEvent(target, source));
+        } catch (Throwable t) {
+            System.err.println("[infinitestats] 真伤击杀补发 LivingDeathEvent 失败（已抑制）：target="
+                    + target.getName().getString() + " class=" + target.getClass().getName());
+            t.printStackTrace();
+        } finally {
+            REPLAYING_DEATH.set(false);
+        }
+        if (DEBUG_TRUE_DAMAGE) {
+            System.out.println("[InfiniteStats][TrueDamage] replay-death target="
+                    + target.getName().getString()
+                    + " class=" + target.getClass().getSimpleName()
+                    + " hp=" + target.getHealth()
+                    + " pose=" + target.getPose());
+        }
     }
 
     /**
@@ -256,8 +534,6 @@ public class AttackHandler implements StatEffectHandler {
      *    成就/进度（FTB kill 任务、L2Hostility 难度判定）不触发；
      *  - setHealth 不会设置 lastHurtByPlayerTime，而掉落物靠该字段判断是否
      *    归玩家所有，所以直接扣血杀死的怪不会掉落物品（表现为"有时不掉"）。
-     * 这里使用 bypasses_armor 的自定义伤害类型，既保留"无视护甲"语义，
-     * 又让死亡经由 die(playerSource) 正确归属玩家（掉落 + 成就都正常）。
      */
     private static void applyDirectDamage(ServerPlayer player, LivingEntity target, float amount) {
         if (amount <= 0) return;
@@ -280,11 +556,14 @@ public class AttackHandler implements StatEffectHandler {
         float reduce = stats.getStatValue(StatType.fromId("reduce_max_health"));
         if (reduce <= 0) return;
 
+        // 兜底：绝不给攻击者自己扣上限。
+        if (target == player) return;
+
         var maxHp = target.getAttribute(Attributes.MAX_HEALTH);
         if (maxHp == null) return;
 
-        // 乘算倍率折算：Minecraft 属性公式中 ADDITION 修饰符先加进基数、再被
-        // MULTIPLY_BASE / MULTIPLY_TOTAL 乘算放大。L2Hostility（莱特兰）给高等级怪
+        // 乘算倍率折算：属性公式中 ADDITION 修饰符先加进基数、再被
+        // ADD_MULTIPLIED_BASE / ADD_MULTIPLIED_TOTAL 乘算放大。L2Hostility（莱特兰）给高等级怪
         // 提血量用的正是乘算修饰符——若不折算，本模组 -1 的 ADDITION 会被放大为
         // -1 × 倍率，表现为"莱特兰等级越高、削减越多，无等级时削减正常"。
         double multBase = 1.0, multTotal = 1.0;
@@ -303,8 +582,6 @@ public class AttackHandler implements StatEffectHandler {
         double oldHealth = target.getHealth();                   // 削减上限前的当前血量
 
         // 累计本模组已削减量，用单个负修饰符体现，避免每次攻击新增一个 modifier
-        // 注意：修饰符量按"未放大"的 ADDITION 值累计，实际削减 = 量 × 倍率，
-        // 因此每刀把 actualReduce 除以倍率折算，保证任何等级下每刀恰好减 reduce 点。
         double alreadyReduced = 0.0;
         AttributeModifier existing = maxHp.getModifier(REDUCE_MAX_HEALTH_ID);
         if (existing != null) alreadyReduced = -existing.amount();
@@ -318,15 +595,22 @@ public class AttackHandler implements StatEffectHandler {
         ));
 
         // 仅下调生命上限：把当前血量夹取到新上限之下。
-        // 若原血量高于新上限，则自然跟随下降（不高于新上限）；
-        // 若原血量已低于新上限，则保持不变——本属性只负责"降低上限"，不额外造成一次伤害。
-        // 不再调用 applyDirectDamage：否则一次攻击会同时出现"主伤害 + 降上限伤害"两个伤害实例，
-        // 玩家观感为"多重伤害"（1.9.10 仅修了满血目标的双倍，未满血目标仍会多挨一次）。
+        // 不额外造成一次伤害，否则玩家观感为"多重伤害"。
         target.setHealth((float) Math.min(oldHealth, maxHp.getValue()));
     }
 
-    /** 「额外打击」的次数上限，与属性面板上的 maxLevel 保持一致。 */
+    /** 「额外打击」的次数兜底上限（配置缺失时使用）。 */
     public static final int MAX_EXTRA_STRIKES = 8;
+
+    /** 实际生效的额外打击次数上限：优先读配置，配置尚未加载时用常量兜底。 */
+    public static int maxExtraStrikes() {
+        try {
+            int value = Config.MAX_EXTRA_STRIKES.get();
+            return value >= 1 ? value : MAX_EXTRA_STRIKES;
+        } catch (Throwable ignored) {
+            return MAX_EXTRA_STRIKES;
+        }
+    }
 
     /** 「额外打击」每次打击的伤害比例（默认 0.2 = 20%），配置尚未加载时回退到 0。 */
     public static double extraStrikeDamageRatio() {
@@ -345,21 +629,18 @@ public class AttackHandler implements StatEffectHandler {
     public static int extraStrikeCount(PlayerStats stats) {
         float value = stats.getStatValue("extra_strike");
         if (!(value > 0) || !Float.isFinite(value)) return 0;
-        return Math.min(MAX_EXTRA_STRIKES, (int) value);
+        return Math.min(maxExtraStrikes(), (int) value);
     }
 
     /**
      * 额外打击：在本次伤害之外，对同一目标追加 N 次独立结算的额外属性伤害。
      * <p>
      * 为什么用 {@code setHealth} 直接扣血，而不是循环调用 {@code target.hurt(...)}：
-     * 本方法是从 {@code LivingDamageEvent.Post} 里调用的（此刻正处在目标本次受伤的
-     * {@code actuallyHurt} 内部），嵌套一次 {@code hurt()} 会让「同一次受击」走两遍死亡收尾
-     * —— 掉落物、成就、击杀进度都会重复触发。直接扣血后，死亡依旧由外层本次受伤的
-     * 原版收尾负责，击杀归属与掉落保持正常。
+     * 本方法是从伤害事件里调用的（此刻正处在目标本次受伤的结算内部），嵌套一次 {@code hurt()}
+     * 会让「同一次受击」走两遍死亡收尾 —— 掉落物、成就、击杀进度都会重复触发。
+     * 直接扣血后，死亡依旧由外层本次受伤的原版收尾负责，击杀归属与掉落保持正常。
      * <p>
      * 伤害按「次」结算，但总量固定 = 本次伤害 × 比例 × 次数，目标倒下即停止，不会因为循环而漂移。
-     *
-     * @param baseDamage 本次实际造成的伤害（已扣除护甲与减伤）
      */
     public static void applyExtraStrikes(PlayerStats stats, float baseDamage, LivingEntity target) {
         int strikes = extraStrikeCount(stats);
@@ -380,7 +661,7 @@ public class AttackHandler implements StatEffectHandler {
     }
 
     /**
-     * 应用范围攻击：对目标周围敌人造成 50% 伤害（直接削减，无递归重入）
+     * 应用范围攻击：对目标周围敌人造成配置比例伤害（直接削减，无递归重入）
      */
     public static void applyScopeAttack(ServerPlayer player, PlayerStats stats, float baseDamage, LivingEntity origin) {
         float radius = stats.getStatValue(StatType.fromId("scope_attack"));
@@ -391,47 +672,93 @@ public class AttackHandler implements StatEffectHandler {
         List<LivingEntity> nearby = player.level().getEntitiesOfClass(LivingEntity.class, area,
                 e -> e.isAlive() && e != origin && e != player && !e.isAlliedTo(player));
 
-        float dmg = baseDamage * 0.5f;
+        float dmg = (float) (baseDamage * Config.SCOPE_ATTACK_DAMAGE_RATIO.get());
         for (LivingEntity e : nearby) {
             applyDirectDamage(player, e, dmg);
         }
     }
 
     /**
-     * 应用排斥：持续将周围敌对生物推开（每 10 tick 触发一次）
+     * 应用排斥：每 tick 把周围的敌对生物（及其射出的弹射物）推开。
+     * <p>
+     * 行为对齐 ProjectE 的 SWRG 护盾：作用范围是以玩家为中心的立方体，推力沿"玩家 → 目标"方向，
+     * 大小为 {@code 距离 / (1.5 * (距离 + 0.1))} —— 距离越近推得越"实"，但整体近似一个
+     * 与距离无关的恒定推力，所以生物一进入范围就会被弹飞出去，而不是被稳稳地挡在边缘。
+     * <p>
+     * 与 ProjectE 的三处差异：
+     * 1. 半径由属性点数缩放；2. 额外乘以目标的击退抗性系数；3. 只推<b>敌对生物</b>
+     * （{@link Enemy} 或注册为 {@link MobCategory#MONSTER} 的生物），动物 / 村民 / NPC /
+     * 其他玩家不再被弹开；飞行中的弹射物只处理敌对生物射出的。
      */
     public static void applyRepulsion(ServerPlayer player, PlayerStats stats, long tickCount) {
         float radius = stats.getStatValue(StatType.fromId("repulsion"));
         if (radius <= 0) return;
-        if (tickCount % 10 != 0) return;
 
-        AABB area = player.getBoundingBox().inflate(radius, radius + 1, radius);
-        List<LivingEntity> nearby = player.level().getEntitiesOfClass(LivingEntity.class, area,
-                e -> e.isAlive() && e != player && !e.isAlliedTo(player));
+        AABB area = player.getBoundingBox().inflate(radius);
+        List<Entity> nearby = player.level().getEntitiesOfClass(Entity.class, area,
+                e -> isRepellable(e, player));
 
-        for (LivingEntity e : nearby) {
-            // 手动计算"从玩家指向实体"的水平方向并施加推力，
-            // 这样无论 knockback 的 (x,z) 语义如何，都能以玩家为中心向四周推开
-            double dx = e.getX() - player.getX();
-            double dz = e.getZ() - player.getZ();
-            double dist = Math.sqrt(dx * dx + dz * dz);
-            if (dist < 1e-5) {
-                // 实体与玩家几乎重合时，给一个随机水平方向
-                double angle = player.getRandom().nextDouble() * Math.PI * 2.0;
-                dx = Math.cos(angle);
-                dz = Math.sin(angle);
-                dist = 1.0;
-            }
-            double resist = 1.0 - e.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE);
-            if (resist > 0.0) {
-                double strength = 0.6 * resist / dist;
-                e.setDeltaMovement(
-                        e.getDeltaMovement().x + dx * strength,
-                        e.getDeltaMovement().y,
-                        e.getDeltaMovement().z + dz * strength
-                );
-                e.hasImpulse = true;
-            }
+        Vec3 center = player.position();
+        for (Entity e : nearby) {
+            repelEntity(center, e);
         }
+    }
+
+    /**
+     * 排斥的目标筛选：只推敌对生物与敌对生物射出的、尚未落地的弹射物；
+     * 旁观者、玩家自己、自己扔出去的弹射物一律不推。
+     */
+    private static boolean isRepellable(Entity entity, ServerPlayer player) {
+        if (entity.isSpectator() || entity == player) return false;
+        if (entity instanceof Projectile projectile) {
+            // 已落地的弹射物（插在地上的箭等）不动
+            if (projectile.onGround()) return false;
+            Entity owner = projectile.getOwner();
+            // 无主弹射物（发射器 / 陷阱箭等）视为敌对；玩家自己射出的不推
+            if (owner == null) return true;
+            if (player.getUUID().equals(owner.getUUID())) return false;
+            return isHostile(owner);
+        }
+        return isHostile(entity);
+    }
+
+    /**
+     * 是否为敌对生物：原版 {@link Enemy}（怪物 / 史莱姆 / 恶魂 / 幻翼等）
+     * 或注册在 {@link MobCategory#MONSTER} 分类下的模组生物。
+     */
+    private static boolean isHostile(Entity entity) {
+        if (!(entity instanceof Mob mob)) return false;
+        if (mob instanceof Enemy) return true;
+        return mob.getType().getCategory() == MobCategory.MONSTER;
+    }
+
+    /**
+     * 沿"中心 → 实体"方向施加一次推力，并保留实体原有的速度分量。
+     */
+    private static void repelEntity(Vec3 center, Entity entity) {
+        Vec3 offset = entity.position().subtract(center);
+        double distance = offset.length() + 0.1;
+        Vec3 direction;
+        if (offset.lengthSqr() < 1.0E-10) {
+            // 与玩家几乎重合时给一个随机水平方向，避免推力为零、卡在玩家身上
+            double angle = entity.level().getRandom().nextDouble() * Math.PI * 2.0;
+            direction = new Vec3(Math.cos(angle), 0.0, Math.sin(angle))
+                    .scale(1.0 / (1.5 * distance));
+        } else {
+            direction = offset.scale(1.0 / (1.5 * distance));
+        }
+
+        // 击退抗性越高被推得越少（100% 抗性 → 完全推不动）
+        double susceptibility = entity instanceof LivingEntity living
+                ? 1.0 - living.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE)
+                : 1.0;
+        if (susceptibility <= 0.0) return;
+
+        Vec3 delta = entity.getDeltaMovement();
+        entity.setDeltaMovement(
+                delta.x + direction.x * susceptibility,
+                delta.y + direction.y * susceptibility,
+                delta.z + direction.z * susceptibility);
+        entity.hasImpulse = true;
     }
 }

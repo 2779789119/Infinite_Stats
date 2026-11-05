@@ -385,11 +385,28 @@ public class StatsScreen extends PanelScreen {
         return null;
     }
 
+    /**
+     * 服务端下发新的外部属性清单后重建面板（管理员热重扫时面板可能正开着）。
+     * <p>
+     * 本地 {@code StatType} 已经被 {@code applyExternalSnapshot} 覆盖成服务端那份，
+     * 这里只需要把界面缓存（分类列表 / 分组 / 控件）重算一遍。
+     */
+    public void reloadExternalStats() {
+        buildCategoryMap();
+        rebuildAllWidgets();
+    }
+
     private void buildCategoryMap() {
         categoryStats.clear();
+        // 当前选中的分类被配置隐藏时回退到第一个可见分类，否则列表会整页空白
+        if (Config.isCategoryHidden(selectedCategory.name())) {
+            StatCategory[] visible = visibleCategories();
+            if (visible.length > 0) selectedCategory = visible[0];
+        }
         String search = searchBox != null ? searchBox.getValue().toLowerCase().trim() : "";
 
         for (StatCategory cat : StatCategory.values()) {
+            if (Config.isCategoryHidden(cat.name())) continue;
             List<StatType> list = new ArrayList<>();
             for (StatType stat : StatType.ALL_STATS) {
                 if (stat.getCategory() == cat) {
@@ -519,9 +536,24 @@ public class StatsScreen extends PanelScreen {
         if (favoritesBtn != null) addRenderableWidget(favoritesBtn);
     }
 
+    /**
+     * 当前可见的分类页签：配置 {@code GUI.hiddenCategories} 里列出的整组不显示。
+     * <p>
+     * 页签宽度、位置与数字键 1..9 的映射都必须用同一份数组，否则隐藏一个分类后
+     * 后面的页签会错位、快捷键也会切到被隐藏的那一页。
+     */
+    private static StatCategory[] visibleCategories() {
+        java.util.List<StatCategory> list = new ArrayList<>();
+        for (StatCategory cat : StatCategory.values()) {
+            if (!Config.isCategoryHidden(cat.name())) list.add(cat);
+        }
+        return list.toArray(new StatCategory[0]);
+    }
+
     private void addCategoryTabs() {
-        int tabWidth = GUI_WIDTH / StatCategory.values().length;
-        StatCategory[] cats = StatCategory.values();
+        StatCategory[] cats = visibleCategories();
+        if (cats.length == 0) return;
+        int tabWidth = GUI_WIDTH / cats.length;
         for (int i = 0; i < cats.length; i++) {
             final StatCategory cat = cats[i];
             int tx = i * tabWidth;
@@ -677,64 +709,78 @@ public class StatsScreen extends PanelScreen {
                 0x504A1A1A, 0x808A2E2E, TEXT_SECONDARY,
                 b -> { playClickSound(); resetAll(); });
         addRenderableWidget(resetAllBtn);
-
-        // 打开传送点面板
-        Button wpBtn = new PixelButton(
-                8 + 4 * 42 + 8, footerY,
-                70, 14,
-                Component.translatable("screen.infinitestats.waypoint"),
-                0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
-                b -> {
-                    playClickSound();
-                    if (minecraft != null) minecraft.setScreen(new WaypointScreen());
-                });
-        addRenderableWidget(wpBtn);
+        // 传送点入口只在页脚导航栏保留一个（此处原先还有一个「传送点管理」，重复且挤压重置按钮）
     }
 
-    /** 页脚导航行：从主面板一键打开其它独立面板。 */
+    /**
+     * 页脚导航行：从主面板一键打开其它独立面板。
+     * <p>
+     * 每个入口带一个面板 id，命中配置 {@code GUI.hiddenPanels} 的直接不画 —— 这是「面板入口隐藏」
+     * 在按钮层的落地（快捷键层见 {@code ClientEventHandler}）。入口数量会变，宽度按可用空间均分。
+     */
     private void addPanelNavButtons() {
         int navY = GUI_HEIGHT - FOOTER_H + 4;
-        // 入口统一挤进 GUI_WIDTH；随身工具收进「随身」面板，因此页脚不逐个列站点
         int gap = 2;
-        Component[] labels = {
-                Component.translatable("gui.infinitestats.nav.waypoint"),
-                Component.translatable("gui.infinitestats.nav.crossdim"),
-                Component.translatable("gui.infinitestats.nav.filter"),
-                Component.translatable("gui.infinitestats.nav.emc"),
-                Component.translatable("gui.infinitestats.nav.achievement"),
-                Component.translatable("gui.infinitestats.nav.item_editor"),
-                Component.translatable("gui.infinitestats.nav.hud"),
-                Component.translatable("gui.infinitestats.nav.portable"),
-                Component.translatable("gui.infinitestats.nav.weather"),
-                Component.translatable("gui.infinitestats.nav.chunk_loader"),
-                Component.translatable("gui.infinitestats.nav.auto_deposit"),
-                Component.translatable("gui.infinitestats.nav.vein")
-        };
-        Runnable[] actions = {
-                () -> { if (minecraft != null) minecraft.setScreen(new WaypointScreen()); },
-                () -> { if (minecraft != null) minecraft.setScreen(new CrossDimScreen()); },
-                this::openDebuffFilter,
-                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket()),
-                () -> { if (minecraft != null) minecraft.setScreen(new AchievementManagerScreen()); },
-                () -> { if (minecraft != null) minecraft.setScreen(new ItemEditorScreen()); },
-                () -> { if (minecraft != null) minecraft.setScreen(new HudEditScreen()); },
-                () -> { if (minecraft != null) minecraft.setScreen(new PortableToolsScreen()); },
-                () -> { if (minecraft != null) minecraft.setScreen(new WeatherScreen()); },
-                () -> { if (minecraft != null) minecraft.setScreen(new ChunkLoaderScreen()); },
-                () -> { if (minecraft != null) minecraft.setScreen(new AutoDepositFilterScreen()); },
-                () -> { if (minecraft != null) minecraft.setScreen(new VeinMinerSettingsScreen()); }
-        };
-        // 入口数量会变，宽度按可用空间算（否则新增入口会挤出面板）
-        int btnW = Math.max(24, (GUI_WIDTH - 8 - (labels.length - 1) * gap) / labels.length);
-        int totalW = labels.length * btnW + (labels.length - 1) * gap;
+
+        record Nav(String id, Component label, Runnable action) {}
+
+        java.util.List<Nav> all = java.util.List.of(
+                new Nav("waypoint", Component.translatable("gui.infinitestats.nav.waypoint"),
+                        () -> { if (minecraft != null) minecraft.setScreen(new WaypointScreen()); }),
+                new Nav("crossdim", Component.translatable("gui.infinitestats.nav.crossdim"),
+                        () -> { if (minecraft != null) minecraft.setScreen(new CrossDimScreen()); }),
+                new Nav("debuff_filter", Component.translatable("gui.infinitestats.nav.filter"),
+                        this::openDebuffFilter),
+                new Nav("emc", Component.translatable("gui.infinitestats.nav.emc"),
+                        () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket())),
+                new Nav("achievements", Component.translatable("gui.infinitestats.nav.achievement"),
+                        () -> { if (minecraft != null) minecraft.setScreen(new AchievementManagerScreen()); }),
+                new Nav("item_editor", Component.translatable("gui.infinitestats.nav.item_editor"),
+                        () -> { if (minecraft != null) minecraft.setScreen(new ItemEditorScreen()); }),
+                new Nav("hud", Component.translatable("gui.infinitestats.nav.hud"),
+                        () -> { if (minecraft != null) minecraft.setScreen(new HudEditScreen()); }),
+                new Nav("portable_tools", Component.translatable("gui.infinitestats.nav.portable"),
+                        () -> { if (minecraft != null) minecraft.setScreen(new PortableToolsScreen()); }),
+                new Nav("weather", Component.translatable("gui.infinitestats.nav.weather"),
+                        () -> { if (minecraft != null) minecraft.setScreen(new WeatherScreen()); }),
+                new Nav("chunk_loader", Component.translatable("gui.infinitestats.nav.chunk_loader"),
+                        () -> { if (minecraft != null) minecraft.setScreen(new ChunkLoaderScreen()); }),
+                new Nav("auto_deposit", Component.translatable("gui.infinitestats.nav.auto_deposit"),
+                        () -> { if (minecraft != null) minecraft.setScreen(new AutoDepositFilterScreen()); }),
+                new Nav("vein_miner", Component.translatable("gui.infinitestats.nav.vein"),
+                        () -> { if (minecraft != null) minecraft.setScreen(new VeinMinerSettingsScreen()); }),
+                new Nav("ore_vision", Component.translatable("gui.infinitestats.nav.ore_vision"),
+                        this::openOreVision)
+        );
+
+        java.util.List<Nav> navs = new java.util.ArrayList<>();
+        for (Nav nav : all) {
+            if (!com.infinitestats.Config.isPanelHidden(nav.id())) navs.add(nav);
+        }
+        if (navs.isEmpty()) return;
+
+        int btnW = Math.max(24, (GUI_WIDTH - 8 - (navs.size() - 1) * gap) / navs.size());
+        int totalW = navs.size() * btnW + (navs.size() - 1) * gap;
         int startX = (GUI_WIDTH - totalW) / 2;
-        for (int i = 0; i < labels.length; i++) {
-            final int idx = i;
+        for (int i = 0; i < navs.size(); i++) {
+            Nav nav = navs.get(i);
             Button btn = new PixelButton(startX + i * (btnW + gap), navY, btnW, 16,
-                    labels[i], 0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
-                    b -> { playClickSound(); actions[idx].run(); });
+                    nav.label(), 0x503B5E8A, 0x805080B0, TEXT_SECONDARY,
+                    b -> { playClickSound(); nav.action().run(); });
             addRenderableWidget(btn);
         }
+    }
+
+    /** 打开矿透设置：未解锁时给一条提示，避免玩家以为按钮坏了。 */
+    private void openOreVision() {
+        if (minecraft == null || minecraft.player == null) return;
+        var stats = com.infinitestats.stats.PlayerStatsProvider.of(minecraft.player).orElse(null);
+        if (stats == null || !stats.isToggleActive("ore_vision")) {
+            minecraft.player.displayClientMessage(
+                    Component.translatable("message.infinitestats.ore_vision_locked"), true);
+            return;
+        }
+        minecraft.setScreen(new OreVisionSettingsScreen(this));
     }
 
     private void openDebuffFilter() {
@@ -936,8 +982,7 @@ public class StatsScreen extends PanelScreen {
     /** 浮窗画在控件之上；缩放角标由 PanelScreen 统一提供。 */
     @Override
     protected void renderPanelOverlay(GuiGraphics graphics, int panelMouseX, int panelMouseY, float partialTick) {
-        renderTooltipOverlay(graphics, panelMouseX, panelMouseY,
-                toScreenX(panelMouseX), toScreenY(panelMouseY));
+        renderTooltipOverlay(graphics, panelMouseX, panelMouseY);
     }
 
     /**
@@ -1339,8 +1384,16 @@ public class StatsScreen extends PanelScreen {
 
     // ======================== 悬停提示 ========================
 
-    private void renderTooltipOverlay(GuiGraphics g, int panelMouseX, int panelMouseY,
-                                      int screenMouseX, int screenMouseY) {
+    /**
+     * 画悬停提示。
+     * <p>
+     * 坐标一律用<b>面板坐标</b>：本方法由 {@code PanelScreen#drawPanel} 在
+     * {@code translate(origin) + scale(uiScale)} <b>之内</b>调用，而原版
+     * {@code GuiGraphics#renderTooltip} 收的就是「当前姿态下」的坐标 ——
+     * 早先这里传的是预先换算好的屏幕坐标，于是被再变换一次，
+     * 表现为「鼠标在列表中部、提示框却跑到面板右下角」。
+     */
+    private void renderTooltipOverlay(GuiGraphics g, int panelMouseX, int panelMouseY) {
         if (hoveredCardIndex < 0) return;
 
         StatType stat;
@@ -1366,7 +1419,7 @@ public class StatsScreen extends PanelScreen {
                 for (String line : lines) {
                     visualLines.add(Component.literal(line).getVisualOrderText());
                 }
-                g.renderTooltip(font, visualLines, screenMouseX, screenMouseY);
+                g.renderTooltip(font, visualLines, panelMouseX, panelMouseY);
                 return;
             }
             stat = entry.stat;
@@ -1433,7 +1486,7 @@ public class StatsScreen extends PanelScreen {
             for (String line : tooltipLines) {
                 visualLines.add(Component.literal(line).getVisualOrderText());
             }
-            g.renderTooltip(font, visualLines, screenMouseX, screenMouseY);
+            g.renderTooltip(font, visualLines, panelMouseX, panelMouseY);
         }
     }
 
@@ -1545,7 +1598,7 @@ public class StatsScreen extends PanelScreen {
         }
 
         if (keyCode >= GLFW.GLFW_KEY_1 && keyCode <= GLFW.GLFW_KEY_9) {
-            StatCategory[] cats = StatCategory.values();
+            StatCategory[] cats = visibleCategories();
             int index = keyCode - GLFW.GLFW_KEY_1;
             if (index < cats.length) {
                 selectCategory(cats[index]);
@@ -1635,6 +1688,9 @@ public class StatsScreen extends PanelScreen {
      * 直接摆到玩家面前。
      */
     private String getStatDisplayName(StatType stat) {
+        // 覆盖配置里手写的显示名优先（外部属性专用）
+        String custom = stat.getCustomDisplayName();
+        if (custom != null && !custom.isBlank()) return custom;
         String key = stat.getTranslationKey();
         String translated = Component.translatable(key).getString();
         if (!translated.equals(key)) return translated;
@@ -1654,6 +1710,9 @@ public class StatsScreen extends PanelScreen {
      * 获取属性的描述文本（优先翻译键，回退到属性注册名）
      */
     private String getStatDescription(StatType stat) {
+        // 覆盖配置里手写的说明优先（外部属性专用）
+        String custom = stat.getDescription();
+        if (custom != null && !custom.isBlank()) return "§7" + custom;
         String descKey = stat.getTranslationKey() + ".desc";
         String translated = Component.translatable(descKey).getString();
         // 如果翻译就是键本身（没找到翻译），回退到注册名

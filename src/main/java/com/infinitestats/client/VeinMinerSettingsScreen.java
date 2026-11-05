@@ -7,7 +7,6 @@ import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.VeinMinerConfig;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
@@ -24,28 +23,34 @@ import java.util.function.Supplier;
  * 所以面板上看到的数字永远是可用的（不会被服务端夹掉）。
  *
  * <h2>行怎么点</h2>
- * 每行中间是当前值，两侧是 {@code <} / {@code >}：点箭头切换选中项。
- * 开关型的行两个箭头都是「切换」，点哪边都一样；「编辑名单…」行点中间进过滤器界面。
- *
- * <h2>1.21.1 说明</h2>
- * 按本分支 {@link Screen} + {@link EditorUi} 风格实现（主线那版依赖自适应的 {@code PanelScreen} 缩放基类，
- * 属后续「界面自适应」批次），选项与默认值全部对齐主线。
+ * 每行是三段固定列：<b>名称</b> · <b>&lt; 值 &gt;</b>。
+ * 点左右箭头切档；开关型两个箭头都是「切换」；「编辑名单…」点哪个都进过滤器界面；
+ * 点中间的值区等于「下一档」。底部三个按钮（恢复默认 / 保存 / 关闭）为自绘，
+ * 与面板同一套配色 —— 不用原版 {@code Button}，避免它自带的灰底和外框把面板撑花。
  */
 public class VeinMinerSettingsScreen extends PanelScreen {
 
-    private static final int GUI_W = 340;
-    private static final int GUI_H = 306;
+    private static final int GUI_W = 360;
+    /** 14 行 × 17 = 238（48..286）+ 底部提示 + 按钮 20 + 边距。 */
+    private static final int GUI_H = 328;
 
     private static final int HEADER_H = 24;
     private static final int HINT_Y = HEADER_H + 4;
     private static final int LIST_Y = HINT_Y + 20;
-    private static final int ROW_H = 18;
-    private static final int FOOTER_Y = GUI_H - 26;
+    private static final int ROW_H = 17;
 
-    /** 行内：名称列宽 / 值区（左右箭头 + 中间值）。 */
-    private static final int NAME_W = 132;
-    private static final int VALUE_LEFT = NAME_W + 12;
-    private static final int VALUE_RIGHT = GUI_W - 12;
+    private static final int FOOTER_Y = GUI_H - 28;
+    private static final int BTN_W = 96;
+    private static final int BTN_H = 20;
+
+    /** 三段列：名称 / 左箭头 / 值区 / 右箭头。 */
+    private static final int NAME_X = 10;
+    private static final int NAME_W = 120;
+    private static final int ARROW_L_X = NAME_X + NAME_W + 6;
+    private static final int ARROW_W = 14;
+    private static final int VALUE_X = ARROW_L_X + ARROW_W + 6;
+    private static final int ARROW_R_X = GUI_W - ARROW_W - 10;
+    private static final int VALUE_W = ARROW_R_X - VALUE_X - 6;
 
     private static final int MAX_BLOCKS_STEP = 8;
     private static final int RADIUS_STEP = 1;
@@ -53,13 +58,12 @@ public class VeinMinerSettingsScreen extends PanelScreen {
     /** 一行设置项：显示值与「上一档 / 下一档」。两个操作都为 null 表示纯展示。 */
     private record Option(String label, String help, Supplier<String> value, Runnable prev, Runnable next) {}
 
-    private int leftPos;
-    private int topPos;
-
     /** 本地编辑副本；保存时才提交。 */
     private VeinMinerConfig draft = new VeinMinerConfig();
     private final List<Option> options = new ArrayList<>();
     private int hovered = -1;
+    /** 悬停的底部按钮：0 恢复默认 / 1 保存 / 2 关闭；-1 无。 */
+    private int hoveredButton = -1;
 
     public VeinMinerSettingsScreen() {
         super(Component.translatable("screen.infinitestats.vein_settings"));
@@ -84,34 +88,12 @@ public class VeinMinerSettingsScreen extends PanelScreen {
     @Override
     protected void init() {
         super.init();
-        // 面板坐标从 (0,0) 起：居中、缩放与拖动都由 PanelScreen 负责
-        leftPos = 0;
-        topPos = 0;
-
         VeinMinerConfig current = statsOrNull() == null ? null : statsOrNull().getVeinMinerConfig();
         draft.copyFrom(current == null ? new VeinMinerConfig() : current);
-
         buildOptions();
-
-        int y = topPos + FOOTER_Y;
-        addRenderableWidget(Button.builder(
-                        Component.translatable("screen.infinitestats.vein_settings.reset"),
-                        b -> {
-                            draft.resetToDefault();
-                            buildOptions();
-                        })
-                .bounds(leftPos + 8, y, 90, 20).build());
-        addRenderableWidget(Button.builder(
-                        Component.translatable("screen.infinitestats.vein_settings.save"),
-                        b -> save())
-                .bounds(leftPos + GUI_W / 2 - 45, y, 90, 20).build());
-        addRenderableWidget(Button.builder(
-                        Component.translatable("screen.infinitestats.vein_settings.close"),
-                        b -> onClose())
-                .bounds(leftPos + GUI_W - 98, y, 90, 20).build());
     }
 
-    /** 设置项（每次「恢复默认」后重建，让显示值跟着变）。 */
+    /** 设置项（每次「恢复默认」后重建；值本身是 supplier，重建只是为了保持一致）。 */
     private void buildOptions() {
         options.clear();
         options.add(new Option("match_mode",
@@ -236,46 +218,49 @@ public class VeinMinerSettingsScreen extends PanelScreen {
 
     @Override
     protected void renderPanel(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-
-        EditorUi.panel(g, leftPos, topPos, GUI_W, GUI_H);
-        EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
+        EditorUi.panel(g, 0, 0, GUI_W, GUI_H);
+        EditorUi.title(g, font, 0, 0, GUI_W, title.getString());
 
         PlayerStats stats = statsOrNull();
         boolean unlocked = stats != null && stats.isToggleActive("vein_miner");
         g.drawString(font, Component.translatable(unlocked
                         ? "screen.infinitestats.vein_settings.hint_on"
                         : "screen.infinitestats.vein_settings.hint_off").getString(),
-                leftPos + EditorUi.GAP, topPos + HINT_Y,
-                unlocked ? EditorUi.SECONDARY : EditorUi.DANGER);
-        EditorUi.dividerH(g, leftPos + 4, topPos + LIST_Y - 4, GUI_W - 8);
+                EditorUi.GAP, HINT_Y, unlocked ? EditorUi.SECONDARY : EditorUi.DANGER);
+
+        EditorUi.dividerH(g, 4, LIST_Y - 4, GUI_W - 8);
 
         hovered = -1;
-        int mx = (int) mouseX - leftPos;
-        int my = (int) mouseY - topPos;
-
         for (int i = 0; i < options.size(); i++) {
             Option option = options.get(i);
             int rowTop = LIST_Y + i * ROW_H;
-            boolean hover = mx >= 0 && mx < GUI_W && my >= rowTop && my < rowTop + ROW_H - 1;
-            if (hover) hovered = i;
+            boolean rowHover = mouseX >= 4 && mouseX < GUI_W - 4 && mouseY >= rowTop && mouseY < rowTop + ROW_H - 1;
+            if (rowHover) hovered = i;
 
-            g.fill(leftPos + 4, topPos + rowTop, leftPos + GUI_W - 4, topPos + rowTop + ROW_H - 1,
-                    hover ? EditorUi.BG_ROW_HOVER : EditorUi.BG_ROW);
-            g.drawString(font, Component.translatable(
-                            "screen.infinitestats.vein_settings." + option.label()).getString(),
-                    leftPos + 8, topPos + rowTop + 5, EditorUi.PRIMARY);
+            g.fill(4, rowTop, GUI_W - 4, rowTop + ROW_H - 1,
+                    rowHover ? EditorUi.BG_ROW_HOVER : EditorUi.BG_ROW);
 
+            // 名称列
+            String label = Component.translatable(
+                    "screen.infinitestats.vein_settings." + option.label()).getString();
+            g.drawString(font, EditorUi.ellipsize(font, label, NAME_W), NAME_X, rowTop + 4, EditorUi.PRIMARY);
+
+            // 值区（居中）：长文本先截断，绝不压到箭头
             String value = option.value().get();
+            String shown = EditorUi.ellipsize(font, value, VALUE_W);
             int valueColor = optionalDim(option) ? EditorUi.SECONDARY : EditorUi.ACCENT;
-            g.drawString(font, value, leftPos + VALUE_LEFT, topPos + rowTop + 5, valueColor);
+            g.drawCenteredString(font, shown, VALUE_X + VALUE_W / 2, rowTop + 4, valueColor);
 
+            // 左右箭头（纯动作行只有右侧）
             if (option.prev() != null) {
-                drawArrow(g, VALUE_LEFT + 76, rowTop + 1, "<", mx, my, true);
+                drawArrow(g, ARROW_L_X, rowTop + 1, "<", mouseX, mouseY);
             }
             if (option.next() != null) {
-                drawArrow(g, VALUE_RIGHT - 12, rowTop + 1, ">", mx, my, true);
+                drawArrow(g, ARROW_R_X, rowTop + 1, ">", mouseX, mouseY);
             }
         }
+
+        drawFooter(g, mouseX, mouseY);
 
         // 悬停说明
         if (hovered >= 0) {
@@ -284,12 +269,45 @@ public class VeinMinerSettingsScreen extends PanelScreen {
             lines.add("§f" + Component.translatable(
                     "screen.infinitestats.vein_settings." + option.label()).getString());
             for (String line : EditorUi.wrap(font, "§7"
-                    + Component.translatable(option.help()).getString(), 190)) {
+                    + Component.translatable(option.help()).getString(), 200)) {
                 lines.add(line);
             }
             EditorUi.tooltip(g, mouseX, mouseY, lines, EditorUi.ACCENT);
         }
+    }
 
+    /** 底部三个按钮：等宽、等间距，自绘（不用原版 Button 的灰底）。 */
+    private void drawFooter(GuiGraphics g, int mouseX, int mouseY) {
+        hoveredButton = -1;
+        int gap = (GUI_W - BTN_W * 3 - 20) / 2;
+        int x0 = 10;
+        int x1 = x0 + BTN_W + gap;
+        int x2 = x1 + BTN_W + gap;
+
+        if (drawFooterButton(g, x0, FOOTER_Y, "screen.infinitestats.vein_settings.reset",
+                EditorUi.SECONDARY, mouseX, mouseY)) hoveredButton = 0;
+        if (drawFooterButton(g, x1, FOOTER_Y, "screen.infinitestats.vein_settings.save",
+                EditorUi.ACCENT, mouseX, mouseY)) hoveredButton = 1;
+        if (drawFooterButton(g, x2, FOOTER_Y, "screen.infinitestats.vein_settings.close",
+                EditorUi.PRIMARY, mouseX, mouseY)) hoveredButton = 2;
+
+        // 底部说明：保存前不会生效
+        g.drawCenteredString(font,
+                Component.translatable("screen.infinitestats.vein_settings.footer_hint").getString(),
+                GUI_W / 2, FOOTER_Y - 13, EditorUi.SECONDARY);
+    }
+
+    /** @return 是否悬停在该按钮上 */
+    private boolean drawFooterButton(GuiGraphics g, int x, int y, String labelKey, int color,
+                                     int mouseX, int mouseY) {
+        boolean hover = mouseX >= x && mouseX < x + BTN_W && mouseY >= y && mouseY < y + BTN_H;
+        int bg = hover ? 0xFF3A3A52 : 0xFF23233A;
+        g.fill(x, y, x + BTN_W, y + BTN_H, bg);
+        g.fill(x, y, x + BTN_W, y + 1, hover ? color : 0x60FFFFFF);
+        g.fill(x, y + BTN_H - 1, x + BTN_W, y + BTN_H, hover ? color : 0x30000000);
+        g.drawCenteredString(font, Component.translatable(labelKey).getString(),
+                x + BTN_W / 2, y + (BTN_H - font.lineHeight) / 2 + 1, hover ? color : EditorUi.PRIMARY);
+        return hover;
     }
 
     /** 当前值是否处于「不生效」状态（非自定义名单模式下的名单行等）。 */
@@ -300,24 +318,42 @@ public class VeinMinerSettingsScreen extends PanelScreen {
         return false;
     }
 
-    private void drawArrow(GuiGraphics g, int x, int y, String glyph, int mx, int my, boolean active) {
-        boolean hover = active && mx >= x && mx < x + 12 && my >= y && my < y + 16;
-        g.fill(leftPos + x, topPos + y, leftPos + x + 12, topPos + y + 16,
-                hover ? 0x60FFFFFF : 0x30FFFFFF);
-        g.drawString(font, glyph, leftPos + x + 3, topPos + y + 4,
-                active ? EditorUi.PRIMARY : EditorUi.SECONDARY);
+    private void drawArrow(GuiGraphics g, int x, int y, String glyph, int mouseX, int mouseY) {
+        boolean hover = mouseX >= x && mouseX < x + ARROW_W && mouseY >= y && mouseY < y + ROW_H - 3;
+        g.fill(x, y, x + ARROW_W, y + ROW_H - 3, hover ? 0x60FFFFFF : 0x30FFFFFF);
+        g.drawCenteredString(font, glyph, x + ARROW_W / 2, y + (ROW_H - 3 - font.lineHeight) / 2 + 1,
+                EditorUi.PRIMARY);
     }
 
     @Override
     protected boolean onPanelClick(int mouseX, int mouseY, int button) {
-        int mx = mouseX - leftPos;
-        int my = mouseY - topPos;
-        if (mx >= 0 && mx < GUI_W && my >= LIST_Y && my < LIST_Y + options.size() * ROW_H) {
-            int index = (my - LIST_Y) / ROW_H;
+        // 底部按钮优先
+        int gap = (GUI_W - BTN_W * 3 - 20) / 2;
+        int x0 = 10, x1 = x0 + BTN_W + gap, x2 = x1 + BTN_W + gap;
+        if (mouseY >= FOOTER_Y && mouseY < FOOTER_Y + BTN_H) {
+            if (mouseX >= x0 && mouseX < x0 + BTN_W) {
+                draft.resetToDefault();   // 值都是 supplier，重建不是必须的，但保持一致
+                buildOptions();
+                return true;
+            }
+            if (mouseX >= x1 && mouseX < x1 + BTN_W) {
+                save();
+                return true;
+            }
+            if (mouseX >= x2 && mouseX < x2 + BTN_W) {
+                onClose();
+                return true;
+            }
+        }
+
+        if (mouseX >= 0 && mouseX < GUI_W && mouseY >= LIST_Y && mouseY < LIST_Y + options.size() * ROW_H) {
+            int index = (mouseY - LIST_Y) / ROW_H;
             if (index >= 0 && index < options.size()) {
                 Option option = options.get(index);
-                boolean onLeftArrow = option.prev() != null && mx >= VALUE_LEFT + 76 && mx < VALUE_LEFT + 88;
-                boolean onRightArrow = option.next() != null && mx >= VALUE_RIGHT - 12 && mx < VALUE_RIGHT;
+                boolean onLeftArrow = option.prev() != null
+                        && mouseX >= ARROW_L_X && mouseX < ARROW_L_X + ARROW_W;
+                boolean onRightArrow = option.next() != null
+                        && mouseX >= ARROW_R_X && mouseX < ARROW_R_X + ARROW_W;
                 if (onLeftArrow) {
                     option.prev().run();
                 } else if (onRightArrow) {
@@ -330,6 +366,6 @@ public class VeinMinerSettingsScreen extends PanelScreen {
                 return true;
             }
         }
-        return false;   // 未命中时交回基类，继续派发给控件（按钮 / 输入框）
+        return false;
     }
 }

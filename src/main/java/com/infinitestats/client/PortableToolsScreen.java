@@ -243,13 +243,41 @@ public class PortableToolsScreen extends PanelScreen {
 
     @Override
     protected boolean onPanelClick(int mouseX, int mouseY, int button) {
-        if (hoveredRow >= 0 && (button == 0 || button == 1)) {
-            Station station = STATIONS.get(hoveredRow);
-            if (button == 0) openOrUnlock(station);
-            else toggle(station);
-            return true;
-        }
-        return false;   // 未命中时交回基类，继续派发给控件
+        if (button != 0) return false;
+        int index = rowAt(mouseX, mouseY);
+        if (index < 0) return false;
+        openOrUnlock(STATIONS.get(index));
+        return true;
+    }
+
+    /**
+     * 右键：开启 / 关闭站点。
+     * <p>
+     * 必须走 {@link PanelScreen#onPanelRightClick} 而不是 {@code onPanelClick} ——
+     * 右键在基类里默认是「拖动面板」，那条分支会在分发到子类之前就 return。
+     */
+    @Override
+    protected boolean onPanelRightClick(int mouseX, int mouseY) {
+        int index = rowAt(mouseX, mouseY);
+        if (index < 0) return false;
+        toggle(STATIONS.get(index));
+        return true;
+    }
+
+    /**
+     * 鼠标所在的行号（-1 = 不在列表里）。
+     * <p>
+     * 按坐标现算而不是复用渲染时的 {@code hoveredRow}：后者是「上一帧」的快照，
+     * 鼠标刚移进某一行就点会点到上一行。
+     */
+    private int rowAt(int mouseX, int mouseY) {
+        int listX = leftPos + EditorUi.GAP;
+        int listW = GUI_W - EditorUi.GAP * 2;
+        int ly = topPos + LIST_Y;
+        if (mouseX < listX || mouseX >= listX + listW) return -1;
+        if (mouseY < ly || mouseY >= ly + ROWS * ROW_H) return -1;
+        int index = (mouseY - ly) / ROW_H;
+        return index >= 0 && index < STATIONS.size() ? index : -1;
     }
 
     @Override

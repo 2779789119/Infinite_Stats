@@ -62,7 +62,9 @@ import java.util.function.Supplier;
  */
 public final class NetworkHandler {
 
-    private static final String PROTOCOL_VERSION = "6";
+    // 8：新增 ExternalStatsSyncPacket（服务端下发外部属性清单）
+    // 7：新增 EmcForgetPacket（客户端请求遗忘已学物品）、矿透配置包
+    private static final String PROTOCOL_VERSION = "8";
     public static final SimpleChannel CHANNEL = new SimpleChannel(
             ResourceLocation.fromNamespaceAndPath(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -467,6 +469,48 @@ public final class NetworkHandler {
                 EntityPanelAttributePacket::encode,
                 EntityPanelAttributePacket::decode,
                 EntityPanelAttributePacket::handle);
+
+        // EMC 遗忘（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EmcForgetPacket.class,
+                EmcForgetPacket::encode,
+                EmcForgetPacket::decode,
+                EmcForgetPacket::handle);
+
+        // 外部属性列表下发（服务器 → 客户端，登录 / 热重扫各一次）
+        CHANNEL.registerMessage(packetId++, ExternalStatsSyncPacket.class,
+                ExternalStatsSyncPacket::encode,
+                ExternalStatsSyncPacket::decode,
+                ExternalStatsSyncPacket::handle);
+
+        // 矿透：配置下发（服务器 → 客户端）与提交（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, OreVisionConfigPacket.class,
+                OreVisionConfigPacket::encode,
+                OreVisionConfigPacket::decode,
+                OreVisionConfigPacket::handle);
+        CHANNEL.registerMessage(packetId++, UpdateOreVisionConfigPacket.class,
+                UpdateOreVisionConfigPacket::encode,
+                UpdateOreVisionConfigPacket::decode,
+                UpdateOreVisionConfigPacket::handle);
+    }
+
+    /**
+     * 下发某个玩家的矿透设置（登录、换维度、设置变更后调用）。
+     * <p>
+     * 不塞进 {@code syncToClient}：那个包在每个加点操作后都会发，而这几项设置几乎不变。
+     */
+    /**
+     * 下发服务端的外部属性清单（登录、换维度、热重扫后各一次）。
+     * <p>
+     * 客户端靠它覆盖自己扫出来的结果：两端的黑名单 / 覆盖项可能不同，必须以服务端为准。
+     */
+    public static void syncExternalStats(ServerPlayer player) {
+        CHANNEL.sendToPlayer(player,
+                new ExternalStatsSyncPacket(com.infinitestats.stats.StatType.externalSnapshot()));
+    }
+
+    public static void syncOreVisionConfig(ServerPlayer player) {
+        PlayerStatsProvider.of(player).ifPresent(stats ->
+                CHANNEL.sendToPlayer(player, new OreVisionConfigPacket(stats.getOreVisionConfig())));
     }
 
     /**

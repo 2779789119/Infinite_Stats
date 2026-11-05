@@ -3,11 +3,18 @@ package com.infinitestats.stats;
 import com.infinitestats.Config;
 import com.infinitestats.crafting.PortableBrewingData;
 import com.infinitestats.furnace.PlayerFurnaceData;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
+import net.minecraft.world.effect.MobEffect;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 玩家属性数据 - 使用 Map 存储以支持动态属性数量
@@ -20,9 +27,37 @@ public class PlayerStats {
     private long level = 1;
     private long experience = 0;
     private long availablePoints = 0;
+
+    /**
+     * 「额外授予」的点数（指令 {@code /infstats points add|set}、任务奖励等）。
+     * <p>
+     * 单独记账的原因：可用点数在升级时会按「等级 × 每级点数 − 已分配」整体重算，
+     * 直接改 {@code availablePoints} 的值会在下一次升级 / 登录重算时被抹掉（甚至会变成负数）。
+     * 把差额记在这里，重算公式变成 {@code 等级产出 + 额外授予 − 已消耗}，授予的点数就永久有效。
+     */
+    private long grantedPoints = 0;
     private long lastReviveTime = 0;
     private long reviveInvulnUntilTick = 0;
     private float shieldAbsorption = 0;
+
+    /**
+     * 上一 tick 开始时的血量快照。
+     * <p>
+     * 伤害完全绕过 {@code hurt()} 时（外部模组直接 {@code setHealth(0)}、本模组对玩家的真伤直接扣血），
+     * 事件层拿不到任何「受伤前」数值，致死闪避 / 格挡与零血兜底只能恢复到这一份快照。
+     * <b>不参与存档</b>：登录 / 重生后第一 tick 就会重新采集。
+     */
+    private float lastKnownHealth = -1;
+
+    /**
+     * 闪避 / 格挡决策缓存：同一次攻击会依次经过命中事件、伤害事件、死亡事件多层，
+     * 若每层都 roll 一次，实际触发率会变成 {@code 1-(1-p)^n}。
+     * <p>
+     * 键取「直接来源实体」（近战是攻击者本人、远程是弹射物实体），这样弹射物命中阶段与
+     * 后续伤害事件共用同一次判定。按 tick 失效：{@code avoidDecisionTick} 变化时整表清空。
+     */
+    private final Map<Object, Byte> avoidDecisions = new java.util.IdentityHashMap<>();
+    private long avoidDecisionTick = Long.MIN_VALUE;
 
     /**
      * 已移除的「魔法」分类属性 id。
@@ -72,7 +107,14 @@ public class PlayerStats {
     // buff 过滤模式：true = 黑名单（列表中的拦截），false = 白名单（列表中的绝对不拦截，其他不管）
     private boolean buffUseBlacklist = true;
     // 效果 ID 过滤列表（如 "minecraft:poison"，包含正面和负面效果）
-    private final Set<String> buffFilterList = new HashSet<>();
+    /**
+     * 黑名单（拦截名单）与白名单（保护名单）<b>各存一份</b>。
+     * <p>
+     * 早先两者共用同一个 {@code buffFilterList}：在黑名单里勾的条目，切到白名单就被当成
+     * 「保护这些」，切回来又变回「拦截这些」—— 两份名单会互相串。
+     */
+    private final Set<String> buffBlacklist = new HashSet<>();
+    private final Set<String> buffWhitelist = new HashSet<>();
 
     /**
      * 白名单（保护）模式下的「保护快照」：效果 ID → 快照。
@@ -100,6 +142,20 @@ public class PlayerStats {
 
     /** 随身酿造台：台子跟着玩家走，内容与进度随存档保存。 */
     private final PortableBrewingData brewingData = new PortableBrewingData();
+
+    // ========== 矿透个人设置 ==========
+
+    /**
+     * 「矿透」的个人设置（半径 / 描边上限 / 潜行要求 / 隐藏的矿物分组）。
+     * <p>
+     * 跟着角色存档走：多人环境下这属于「玩家自己的能力设置」，换台电脑不该丢。
+     * 服务端只做范围夹取，真正的扫描与绘制全在客户端本地完成。
+     */
+    private final OreVisionConfig oreVisionConfig = new OreVisionConfig();
+
+    public OreVisionConfig getOreVisionConfig() {
+        return oreVisionConfig;
+    }
 
     public PortableBrewingData getBrewingData() {
         return brewingData;
@@ -230,8 +286,42 @@ public class PlayerStats {
         return availablePoints;
     }
 
+    /**
+     * 把可用点数设为指定值（负数按 0 处理）。
+     * <p>
+     * 差额会记进「额外授予」，因此不只在当前生效，之后升级 / 登录重算也不会被抹掉。
+     */
     public void setAvailablePoints(long value) {
-        this.availablePoints = value;
+        this.availablePoints = Math.max(0L, value);
+        syncGrantedToAvailable();
+    }
+
+    /** 在当前可用点数上增减（差记入「额外授予」，重算后依然有效）。 */
+    public void addAvailablePoints(long delta) {
+        if (delta == 0L) return;
+        long target;
+        try {
+            target = Math.addExact(availablePoints, delta);
+        } catch (ArithmeticException overflow) {
+            target = delta > 0L ? Long.MAX_VALUE : 0L;
+        }
+        setAvailablePoints(target);
+    }
+
+    public long getGrantedPoints() {
+        return grantedPoints;
+    }
+
+    /** 让「额外授予」与当前可用点数保持一致：授予量 = 可用 + 已消耗 − 等级产出。 */
+    private void syncGrantedToAvailable() {
+        grantedPoints = availablePoints + getSpentPoints() - getBaseEarnedPoints();
+    }
+
+    /** 旧存档里可能存着历史 bug 造成的负数点数，读档 / 登录时夹回 0。 */
+    public void sanitizeAvailablePoints() {
+        if (availablePoints < 0L) {
+            setAvailablePoints(0L);
+        }
     }
 
     public long getXpForNextLevel() {
@@ -263,15 +353,23 @@ public class PlayerStats {
     }
 
     /**
-     * 根据等级和已分配点数重新计算可用点数
+     * 根据等级、已分配点数与「额外授予」重新计算可用点数
      * 正常游戏过程中不会为负，因为 addPoints / removePoints 都已禁止透支
      */
     public void recalculateAvailablePoints() {
-        long totalEarned = (level - 1) * (long) Config.POINTS_PER_LEVEL.get();
-        long totalAllocated = getTotalAllocatedPoints();
+        this.availablePoints = getBaseEarnedPoints() + grantedPoints - getSpentPoints();
+    }
+
+    /** 等级带来的点数产出（不含「额外授予」）。 */
+    private long getBaseEarnedPoints() {
+        return Math.max(0L, level - 1L) * (long) Config.POINTS_PER_LEVEL.get();
+    }
+
+    /** 已消耗的点数：已分配属性 + 随身熔炉加速 / 随身工作台倍率的升级开销。 */
+    private long getSpentPoints() {
         long upgrades = (long) furnaceData.getSpeedLevel() * Config.FURNACE_SPEED_COST.get()
                 + (getCraftingMultiplier() - 1) * Config.CRAFTING_MULTIPLIER_COST.get();
-        this.availablePoints = totalEarned - totalAllocated - upgrades;
+        return getTotalAllocatedPoints() + upgrades;
     }
 
     // ========== 复活 ==========
@@ -299,6 +397,39 @@ public class PlayerStats {
 
     public void setShieldAbsorption(float value) {
         shieldAbsorption = Math.max(0, value);
+    }
+
+    /** 上一 tick 开始时的血量快照；{@code < 0} 表示还没采集过。 */
+    public float getLastKnownHealth() {
+        return lastKnownHealth;
+    }
+
+    public void setLastKnownHealth(float value) {
+        lastKnownHealth = value;
+    }
+
+    /**
+     * 查询某次攻击在本 tick 是否已经判定过闪避 / 格挡。
+     *
+     * @return {@code null} = 还没判过（需要 roll）；否则是上一次的判定结果
+     */
+    public Byte getAvoidDecision(Object source, long tick) {
+        syncAvoidDecisionTick(tick);
+        return avoidDecisions.get(source);
+    }
+
+    /** 记录某次攻击在本 tick 的判定结果（0 = 无，1 = 闪避，2 = 格挡）。 */
+    public void putAvoidDecision(Object source, long tick, byte result) {
+        syncAvoidDecisionTick(tick);
+        avoidDecisions.put(source, result);
+    }
+
+    /** tick 变了就整表清空：既保证「一次攻击只判一次」，又不会长期持有实体引用。 */
+    private void syncAvoidDecisionTick(long tick) {
+        if (tick != avoidDecisionTick) {
+            avoidDecisionTick = tick;
+            avoidDecisions.clear();
+        }
     }
 
     // ========== 被动经验计数器 ==========
@@ -376,49 +507,65 @@ public class PlayerStats {
     }
 
     /**
-     * 设置过滤模式
+     * 设置过滤模式。
+     * <p>
+     * 切回黑名单 = 退出保护模式，保护快照立即作废（否则切回来时会凭空补回早已消失的效果）。
      */
     public void setBuffUseBlacklist(boolean blacklist) {
+        if (blacklist && !this.buffUseBlacklist) {
+            protectedSnapshots.clear();
+        }
         this.buffUseBlacklist = blacklist;
     }
 
     /**
-     * 获取过滤列表（不可变副本）
+     * 获取当前模式生效的过滤列表（不可变副本）：
+     * 黑名单模式是「要拦截的效果」，白名单模式是「要保护的效果」。
      */
     public Set<String> getBuffFilterList() {
-        return Collections.unmodifiableSet(buffFilterList);
+        return Collections.unmodifiableSet(buffActiveList());
+    }
+
+    /** 当前模式生效的名单（内部可变引用，仅本类使用）。 */
+    private Set<String> buffActiveList() {
+        return buffUseBlacklist ? buffBlacklist : buffWhitelist;
     }
 
     /**
-     * 添加效果到过滤列表
+     * 添加效果到当前模式的过滤列表
      */
     public void addBuffFilter(String effectId) {
-        buffFilterList.add(effectId);
+        buffActiveList().add(effectId);
     }
 
     /**
-     * 从过滤列表移除效果
+     * 从当前模式的过滤列表移除效果
      */
     public void removeBuffFilter(String effectId) {
-        buffFilterList.remove(effectId);
+        buffActiveList().remove(effectId);
     }
 
     /**
-     * 清空过滤列表
+     * 清空当前模式的过滤列表
      */
     public void clearBuffFilters() {
-        buffFilterList.clear();
+        buffActiveList().clear();
+        if (!buffUseBlacklist) protectedSnapshots.clear();
     }
 
     /**
-     * 设置完整过滤列表（从网络同步）
+     * 设置当前模式的过滤列表（从网络同步 / 界面提交时调用）。
+     * <p>
+     * 只覆盖当前模式对应的那一份名单，另一份保持原样 ——
+     * 黑名单切到白名单后，不会再把黑名单的条目当成白名单条目。
      */
     public void setBuffFilterList(Set<String> list, boolean useBlacklist) {
-        buffFilterList.clear();
-        buffFilterList.addAll(list);
         this.buffUseBlacklist = useBlacklist;
-        // 被取消保护的条目立即停止保护（快照里的记录一并清掉），不必等 tick 逻辑回头清理
+        Set<String> target = buffActiveList();
+        target.clear();
+        if (list != null) target.addAll(list);
         if (!buffUseBlacklist) {
+            // 被取消保护的条目立即停止保护（通配 / 标签同样按匹配结果判定），不必等 tick 逻辑回头清理
             protectedSnapshots.keySet().removeIf(id -> !isProtectedEffect(id));
         }
     }
@@ -434,14 +581,14 @@ public class PlayerStats {
         return !buffUseBlacklist;
     }
 
-    /** 该效果当前是否受保护（仅白名单 / 保护模式生效）。 */
+    /** 该效果当前是否受保护（仅白名单 / 保护模式生效，条目同样支持通配与标签）。 */
     public boolean isProtectedEffect(String effectId) {
-        return !buffUseBlacklist && effectId != null && buffFilterList.contains(effectId);
+        return !buffUseBlacklist && matchesAnyEntry(buffWhitelist, effectId);
     }
 
     /** 保护名单是否非空（供每 tick 的维护逻辑做零开销短路）。 */
     public boolean hasProtectedEffects() {
-        return !buffUseBlacklist && !buffFilterList.isEmpty();
+        return !buffUseBlacklist && !buffWhitelist.isEmpty();
     }
 
     /** 保护快照表：由 {@code DefenseHandler} 每 tick 采样 / 补回，见 {@link ProtectedEffect}。 */
@@ -544,19 +691,127 @@ public class PlayerStats {
     }
 
     /**
-     * 检查某个效果是否应该被拦截
+     * 检查某个效果是否应该被拦截。
+     * <p>
+     * 只有黑名单模式会拦截；白名单模式是「保护」语义，走 {@link #isProtectedEffect(String)}。
+     * 名单条目支持 {@code minecraft:poison} / {@code somemod:*} / {@code *} / {@code #标签} 四种写法。
+     *
      * @return true = 应该拦截
      */
     public boolean shouldBlockEffect(String effectId) {
-        boolean inList = buffFilterList.contains(effectId);
-        if (buffUseBlacklist) {
-            // 黑名单模式：列表中的就是要拦截的
-            // 空列表 = 没有要拦截的 = 全放行
-            return inList;
-        } else {
-            // 白名单模式：列表中的绝对不拦截，其他的不管（不处理）
+        if (!buffUseBlacklist) {
+            // 白名单（保护）模式：不拦截任何效果
             return false;
         }
+        // 黑名单模式：名单中的就是要拦截的；空列表 = 没有要拦截的 = 全放行
+        return matchesAnyEntry(buffBlacklist, effectId);
+    }
+
+    /**
+     * 黑名单模式下是否真的有要拦截的条目。
+     * <p>
+     * 每 tick 的清扫先用它做一次零开销短路：绝大多数玩家名单是空的，
+     * 不必每 tick 复制一遍效果表。
+     */
+    public boolean hasBlockingEffects() {
+        return buffUseBlacklist && !buffBlacklist.isEmpty();
+    }
+
+    // ========== 名单条目匹配（ID / 通配 / 标签） ==========
+
+    /** {@code #标签} 条目的 {@link TagKey} 解析缓存（标签在一次游戏运行内不会变）。 */
+    private static final Map<String, TagKey<MobEffect>> EFFECT_TAG_CACHE = new ConcurrentHashMap<>();
+
+    /**
+     * 单个名单条目是否命中某个效果。
+     * <p>
+     * 条目写法（黑名单 / 白名单通用）：
+     * <ul>
+     *   <li>{@code minecraft:poison} —— 单个效果 ID，精确匹配；</li>
+     *   <li>{@code somemod:*} —— 该命名空间（整个模组）的所有效果；</li>
+     *   <li>{@code *} —— 所有效果（慎用：会连正面 Buff 一起处理）；</li>
+     *   <li>{@code #forge:effect_tag} —— 效果标签归属，如 {@code #forge:boss_effects}。</li>
+     * </ul>
+     *
+     * @param pattern  名单条目（调用方需已规范化：小写、带命名空间）
+     * @param effectId 效果 ID（形如 {@code minecraft:poison}）
+     */
+    public static boolean matchesFilterEntry(String pattern, String effectId) {
+        if (pattern == null || effectId == null || pattern.isEmpty()) return false;
+        if (pattern.equals(effectId)) return true;
+
+        if (pattern.startsWith("#")) {
+            return matchesEffectTag(pattern, effectId);
+        }
+        if (pattern.equals("*")) {
+            return true;
+        }
+        if (pattern.endsWith(":*")) {
+            int colon = effectId.indexOf(':');
+            return colon > 0 && effectId.regionMatches(0, pattern, 0, pattern.length() - 2)
+                    && colon == pattern.length() - 2;
+        }
+        return false;
+    }
+
+    /**
+     * 单个名单条目是否命中某个效果（供界面的「覆盖 N 个效果」与行内实时状态使用）。
+     * <p>
+     * 精确 ID 走 {@code equals}；只有通配 / 标签才进慢路径。
+     */
+    public static boolean entryMatches(String entry, String effectId) {
+        if (entry == null || effectId == null || entry.isBlank()) return false;
+        if (entry.equals(effectId)) return true;
+        if (entry.equals("*") || entry.startsWith("#") || entry.endsWith(":*")) {
+            return matchesFilterEntry(entry, effectId);
+        }
+        return false;
+    }
+
+    /**
+     * 该条目会覆盖多少个已注册效果。
+     * <p>
+     * 通配（{@code somemod:*} / {@code *}）与标签（{@code #forge:boss_effects}）在列表里只是一个字符串，
+     * 玩家看不出它到底影响多少条 —— 面板上把这个数字画出来，避免「加了一条 * 结果全被清了」的意外。
+     */
+    public static int countEffectsMatching(String entry) {
+        if (entry == null || entry.isBlank()) return 0;
+        int count = 0;
+        for (ResourceLocation id : net.minecraft.core.registries.BuiltInRegistries.MOB_EFFECT.keySet()) {
+            if (entryMatches(entry, id.toString())) count++;
+        }
+        return count;
+    }
+
+    /** 名单里是否存在命中该效果的条目（先走精确匹配的快速路径）。 */
+    private static boolean matchesAnyEntry(Set<String> patterns, String effectId) {
+        if (patterns.isEmpty() || effectId == null) return false;
+        if (patterns.contains(effectId)) return true;
+
+        for (String pattern : patterns) {
+            if (pattern == null || pattern.equals(effectId)) continue;
+            // 只有通配 / 标签才需要慢路径
+            if (pattern.equals("*") || pattern.startsWith("#") || pattern.endsWith(":*")) {
+                if (matchesFilterEntry(pattern, effectId)) return true;
+            }
+        }
+        return false;
+    }
+
+    /** {@code #标签} 归属判定（标签不存在时恒为 false）。 */
+    private static boolean matchesEffectTag(String pattern, String effectId) {
+        TagKey<MobEffect> tag = EFFECT_TAG_CACHE.computeIfAbsent(pattern, key -> {
+            ResourceLocation tagId = ResourceLocation.tryParse(key.substring(1));
+            return tagId == null ? null : TagKey.create(Registries.MOB_EFFECT, tagId);
+        });
+        if (tag == null) return false;
+
+        ResourceLocation effectRl = ResourceLocation.tryParse(effectId);
+        if (effectRl == null) return false;
+        return BuiltInRegistries.MOB_EFFECT
+                .getHolder(ResourceKey.create(Registries.MOB_EFFECT, effectRl))
+                .map(holder -> holder.is(tag))
+                .orElse(false);
     }
 
     // ========== 属性点数 ==========
@@ -908,6 +1163,7 @@ public class PlayerStats {
         tag.putLong("level", level);
         tag.putLong("experience", experience);
         tag.putLong("availablePoints", availablePoints);
+        tag.putLong("grantedPoints", grantedPoints);
         tag.putLong("lastReviveTime", lastReviveTime);
         tag.putLong("reviveInvulnUntilTick", reviveInvulnUntilTick);
         tag.putFloat("shieldAbsorption", shieldAbsorption);
@@ -933,15 +1189,10 @@ public class PlayerStats {
         }
         tag.put("providedAbilities", abilitiesList);
 
-        // 序列化 buff 过滤列表
+        // 序列化 buff 过滤名单（黑白各存一份，切模式不互相污染）
         tag.putBoolean("debuffUseBlacklist", buffUseBlacklist);
-        ListTag filterList = new ListTag();
-        for (String effectId : buffFilterList) {
-            CompoundTag fTag = new CompoundTag();
-            fTag.putString("id", effectId);
-            filterList.add(fTag);
-        }
-        tag.put("debuffFilterList", filterList);
+        tag.put("debuffBlacklist", idListToTag(buffBlacklist));
+        tag.put("debuffWhitelist", idListToTag(buffWhitelist));
 
         // 序列化自动入库过滤（白 / 黑名单各存一份，切换模式不互相污染）
         tag.putBoolean("depositUseWhitelist", autoDepositUseWhitelist);
@@ -979,6 +1230,7 @@ public class PlayerStats {
 
         // 序列化连锁挖掘个人设置
         tag.put("veinMiner", veinMinerConfig.serialize());
+        tag.put("oreVision", oreVisionConfig.serialize());
 
         // 序列化收藏列表
         ListTag favList = new ListTag();
@@ -1043,12 +1295,14 @@ public class PlayerStats {
             }
         }
         buffUseBlacklist = tag.contains("debuffUseBlacklist") ? tag.getBoolean("debuffUseBlacklist") : true;
-        buffFilterList.clear();
-        if (tag.contains("debuffFilterList")) {
-            ListTag filterList = tag.getList("debuffFilterList", Tag.TAG_COMPOUND);
-            for (int i = 0; i < filterList.size(); i++) {
-                buffFilterList.add(filterList.getCompound(i).getString("id"));
-            }
+        buffBlacklist.clear();
+        buffWhitelist.clear();
+        if (tag.contains("debuffBlacklist") || tag.contains("debuffWhitelist")) {
+            readIdList(tag, "debuffBlacklist", buffBlacklist);
+            readIdList(tag, "debuffWhitelist", buffWhitelist);
+        } else {
+            // 旧存档只有单份 debuffFilterList：按当前模式归入对应名单，不让玩家白勾一场
+            readIdList(tag, "debuffFilterList", buffUseBlacklist ? buffBlacklist : buffWhitelist);
         }
         // 旧存档没有这个键 → 默认关闭（保持原本「死亡即终止保护」的行为）
         protectAcrossDeath = tag.contains("debuffProtectAcrossDeath")
@@ -1105,6 +1359,11 @@ public class PlayerStats {
             veinMinerConfig.copyFrom(VeinMinerConfig.deserialize(tag.getCompound("veinMiner")));
         }
 
+        // 反序列化矿透个人设置（原地覆盖，保持 final 引用不变）
+        if (tag.contains("oreVision")) {
+            oreVisionConfig.copyFrom(OreVisionConfig.deserialize(tag.getCompound("oreVision")));
+        }
+
         // 反序列化收藏列表
         favorites.clear();
         if (tag.contains("favorites")) {
@@ -1132,6 +1391,15 @@ public class PlayerStats {
         defaultDisabledApplied = tag.contains("defaultDisabledApplied")
                 && tag.getBoolean("defaultDisabledApplied");
 
+        // 「额外授予」：必须在所有字段（等级 / 已分配 / 熔炉升级 / 工作台倍率）读完之后再算。
+        // 新存档直接读；旧存档没有这个键时按「当前可用点数」反推，保证已经发出去的点数不丢。
+        if (tag.contains("grantedPoints")) {
+            grantedPoints = tag.getLong("grantedPoints");
+        } else {
+            grantedPoints = availablePoints + getSpentPoints() - getBaseEarnedPoints();
+        }
+        sanitizeAvailablePoints();
+
         invalidateCache();
     }
 
@@ -1142,14 +1410,17 @@ public class PlayerStats {
         this.level = other.level;
         this.experience = other.experience;
         this.availablePoints = other.availablePoints;
+        this.grantedPoints = other.grantedPoints;
         this.lastReviveTime = other.lastReviveTime;
         this.reviveInvulnUntilTick = other.reviveInvulnUntilTick;
         this.passiveTickCounter = other.passiveTickCounter;
         this.providedAbilities.clear();
         this.providedAbilities.addAll(other.providedAbilities);
         this.buffUseBlacklist = other.buffUseBlacklist;
-        this.buffFilterList.clear();
-        this.buffFilterList.addAll(other.buffFilterList);
+        this.buffBlacklist.clear();
+        this.buffBlacklist.addAll(other.buffBlacklist);
+        this.buffWhitelist.clear();
+        this.buffWhitelist.addAll(other.buffWhitelist);
         this.protectAcrossDeath = other.protectAcrossDeath;
         // 保护快照不在这里搬：由 PlayerEvent.Clone 显式调用 inheritProtection(其他, 是否死亡)，
         // 因为「死亡重生是否继承」取决于本开关，只有克隆入口知道是不是死亡。
@@ -1168,6 +1439,7 @@ public class PlayerStats {
         this.waypoints.clear();
         this.waypoints.putAll(other.waypoints);
         this.furnaceData.copyFrom(other.furnaceData);
+        this.oreVisionConfig.copyFrom(other.oreVisionConfig);
         this.craftingMultiplier = other.craftingMultiplier;
         this.favorites.clear();
         this.favorites.addAll(other.favorites);
@@ -1186,7 +1458,8 @@ public class PlayerStats {
                 lastReviveTime, passiveTickCounter,
                 new HashMap<>(allocatedPoints),
                 buffUseBlacklist,
-                new HashSet<>(buffFilterList),
+                new HashSet<>(buffBlacklist),
+                new HashSet<>(buffWhitelist),
                 protectAcrossDeath,
                 new HashMap<>(waypoints),
                 reviveInvulnUntilTick,
@@ -1212,8 +1485,10 @@ public class PlayerStats {
         this.allocatedPoints.clear();
         this.allocatedPoints.putAll(snapshot.allocatedPoints);
         this.buffUseBlacklist = snapshot.buffUseBlacklist;
-        this.buffFilterList.clear();
-        this.buffFilterList.addAll(snapshot.buffFilterList);
+        this.buffBlacklist.clear();
+        if (snapshot.buffBlacklist != null) this.buffBlacklist.addAll(snapshot.buffBlacklist);
+        this.buffWhitelist.clear();
+        if (snapshot.buffWhitelist != null) this.buffWhitelist.addAll(snapshot.buffWhitelist);
         this.protectAcrossDeath = snapshot.protectAcrossDeath;
         this.autoDepositUseWhitelist = snapshot.autoDepositUseWhitelist;
         this.autoDepositBlacklist.clear();
@@ -1345,7 +1620,10 @@ public class PlayerStats {
         public final int passiveTickCounter;
         public final Map<String, Long> allocatedPoints;
         public final boolean buffUseBlacklist;
-        public final Set<String> buffFilterList;
+        /** 拦截名单（黑名单模式生效） */
+        public final Set<String> buffBlacklist;
+        /** 保护名单（白名单模式生效） */
+        public final Set<String> buffWhitelist;
         /** 保护模式：死亡重生是否继承保护 */
         public final boolean protectAcrossDeath;
         public final Map<String, Waypoint> waypoints;
@@ -1363,7 +1641,7 @@ public class PlayerStats {
         public StatsSnapshot(long level, long experience, long availablePoints,
                 long lastReviveTime, int passiveTickCounter,
                 Map<String, Long> allocatedPoints,
-                boolean buffUseBlacklist, Set<String> buffFilterList,
+                boolean buffUseBlacklist, Set<String> buffBlacklist, Set<String> buffWhitelist,
                 boolean protectAcrossDeath,
                 Map<String, Waypoint> waypoints, long reviveInvulnUntilTick, Set<String> favorites,
                 boolean autoDepositUseWhitelist, Set<String> autoDepositBlacklist,
@@ -1377,7 +1655,8 @@ public class PlayerStats {
             this.passiveTickCounter = passiveTickCounter;
             this.allocatedPoints = allocatedPoints;
             this.buffUseBlacklist = buffUseBlacklist;
-            this.buffFilterList = buffFilterList;
+            this.buffBlacklist = buffBlacklist;
+            this.buffWhitelist = buffWhitelist;
             this.protectAcrossDeath = protectAcrossDeath;
             this.waypoints = waypoints;
             this.reviveInvulnUntilTick = reviveInvulnUntilTick;

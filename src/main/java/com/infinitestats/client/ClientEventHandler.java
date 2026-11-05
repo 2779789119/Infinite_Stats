@@ -90,6 +90,31 @@ public final class ClientEventHandler {
         });
     }
 
+    /**
+     * 客户端效果表兜底：把「时长已经归零、却还挂在身上」的本地实例删掉。
+     * <p>
+     * 1.20.1 起（含 1.21.1）原版把 {@code LivingEntity#tickEffects} 的移除分支改成了
+     * 只在服务端执行 —— 客户端本地 duration 归零后<b>自己永远不会删</b>，只认服务端发来的
+     * {@code ClientboundRemoveMobEffectPacket}。只要有一条移除路径没发包（别的模组直接改效果表、
+     * 服务端在别处强删），客户端就会留下一个永远停在 0:00、永远显示「生效中」的死实例：
+     * 服务端其实早就没有它了，所以 {@code /effect clear}、牛奶桶、清空黑名单全都无从下手。
+     * <p>
+     * 无限时长是 {@code -1}，不会被这里误删；服务端若其实还在，后续 update / add 包会自动补回来。
+     */
+    @SubscribeEvent
+    public static void onClientPlayerTick(net.neoforged.neoforge.event.tick.PlayerTickEvent.Post event) {
+        if (!event.getEntity().level().isClientSide) return;
+        var player = event.getEntity();
+        var effects = player.getActiveEffects();
+        if (effects.isEmpty()) return;
+        for (MobEffectInstance inst : new java.util.ArrayList<>(effects)) {
+            if (inst.getEffect() == null) continue;
+            if (inst.getDuration() == 0) {
+                player.removeEffect(inst.getEffect());
+            }
+        }
+    }
+
     // ========== 按键处理 ==========
 
     @SubscribeEvent
@@ -99,11 +124,13 @@ public final class ClientEventHandler {
 
         // 打开属性面板
         while (ClientSetup.OPEN_STATS_KEY.consumeClick()) {
+            if (com.infinitestats.Config.isPanelHidden("stats")) break;
             mc.setScreen(new StatsScreen());
         }
 
         // 快速加点 — 直接打开属性面板（与 P 键相同效果）
         while (ClientSetup.QUICK_ADD_KEY.consumeClick()) {
+            if (com.infinitestats.Config.isPanelHidden("stats")) break;
             mc.setScreen(new StatsScreen());
         }
 
@@ -123,24 +150,28 @@ public final class ClientEventHandler {
         // 打开物品编辑器
         while (ClientSetup.OPEN_ITEM_EDITOR_KEY.consumeClick()) {
             if (mc.screen != null) break;
+            if (com.infinitestats.Config.isPanelHidden("item_editor")) break;
             mc.setScreen(new ItemEditorScreen());
         }
 
         // 打开 EMC 转化桌
         while (ClientSetup.OPEN_EMC_KEY.consumeClick()) {
             if (mc.screen != null) break;
+            if (com.infinitestats.Config.isPanelHidden("emc")) break;
             NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket());
         }
 
         // 打开成就管理器
         while (ClientSetup.OPEN_ACHIEVEMENTS_KEY.consumeClick()) {
             if (mc.screen != null) break;
+            if (com.infinitestats.Config.isPanelHidden("achievements")) break;
             mc.setScreen(new AchievementManagerScreen());
         }
 
         // 打开传送点面板
         while (ClientSetup.OPEN_WAYPOINT_KEY.consumeClick()) {
             if (mc.screen != null) break;
+            if (com.infinitestats.Config.isPanelHidden("waypoint")) break;
             mc.setScreen(new WaypointScreen());
         }
     }

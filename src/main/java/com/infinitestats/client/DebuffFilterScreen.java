@@ -82,6 +82,7 @@ public class DebuffFilterScreen extends PanelScreen {
             CAT_BTN_W * 4 + CAT_BTN_GAP * 3;                                // 169
 
     private static final int MODE_BTN_W = 96;
+    private static final int INHERIT_BTN_W = 116;
     private static final int CUSTOM_LABEL_W = 54;
     private static final int CUSTOM_ADD_W = 66;
 
@@ -148,6 +149,8 @@ public class DebuffFilterScreen extends PanelScreen {
     private EditBox searchBox;
     private EditBox customInputBox;
     private Button modeButton;
+    /** 「保护模式：死亡重生是否继承保护」开关（黑名单模式下无意义，但按钮常显以便发现）。 */
+    private Button inheritButton;
 
     private String searchText = "";
     private CatFilter categoryFilter = CatFilter.ALL;
@@ -155,8 +158,8 @@ public class DebuffFilterScreen extends PanelScreen {
     /**
      * 保护模式：死亡重生是否继承保护（黑名单模式下无意义）。
      * <p>
-     * 顶栏那一行已被标题与「模式」按钮占满，没有给第二个按钮留位置，所以这个开关挂在
-     * <b>「模式」按钮的右键</b>上（悬停提示里会写明），状态也在提示里显示。
+     * 顶栏在「模式」按钮左边还空着，所以这个开关做成一个独立按钮摆在那里，状态直接写在按钮上；
+     * 另外右键「模式」按钮同样能切换（保留的老入口）。
      */
     private boolean useInherit = false;
 
@@ -221,6 +224,14 @@ public class DebuffFilterScreen extends PanelScreen {
         modeButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(modeTooltip()));
         addRenderableWidget(modeButton);
 
+        // 「保护模式：重生是否继承」开关：摆在「模式」按钮左边（标题很短，不会撞上）
+        inheritButton = Button.builder(inheritLabel(), b -> toggleInherit())
+                .bounds(leftPos + GUI_W - EditorUi.GAP - MODE_BTN_W - 4 - INHERIT_BTN_W, topPos + 4,
+                        INHERIT_BTN_W, 16)
+                .build();
+        inheritButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(inheritTooltip()));
+        addRenderableWidget(inheritButton);
+
         customInputBox = new EditBox(font, leftPos + EditorUi.GAP + CUSTOM_LABEL_W,
                 topPos + CUSTOM_Y, GUI_W - CUSTOM_LABEL_W - EditorUi.GAP * 2 - CUSTOM_ADD_W - 4,
                 CUSTOM_H, Component.empty());
@@ -262,12 +273,22 @@ public class DebuffFilterScreen extends PanelScreen {
             filteredEffects.clear();
             filteredEffects.addAll(stats.getBuffFilterList());
             useInherit = stats.isProtectAcrossDeath();
-            customIds.clear();
-            for (String id : filteredEffects) {
-                ResourceLocation rl = ResourceLocation.tryParse(id);
-                if (rl == null || BuiltInRegistries.MOB_EFFECT.get(rl) == null) customIds.add(id);
-            }
+            rebuildCustomIds();
         });
+    }
+
+    /**
+     * 按当前 {@link #filteredEffects} 重建「自定义条目」集合。
+     * <p>
+     * 不在原版效果注册表里的 id 都算自定义（含 {@code somemod:*} / {@code #标签} 这类通配写法），
+     * 它们不在左侧效果列表里，得单独画出来才能取消勾选。
+     */
+    private void rebuildCustomIds() {
+        customIds.clear();
+        for (String id : filteredEffects) {
+            ResourceLocation rl = ResourceLocation.tryParse(id);
+            if (rl == null || BuiltInRegistries.MOB_EFFECT.get(rl) == null) customIds.add(id);
+        }
     }
 
     private void buildAllEffects() {
@@ -301,6 +322,26 @@ public class DebuffFilterScreen extends PanelScreen {
             if (val != null && !val.isEmpty() && !val.equals(key)) return val;
         }
         return null;
+    }
+
+    /** 是否为通配 / 标签条目（只有这类才有「覆盖 N 个效果」的意义）。 */
+    private static boolean isPatternEntry(FilterEntry entry) {
+        String id = entry.id();
+        return entry.isCustom() || id.equals("*") || id.endsWith(":*") || id.startsWith("#");
+    }
+
+    /** 该条目此刻是否正作用在本地玩家身上（列表行内实时状态）。 */
+    private static boolean isEntryLive(FilterEntry entry) {
+        var player = Minecraft.getInstance().player;
+        if (player == null) return false;
+        for (net.minecraft.world.effect.MobEffectInstance inst : player.getActiveEffects()) {
+            if (inst.getEffect() == null) continue;
+            ResourceLocation key = BuiltInRegistries.MOB_EFFECT.getKey(inst.getEffect().value());
+            if (key != null && com.infinitestats.stats.PlayerStats.entryMatches(entry.id(), key.toString())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 依据「类别筛选 + 搜索关键字」重建显示列表（搜索同时匹配效果说明）。 */
@@ -346,6 +387,8 @@ public class DebuffFilterScreen extends PanelScreen {
 
     private void toggleMode() {
         useBlacklist = !useBlacklist;
+        // 黑白名单各自独立：切到新模式后要显示该模式自己的名单，不能沿用另一边的勾选
+        reloadSelection();
         if (modeButton != null) {
             modeButton.setMessage(modeLabel());
             modeButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(modeTooltip()));
@@ -355,10 +398,29 @@ public class DebuffFilterScreen extends PanelScreen {
     }
 
     /**
+     * 按当前模式重新读取名单（切换模式后调用）。
+     * <p>
+     * 少了这一步，{@link #filteredEffects} 里装的就还是上一个模式的勾选 ——
+     * 界面上看着「黑白名单没分开」，{@link #sendFilterUpdate()} 还会顺手把它写进新模式。
+     */
+    private void reloadSelection() {
+        var player = Minecraft.getInstance().player;
+        if (player != null) {
+            PlayerStatsProvider.of(player).ifPresent(stats -> {
+                stats.setBuffUseBlacklist(useBlacklist);
+                filteredEffects.clear();
+                filteredEffects.addAll(stats.getBuffFilterList());
+                rebuildCustomIds();
+            });
+        }
+        applyFilters();
+    }
+
+    /**
      * 「模式」按钮的悬停提示：当前模式 + 切换方式；保护模式下再带上一行「重生继承」的当前状态。
      * <p>
-     * 之所以把继承开关的状态塞进这个提示里：顶栏没有给第二个按钮留位置，
-     * 继承开关挂在「模式」按钮的右键上（见 {@link #toggleInherit()}）。
+     * 继承状态同时也写在旁边的 {@link #inheritButton} 上，这里保留一份是为了让右键「模式」按钮
+     * 切换时（见 {@link #toggleInherit()}）也能就地看到反馈。
      */
     private Component modeTooltip() {
         net.minecraft.network.chat.MutableComponent text = Component.empty()
@@ -387,11 +449,32 @@ public class DebuffFilterScreen extends PanelScreen {
      */
     private void toggleInherit() {
         useInherit = !useInherit;
+        if (inheritButton != null) {
+            inheritButton.setMessage(inheritLabel());
+            inheritButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(inheritTooltip()));
+        }
         if (modeButton != null) {
             modeButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(modeTooltip()));
         }
         playClick();
         sendFilterUpdate();
+    }
+
+    /** 「重生继承」按钮上的文字：继承状态直接写在按钮上，不用悬停才知道。 */
+    private Component inheritLabel() {
+        return Component.translatable(useInherit
+                ? "screen.infinitestats.debuff_filter.inherit_on"
+                : "screen.infinitestats.debuff_filter.inherit_off");
+    }
+
+    /** 「重生继承」按钮的悬停说明：只作用于保护模式，以及开 / 关分别意味着什么。 */
+    private Component inheritTooltip() {
+        return Component.empty()
+                .append(Component.translatable(useInherit
+                        ? "screen.infinitestats.debuff_filter.inherit_on"
+                        : "screen.infinitestats.debuff_filter.inherit_off"))
+                .append(Component.literal("\n\n"))
+                .append(Component.translatable("screen.infinitestats.debuff_filter.hint_inherit"));
     }
 
     private Component modeLabel() {
@@ -574,7 +657,17 @@ public class DebuffFilterScreen extends PanelScreen {
             String idText = EditorUi.ellipsize(font, entry.id(), 140);
             int idX = x + w - font.width(idText) - 6;
 
+            // 通配 / 标签条目：把「覆盖多少个效果」画出来
+            // （玩家看不出 * 或 somemod:* 到底会影响多少条，容易一次性清掉一堆正面 Buff）
+            int covered = isPatternEntry(entry)
+                    ? com.infinitestats.stats.PlayerStats.countEffectsMatching(entry.id()) : 0;
+            // 行内实时状态：该条目此刻正作用在本地玩家身上 → 类别色条旁边加一条亮竖条（不占文本空间）
+            if (isEntryLive(entry)) {
+                g.fill(x + 2, y, x + 4, y + EditorUi.ROW_H - 2, 0xFF5BE37D);
+            }
+
             String name = entry.isCustom() ? "⚙ " + entry.name() : entry.name();
+            if (covered > 0) name = name + " §7(" + covered + ")";
             int nameMax = Math.max(20, idX - (x + 18) - 6);
             g.drawString(font, EditorUi.ellipsize(font, name, nameMax), x + 18, ty, entry.color());
             g.drawString(font, idText, idX, ty, EditorUi.SECONDARY);
@@ -638,14 +731,22 @@ public class DebuffFilterScreen extends PanelScreen {
 
     // ======================== 鼠标输入 ========================
 
+    /**
+     * 右键「模式」按钮 = 切换保护模式的「死亡重生是否继承保护」。
+     * <p>
+     * 必须覆写右键钩子：右键在基类里默认被拿去拖动面板，走 {@code onPanelClick} 收不到。
+     */
     @Override
-    protected boolean onPanelClick(int mx, int my, int button) {
-        // 右键「模式」按钮 = 切换保护模式的「死亡重生是否继承保护」
-        // （顶栏没有给第二个按钮留位置，见 useInherit 的说明）
-        if (button == 1 && modeButton != null && modeButton.isMouseOver(mx, my)) {
+    protected boolean onPanelRightClick(int mx, int my) {
+        if (modeButton != null && modeButton.isMouseOver(mx, my)) {
             toggleInherit();
             return true;
         }
+        return false;
+    }
+
+    @Override
+    protected boolean onPanelClick(int mx, int my, int button) {
         if (button == 0) {
             // 类别筛选
             for (int[] r : catBtnRects) {

@@ -688,8 +688,30 @@ public class UtilityHandler implements StatEffectHandler {
      * 计算经验获取加成
      */
     public static long applyXpGainBonus(PlayerStats stats, long baseXp) {
+        return Math.round(baseXp * xpGainMultiplier(stats));
+    }
+
+    /**
+     * 「经验加成」的实际倍率（含配置上限）。
+     * <p>
+     * 上限由 {@code Config.XP_GAIN_CAP} 控制：默认 0 = 不设上限，与原行为一致；
+     * 整合包想压制经验流时把它设成 2.0 之类的值即可。模组经验与原版经验共用同一个上限。
+     * <p>
+     * 负向加点（倍率 &lt; 1）仍然保留 —— 那是玩家主动减少自身收益，不属于需要压制的溢出。
+     */
+    public static float xpGainMultiplier(PlayerStats stats) {
         float multiplier = 1.0f + stats.getStatValue(StatType.fromId("xp_gain"));
-        return (long) (baseXp * multiplier);
+        if (!Float.isFinite(multiplier)) return 1.0f;
+        float cap;
+        try {
+            cap = Config.XP_GAIN_CAP.get().floatValue();
+        } catch (Throwable notLoaded) {
+            cap = 0f;
+        }
+        if (cap > 0f) {
+            multiplier = Math.min(multiplier, cap);
+        }
+        return multiplier;
     }
 
     /**

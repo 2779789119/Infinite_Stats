@@ -46,6 +46,164 @@ public final class Config {
     public static ModConfigSpec.BooleanValue AUTO_REVIVE_REFILL_FOOD;
     public static ModConfigSpec.BooleanValue AUTO_REVIVE_CLEAR_DEBUFFS_ONLY;
 
+    /** 在伤害结算阶段就拦下致死伤害（而不是等死亡事件）。 */
+    public static ModConfigSpec.BooleanValue AUTO_REVIVE_PREVENT_LETHAL;
+    /** 掉出世界（虚空 / 世界底部）时立刻拉回，不占用复活冷却。 */
+    public static ModConfigSpec.BooleanValue AUTO_REVIVE_VOID_ESCAPE;
+    /** 距离世界最低点下方多少格算「已掉出世界」。 */
+    public static ModConfigSpec.IntValue AUTO_REVIVE_VOID_ESCAPE_DEPTH;
+
+    // ========== 战斗结算设置 ==========
+
+    /** 暴击基础倍率（其上再叠加 crit_damage）。 */
+    public static ModConfigSpec.DoubleValue CRIT_BASE_MULTIPLIER;
+    /** 暴击率上限（1.0 = 必定暴击）。 */
+    public static ModConfigSpec.DoubleValue CRIT_CHANCE_CAP;
+    /** 「满蓄力」判定阈值。 */
+    public static ModConfigSpec.DoubleValue FULL_CHARGE_THRESHOLD;
+    /** 护甲穿透上限（比例）。 */
+    public static ModConfigSpec.DoubleValue ARMOR_PENETRATION_CAP;
+    /** 生命偷取上限（比例）。 */
+    public static ModConfigSpec.DoubleValue LIFE_STEAL_CAP;
+    /** 闪避率上限。 */
+    public static ModConfigSpec.DoubleValue DODGE_CHANCE_CAP;
+    /** 格挡率上限。 */
+    public static ModConfigSpec.DoubleValue BLOCK_CHANCE_CAP;
+    /** 伤害减免上限。 */
+    public static ModConfigSpec.DoubleValue DAMAGE_REDUCTION_CAP;
+    /** 反伤倍率上限。 */
+    public static ModConfigSpec.DoubleValue DAMAGE_REFLECTION_CAP;
+    /** 范围吸血的搜索半径。 */
+    public static ModConfigSpec.DoubleValue AOE_LIFE_STEAL_RANGE;
+    /** 范围吸血对周围目标造成的伤害比例。 */
+    public static ModConfigSpec.DoubleValue AOE_LIFE_STEAL_DAMAGE_RATIO;
+    /** 范围吸血「实际造成伤害」回流为治疗的比例。 */
+    public static ModConfigSpec.DoubleValue AOE_LIFE_STEAL_HEAL_RATIO;
+    /** 「额外打击」最大次数。 */
+    public static ModConfigSpec.IntValue MAX_EXTRA_STRIKES;
+    /** 「范围攻击」伤害比例。 */
+    public static ModConfigSpec.DoubleValue SCOPE_ATTACK_DAMAGE_RATIO;
+    /** 「处决」触发血量比例。 */
+    public static ModConfigSpec.DoubleValue EXECUTE_THRESHOLD;
+    /** 「无敌」回满血的执行间隔（tick）。 */
+    public static ModConfigSpec.IntValue INVINCIBILITY_HEAL_INTERVAL;
+    /** 吸收护盾刷新间隔（tick）。 */
+    public static ModConfigSpec.IntValue ABSORPTION_REFRESH_INTERVAL;
+    /** 双倍掉落概率上限。 */
+    public static ModConfigSpec.DoubleValue DOUBLE_LOOT_CAP;
+    /** 村民交易折扣上限。 */
+    public static ModConfigSpec.DoubleValue VILLAGER_DISCOUNT_CAP;
+    /** 物品冷却缩减上限。 */
+    public static ModConfigSpec.DoubleValue COOLDOWN_REDUCTION_CAP;
+    /** 「自动修复」每级每秒修复的耐久点。 */
+    public static ModConfigSpec.DoubleValue AUTO_REPAIR_PER_LEVEL;
+    /** 弹射物追踪的视野锥余弦阈值。 */
+    public static ModConfigSpec.DoubleValue PROJECTILE_TRACKING_CONE_COS;
+    /** 「经验加成」总倍率上限（0 = 不设上限）。 */
+    public static ModConfigSpec.DoubleValue XP_GAIN_CAP;
+    /** 「经验加成」是否同时放大原版经验。 */
+    public static ModConfigSpec.BooleanValue XP_GAIN_AFFECT_VANILLA;
+
+    // ========== 面板入口隐藏 ==========
+
+    /**
+     * 要隐藏的面板入口（面板 id 列表）。整合包作者用它把不想给玩家看到的界面藏起来。
+     * <p>
+     * 可用 id：{@code stats} / {@code emc} / {@code item_editor} / {@code achievements} /
+     * {@code waypoint} / {@code ore_vision} / {@code portable_tools} / {@code weather} /
+     * {@code chunk_loader} / {@code vein_miner} / {@code entity_panel} / {@code debuff_filter}。
+     * 隐藏后对应的快捷键不再生效（已经打开的界面不受影响）。
+     */
+    public static ModConfigSpec.ConfigValue<List<? extends String>> HIDDEN_PANELS;
+
+    /**
+     * 要整组隐藏的属性分类（分类枚举名，如 {@code ATTACK} / {@code EXTERNAL}）。
+     * <p>
+     * 与 {@link #HIDDEN_PANELS} 不同：这里隐藏的是属性面板内部的**分类页签**，
+     * 整合包可以据此砍掉不需要的分类（例如纯生存包去掉 {@code EXTERNAL}），
+     * 玩家既看不到页签，也用数字键切不过去。
+     */
+    public static ModConfigSpec.ConfigValue<List<? extends String>> HIDDEN_CATEGORIES;
+
+    /** 某个分类页签是否被配置隐藏（大小写不敏感）。 */
+    public static boolean isCategoryHidden(String categoryName) {
+        if (categoryName == null) return false;
+        try {
+            List<? extends String> list = HIDDEN_CATEGORIES.get();
+            if (list == null) return false;
+            for (String id : list) {
+                if (categoryName.equalsIgnoreCase(id)) return true;
+            }
+        } catch (Throwable notLoaded) {
+            return false;
+        }
+        return false;
+    }
+
+    /** 某个面板入口是否被配置隐藏。 */
+    public static boolean isPanelHidden(String panelId) {
+        if (panelId == null) return false;
+        try {
+            List<? extends String> list = HIDDEN_PANELS.get();
+            if (list == null) return false;
+            for (String id : list) {
+                if (panelId.equalsIgnoreCase(id)) return true;
+            }
+        } catch (Throwable notLoaded) {
+            return false;
+        }
+        return false;
+    }
+
+    // ========== 进度补充 ==========
+
+    /** 「被动经验」总开关。 */
+    public static ModConfigSpec.BooleanValue PASSIVE_XP_ENABLED;
+    /** 击杀经验是否计入召唤物 / 宠物造成的击杀。 */
+    public static ModConfigSpec.BooleanValue XP_PER_KILL_COUNT_SUMMONS;
+
+    // ========== 矿透（矿石描边） ==========
+
+    /** 矿石透视的默认扫描半径（格）。 */
+    public static ModConfigSpec.IntValue ORE_VISION_DEFAULT_RANGE;
+    /** 矿石透视单次描边的矿石数量上限。 */
+    public static ModConfigSpec.IntValue ORE_VISION_MAX_BLOCKS;
+
+    // ========== 属性逐项调参（按内置属性表自动生成） ==========
+
+    /** 属性 id → 「每点数值」配置项。 */
+    public static final java.util.Map<String, ModConfigSpec.DoubleValue> STAT_PER_POINT =
+            new java.util.LinkedHashMap<>();
+    /** 属性 id → 「可投入点数上限」配置项（开关型属性即解锁所需点数）。 */
+    public static final java.util.Map<String, ModConfigSpec.IntValue> STAT_MAX_POINTS =
+            new java.util.LinkedHashMap<>();
+
+    /**
+     * 读取某个属性的「每点数值」；属性不在配置表中（外部属性）或配置尚未加载时返回兜底值。
+     */
+    public static float statPerPoint(String statId, float fallback) {
+        ModConfigSpec.DoubleValue value = STAT_PER_POINT.get(statId);
+        if (value == null) return fallback;
+        try {
+            Double v = value.get();
+            return v == null ? fallback : v.floatValue();
+        } catch (Throwable notLoaded) {
+            return fallback;
+        }
+    }
+
+    /** 读取某个属性的「可投入点数上限」；同上。 */
+    public static int statMaxPoints(String statId, int fallback) {
+        ModConfigSpec.IntValue value = STAT_MAX_POINTS.get(statId);
+        if (value == null) return fallback;
+        try {
+            Integer v = value.get();
+            return v == null || v < 1 ? fallback : v;
+        } catch (Throwable notLoaded) {
+            return fallback;
+        }
+    }
+
     // ========== 被动效果设置 ==========
 
     public static ModConfigSpec.IntValue HEALTH_REGEN_INTERVAL;
@@ -232,6 +390,141 @@ public final class Config {
         AUTO_REVIVE_CLEAR_DEBUFFS_ONLY = builder
                 .comment("true=复活时仅清除负面效果并保留增益Buff；false=清除全部效果（旧行为）。")
                 .define("autoReviveClearDebuffsOnly", true);
+        AUTO_REVIVE_PREVENT_LETHAL = builder
+                .comment("true=在伤害结算阶段就把「这一下会致死」的攻击拦下来并直接复活（连死亡事件都不会触发，",
+                         "/kill 与各种绕过无敌的致死伤害同样有效）；false=回到只在死亡事件里复活。")
+                .define("autoRevivePreventLethal", true);
+        AUTO_REVIVE_VOID_ESCAPE = builder
+                .comment("true=掉出世界（虚空 / 世界底部）时立刻拉回重生点，不占用复活冷却。",
+                         "这条路径不检查冷却：虚空伤害每 tick 都在跳，靠死亡复活一次人还在虚空里。")
+                .define("autoReviveVoidEscape", true);
+        AUTO_REVIVE_VOID_ESCAPE_DEPTH = builder
+                .comment("距离世界最低点下方多少格算「已掉出世界」。",
+                         "默认 8：主世界 y < -72、下界/末地 y < -8 触发（早于原版 -128 的掉出世界伤害）。")
+                .defineInRange("autoReviveVoidEscapeDepth", 8, 1, 256);
+        builder.pop();
+
+        // 战斗结算设置
+        builder.push("Combat");
+        CRIT_BASE_MULTIPLIER = builder
+                .comment("暴击基础倍率（在此之上再叠加 crit_damage 属性的伤害）。默认 1.5 = 暴击造成 150% 伤害。")
+                .defineInRange("critBaseMultiplier", 1.5D, 1.0D, 100.0D);
+        CRIT_CHANCE_CAP = builder
+                .comment("暴击率上限。默认 1.0 = 最多必定暴击；调低可以让暴击率永远到不了 100%。")
+                .defineInRange("critChanceCap", 1.0D, 0.0D, 1.0D);
+        FULL_CHARGE_THRESHOLD = builder
+                .comment("「满蓄力」判定阈值。攻击强度（0~1）高于它才吃暴击与面板真伤估算，默认 0.9。")
+                .defineInRange("fullChargeThreshold", 0.9D, 0.0D, 1.0D);
+        ARMOR_PENETRATION_CAP = builder
+                .comment("护甲穿透上限（比例）。默认 1.0 = 最多完全无视护甲。")
+                .defineInRange("armorPenetrationCap", 1.0D, 0.0D, 1.0D);
+        LIFE_STEAL_CAP = builder
+                .comment("生命偷取上限（比例）。默认 1.0 = 单次最多吸回与伤害等量的血；调低可压制吸血流。")
+                .defineInRange("lifeStealCap", 1.0D, 0.0D, 10.0D);
+        DODGE_CHANCE_CAP = builder
+                .comment("闪避率上限。默认 1.0 = 可以堆到必定闪避。")
+                .defineInRange("dodgeChanceCap", 1.0D, 0.0D, 1.0D);
+        BLOCK_CHANCE_CAP = builder
+                .comment("格挡率上限。默认 1.0 = 可以堆到必定格挡。")
+                .defineInRange("blockChanceCap", 1.0D, 0.0D, 1.0D);
+        DAMAGE_REDUCTION_CAP = builder
+                .comment("伤害减免上限（比例）。默认 1.0 = 允许减到 100%（免疫）；想保留一点压力可设 0.9。")
+                .defineInRange("damageReductionCap", 1.0D, 0.0D, 1.0D);
+        DAMAGE_REFLECTION_CAP = builder
+                .comment("反伤倍率上限（比例）。默认 1.0 = 最多反弹等量伤害。")
+                .defineInRange("damageReflectionCap", 1.0D, 0.0D, 10.0D);
+        AOE_LIFE_STEAL_RANGE = builder
+                .comment("范围吸血的搜索半径（格），以被攻击目标为中心。")
+                .defineInRange("aoeLifeStealRange", 5.0D, 0.5D, 32.0D);
+        AOE_LIFE_STEAL_DAMAGE_RATIO = builder
+                .comment("范围吸血对周围每个敌人造成的伤害 = 本次伤害 × 吸血比例 × 该值。默认 0.3。")
+                .defineInRange("aoeLifeStealDamageRatio", 0.3D, 0.0D, 10.0D);
+        AOE_LIFE_STEAL_HEAL_RATIO = builder
+                .comment("范围吸血把「周围实际造成的总伤害」回流为治疗的比例。默认 0.5。")
+                .defineInRange("aoeLifeStealHealRatio", 0.5D, 0.0D, 10.0D);
+        MAX_EXTRA_STRIKES = builder
+                .comment("「额外打击」的最大次数。默认 8；属性自身的点数上限另由 extra_strike 的点数上限控制。")
+                .defineInRange("maxExtraStrikes", 8, 1, 64);
+        SCOPE_ATTACK_DAMAGE_RATIO = builder
+                .comment("「范围攻击」对周围每个敌人造成的伤害占本次伤害的比例。默认 0.5。")
+                .defineInRange("scopeAttackDamageRatio", 0.5D, 0.0D, 10.0D);
+        EXECUTE_THRESHOLD = builder
+                .comment("「处决」触发血量比例：目标当前血量低于最大血量的该比例时追加处决伤害。默认 0.3。")
+                .defineInRange("executeThreshold", 0.3D, 0.0D, 1.0D);
+        INVINCIBILITY_HEAL_INTERVAL = builder
+                .comment("「无敌」把血量回满的执行间隔（tick）。默认 20 = 每秒一次。")
+                .defineInRange("invincibilityHealInterval", 20, 1, 1200);
+        ABSORPTION_REFRESH_INTERVAL = builder
+                .comment("吸收护盾的刷新间隔（tick）。默认 40 = 每 2 秒一次。")
+                .defineInRange("absorptionRefreshInterval", 40, 1, 1200);
+        DOUBLE_LOOT_CAP = builder
+                .comment("双倍掉落概率上限。默认 1.0 = 可以堆到必定双倍。")
+                .defineInRange("doubleLootCap", 1.0D, 0.0D, 1.0D);
+        VILLAGER_DISCOUNT_CAP = builder
+                .comment("村民交易折扣上限（比例）。默认 0.9 = 最多便宜到原价的 10%。")
+                .defineInRange("villagerDiscountCap", 0.9D, 0.0D, 1.0D);
+        COOLDOWN_REDUCTION_CAP = builder
+                .comment("物品冷却缩减上限（比例）。默认 1.0 = 可以把冷却直接压到 0。")
+                .defineInRange("cooldownReductionCap", 1.0D, 0.0D, 1.0D);
+        AUTO_REPAIR_PER_LEVEL = builder
+                .comment("「自动修复」每一级每秒修复的耐久点（0 级也至少按 1 点计算）。")
+                .defineInRange("autoRepairPerLevel", 1.0D, 0.0D, 1000.0D);
+        PROJECTILE_TRACKING_CONE_COS = builder
+                .comment("弹射物追踪的视野锥余弦阈值：1.0 = 只追正前方，0.0 = 180° 全追，默认 0.5（约 ±60°）。")
+                .defineInRange("projectileTrackingConeCos", 0.5D, -1.0D, 1.0D);
+        XP_GAIN_CAP = builder
+                .comment("「经验加成」属性的总倍率上限（1.0 = 不加成；0 = 不设上限）。默认 0。",
+                        "模组经验与原版经验共用这一个上限。")
+                .defineInRange("xpGainCap", 0.0D, 0.0D, 1000.0D);
+        XP_GAIN_AFFECT_VANILLA = builder
+                .comment("「经验加成」是否同时放大原版经验值。",
+                        "原版经验的所有入口（经验球拾取、熔炉取出、村民交易、经验瓶等）最终都会走",
+                        "Player#giveExperiencePoints，这里在该统一入口处按同一个倍率放大（只增不减）。",
+                        "true（默认）= 一并放大；false = 只放大击杀获得的模组经验。")
+                .define("xpGainAffectVanilla", true);
+        builder.pop();
+
+        // 经验 / 升级曲线补充项
+        builder.push("Progression");
+        PASSIVE_XP_ENABLED = builder
+                .comment("「被动经验」总开关。false = 在线玩家不再每秒自动获得经验，只能靠击杀 / 其他途径。")
+                .define("passiveXpEnabled", true);
+        XP_PER_KILL_COUNT_SUMMONS = builder
+                .comment("击杀经验是否也计入「你的召唤物 / 宠物造成的击杀」（含铁傀儡、召唤物、驯服宠物等）。",
+                        "false（默认）= 只有玩家本人直接造成的击杀才给经验，与原行为一致。")
+                .define("xpPerKillCountSummons", false);
+        builder.pop();
+
+        // 矿石透视
+        builder.push("OreVision");
+        ORE_VISION_DEFAULT_RANGE = builder
+                .comment("矿石透视的默认扫描半径（格）。玩家可在面板里自行调整，这里只是初始值 / 上限基准。")
+                .defineInRange("oreVisionDefaultRange", 24, 8, 64);
+        ORE_VISION_MAX_BLOCKS = builder
+                .comment("矿石透视单次描边的矿石数量上限。数量越大越吃帧，默认 1500。")
+                .defineInRange("oreVisionMaxBlocks", 1500, 50, 8000);
+        builder.pop();
+
+        // 属性逐项调参（按内置属性表自动生成）
+        builder.comment(
+                "每个内置属性的「每点数值」与「可投入点数上限」。键名格式：<属性id>_perPoint / <属性id>_maxPoints。",
+                "例：attack_damage_perPoint = 0.05 表示每点攻击力 +0.05；infinite_arrows_maxPoints = 5 表示投入 5 点解锁。",
+                "开关型属性没有 _perPoint（改了没有效果），它的 _maxPoints 就是解锁所需点数。",
+                "属性允许负向加点，因此 _perPoint 也可以填负数（效果会反向）；_maxPoints 同时是正负两个方向的绝对上限。",
+                "改完重启游戏（或在主菜单重载配置）生效。外部模组属性（attr.*）不在本表内，沿用内置的自动估算值。");
+        builder.push("Stats");
+        for (com.infinitestats.stats.StatType.TuningDefault def
+                : com.infinitestats.stats.StatType.tuningDefaults()) {
+            String id = def.getId();
+            if (!def.isToggle()) {
+                // 用 6 位小数收敛 float 的二进制尾巴（0.005f → 0.005，而不是 0.004999999888241291）
+                double defaultPerPoint = Math.round(def.getPerPoint() * 1_000_000.0D) / 1_000_000.0D;
+                STAT_PER_POINT.put(id, builder.defineInRange(id + "_perPoint",
+                        defaultPerPoint, -1000.0D, 1000.0D));
+            }
+            STAT_MAX_POINTS.put(id, builder.defineInRange(id + "_maxPoints",
+                    def.getMaxPoints(), 1, Integer.MAX_VALUE));
+        }
         builder.pop();
 
         // 被动效果设置
@@ -283,6 +576,18 @@ public final class Config {
                          "后续开放由任务奖励指令 /infstats feature <属性> on 负责。",
                          "留空（默认）= 所有属性开局都开着。")
                 .defineList("disabledStats", List.<String>of(), o -> o instanceof String);
+        HIDDEN_PANELS = builder
+                .comment("要隐藏的面板入口（面板 id 列表）。整合包作者用它把不想给玩家看到的界面藏起来。",
+                        "可用 id：stats / emc / item_editor / achievements / waypoint / ore_vision /",
+                        "portable_tools / weather / chunk_loader / vein_miner / entity_panel / debuff_filter。",
+                        "隐藏后对应的快捷键不再生效；已经打开的界面不受影响。",
+                        "留空（默认）= 全部显示。")
+                .defineList("hiddenPanels", List.<String>of(), o -> o instanceof String);
+        HIDDEN_CATEGORIES = builder
+                .comment("要整组隐藏的属性分类页签（分类枚举名，如 ATTACK / DEFENSE / UTILITY / EXTERNAL）。",
+                        "隐藏后玩家看不到该页签，数字键也切不过去；已投入的点数仍然保留、效果照常生效。",
+                        "留空（默认）= 显示全部分类。")
+                .defineList("hiddenCategories", List.<String>of(), o -> o instanceof String);
         builder.pop();
 
         // 兼容性设置

@@ -29,7 +29,10 @@ public final class SyncStatsPacket {
     private long reviveInvulnUntilTick;
     private Map<String, Long> allocatedPoints;
     private boolean buffUseBlacklist;
-    private Set<String> buffFilterList;
+    /** 拦截名单（黑名单模式生效） */
+    private Set<String> buffBlacklist;
+    /** 保护名单（白名单模式生效） */
+    private Set<String> buffWhitelist;
     /** 保护模式：死亡重生是否继承保护 */
     private boolean protectAcrossDeath;
     private Map<String, Waypoint> waypoints;
@@ -57,7 +60,8 @@ public final class SyncStatsPacket {
         this.reviveInvulnUntilTick = snapshot.reviveInvulnUntilTick;
         this.allocatedPoints = snapshot.allocatedPoints;
         this.buffUseBlacklist = snapshot.buffUseBlacklist;
-        this.buffFilterList = snapshot.buffFilterList;
+        this.buffBlacklist = snapshot.buffBlacklist;
+        this.buffWhitelist = snapshot.buffWhitelist;
         this.protectAcrossDeath = snapshot.protectAcrossDeath;
         this.waypoints = snapshot.waypoints;
         this.favorites = snapshot.favorites;
@@ -88,14 +92,15 @@ public final class SyncStatsPacket {
             allocatedPoints.put(statId, points);
         }
 
-        // 读取 buff 过滤列表
+        // 读取 buff 过滤名单（黑白各一份）
         this.buffUseBlacklist = buf.readBoolean();
         this.protectAcrossDeath = buf.readBoolean();
-        int filterCount = buf.readVarInt();
-        this.buffFilterList = new HashSet<>();
-        for (int i = 0; i < filterCount; i++) {
-            buffFilterList.add(buf.readUtf());
-        }
+        int buffBlackCount = buf.readVarInt();
+        this.buffBlacklist = new HashSet<>();
+        for (int i = 0; i < buffBlackCount; i++) buffBlacklist.add(buf.readUtf());
+        int buffWhiteCount = buf.readVarInt();
+        this.buffWhitelist = new HashSet<>();
+        for (int i = 0; i < buffWhiteCount; i++) buffWhitelist.add(buf.readUtf());
 
         // 读取传送点
         int wpCount = buf.readVarInt();
@@ -159,13 +164,15 @@ public final class SyncStatsPacket {
             buf.writeVarLong(entry.getValue());
         }
 
-        // 写入 buff 过滤列表
+        // 写入 buff 过滤名单（黑白各一份）
         buf.writeBoolean(msg.buffUseBlacklist);
         buf.writeBoolean(msg.protectAcrossDeath);
-        buf.writeVarInt(msg.buffFilterList.size());
-        for (String effectId : msg.buffFilterList) {
-            buf.writeUtf(effectId);
-        }
+        Set<String> buffBlk = msg.buffBlacklist != null ? msg.buffBlacklist : Set.of();
+        buf.writeVarInt(buffBlk.size());
+        for (String effectId : buffBlk) buf.writeUtf(effectId);
+        Set<String> buffWht = msg.buffWhitelist != null ? msg.buffWhitelist : Set.of();
+        buf.writeVarInt(buffWht.size());
+        for (String effectId : buffWht) buf.writeUtf(effectId);
 
         // 写入传送点
         buf.writeVarInt(msg.waypoints.size());
@@ -231,7 +238,8 @@ public final class SyncStatsPacket {
                         -1,
                         msg.allocatedPoints,
                         msg.buffUseBlacklist,
-                        msg.buffFilterList,
+                        msg.buffBlacklist != null ? msg.buffBlacklist : Set.of(),
+                        msg.buffWhitelist != null ? msg.buffWhitelist : Set.of(),
                         msg.protectAcrossDeath,
                         msg.waypoints,
                         msg.reviveInvulnUntilTick,
@@ -258,7 +266,8 @@ public final class SyncStatsPacket {
                 -1,
                 allocatedPoints,
                 buffUseBlacklist,
-                buffFilterList,
+                buffBlacklist != null ? buffBlacklist : Set.of(),
+                buffWhitelist != null ? buffWhitelist : Set.of(),
                 protectAcrossDeath,
                 waypoints,
                 reviveInvulnUntilTick,

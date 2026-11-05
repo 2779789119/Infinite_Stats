@@ -287,8 +287,10 @@ public abstract class PanelScreen extends Screen {
             layout();
             return true;
         }
-        // 右键：拖动面板（位置持久化）
+        // 右键：先给子类一次机会（例如「随身工具」用右键开启 / 关闭站点、
+        // 「效果过滤」用右键切「重生继承」），未被消费才进入拖动面板（位置持久化）
         if (button == 1 && insidePanel(mx, my)) {
+            if (onPanelRightClick(mx, my)) return true;
             draggingPanel = true;
             dragStartMouseX = (int) mouseX;
             dragStartMouseY = (int) mouseY;
@@ -387,6 +389,16 @@ public abstract class PanelScreen extends Screen {
     // ======================== 子类钩子（坐标已是面板坐标） ========================
 
     protected boolean onPanelClick(int mouseX, int mouseY, int button) {
+        return false;
+    }
+
+    /**
+     * 面板坐标下的右键处理；返回 {@code true} 表示这次右键已被消费、不再触发「拖动面板」。
+     * <p>
+     * 右键默认被基类拿去做拖动，所以任何「右键 = 某个操作」的界面都必须覆写这里 ——
+     * 只在 {@link #onPanelClick} 里判 {@code button == 1} 是收不到的（拖动分支在它之前 return）。
+     */
+    protected boolean onPanelRightClick(int mouseX, int mouseY) {
         return false;
     }
 
