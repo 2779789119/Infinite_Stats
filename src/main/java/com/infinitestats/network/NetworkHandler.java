@@ -82,7 +82,9 @@ public final class NetworkHandler {
     // 27：EntityPanelAttributePacket 的语义改成「目标最终值」（旧客户端拿来当基础值写会算错，故升版本）
     // 28：新增 ExternalStatsSyncPacket（服务端下发权威的外部属性列表，旧客户端收不到会少一批卡片）
     // 29：新增 EmcForgetPacket（客户端请求遗忘某个已学物品）
-    private static final String PROTOCOL_VERSION = "29";
+    // 30：成就管理器改版：AchievementInfo 增加进度 / 框架 / 模组 / 父成就 / 隐藏标记，
+    //     SyncAdvancementsPacket 带「可编辑」标志与跳过计数，新增 BatchAdvancementPacket
+    private static final String PROTOCOL_VERSION = "30";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -101,7 +103,13 @@ public final class NetworkHandler {
     }
 
     /** 待处理的成就同步数据（由 SyncAdvancementsPacket 写入，AchievementManagerScreen 读取） */
-    public static List<AchievementInfo> pendingAdvancements = null;
+    public static volatile List<AchievementInfo> pendingAdvancements = null;
+    /** 上面那份列表对应的「当前玩家是否有权修改成就」（由 SyncAdvancementsPacket 写入）。 */
+    public static volatile boolean pendingAdvancementsCanEdit = true;
+    /** 同步时被跳过的「无 display 技术成就」数量（如原版 recipes/*），仅用于界面说明。 */
+    public static volatile int pendingAdvancementsSkipped = 0;
+    /** 成就列表版本号：每次同步自增，界面据此判断是否需要重建列表。 */
+    public static volatile long advancementsVersion = 0;
 
     /**
      * 待处理的「区块强加载」列表（由 {@link ChunkLoaderSyncPacket} 写入，ChunkLoaderScreen 读取）。
@@ -409,6 +417,12 @@ public final class NetworkHandler {
                 ToggleAdvancementPacket::encode,
                 ToggleAdvancementPacket::decode,
                 ToggleAdvancementPacket::handle);
+
+        // 批量授予 / 撤销（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, BatchAdvancementPacket.class,
+                BatchAdvancementPacket::encode,
+                BatchAdvancementPacket::decode,
+                BatchAdvancementPacket::handle);
 
         // ========== 传送点管理数据包 ==========
 
@@ -1932,9 +1946,15 @@ public final class NetworkHandler {
      */
     public static final class SyncAdvancementsPacket {
         private final List<AchievementInfo> achievements;
+        /** 当前玩家是否有权授予 / 撤销（受配置 achievementManagerRequireOp 影响）。 */
+        private final boolean canEdit;
+        /** 被跳过的无 display 技术成就数量（原版 recipes/* 等）。 */
+        private final int skipped;
 
-        public SyncAdvancementsPacket(List<AchievementInfo> achievements) {
+        public SyncAdvancementsPacket(List<AchievementInfo> achievements, boolean canEdit, int skipped) {
             this.achievements = achievements;
+            this.canEdit = canEdit;
+            this.skipped = skipped;
         }
 
         public static void encode(SyncAdvancementsPacket msg, FriendlyByteBuf buf) {
@@ -1942,6 +1962,8 @@ public final class NetworkHandler {
             for (AchievementInfo info : msg.achievements) {
                 AchievementInfo.encode(info, buf);
             }
+            buf.writeBoolean(msg.canEdit);
+            buf.writeVarInt(msg.skipped);
         }
 
         public static SyncAdvancementsPacket decode(FriendlyByteBuf buf) {
@@ -1950,13 +1972,16 @@ public final class NetworkHandler {
             for (int i = 0; i < count; i++) {
                 list.add(AchievementInfo.decode(buf));
             }
-            return new SyncAdvancementsPacket(list);
+            return new SyncAdvancementsPacket(list, buf.readBoolean(), buf.readVarInt());
         }
 
         public static void handle(SyncAdvancementsPacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
                 // 存储到静态字段，由 AchievementManagerScreen 轮询读取
                 pendingAdvancements = msg.achievements;
+                pendingAdvancementsCanEdit = msg.canEdit;
+                pendingAdvancementsSkipped = msg.skipped;
+                advancementsVersion++;
             });
             ctx.get().setPacketHandled(true);
         }
@@ -1991,30 +2016,125 @@ public final class NetworkHandler {
                 MinecraftServer server = player.getServer();
                 if (server == null) return;
 
+                if (!canEditAdvancements(player)) {
+                    denyEdit(player);
+                    return;
+                }
+
                 ResourceLocation advId = ResourceLocation.tryParse(msg.advancementId);
                 if (advId == null) return;
 
                 Advancement advancement = server.getAdvancements().getAdvancement(advId);
                 if (advancement == null) return;
 
-                var playerAdvancements = player.getAdvancements();
-
-                if (msg.grant) {
-                    // 授予所有条件 → 完成成就
-                    for (String criterion : advancement.getCriteria().keySet()) {
-                        playerAdvancements.award(advancement, criterion);
-                    }
-                } else {
-                    // 撤销所有条件 → 取消成就
-                    for (String criterion : advancement.getCriteria().keySet()) {
-                        playerAdvancements.revoke(advancement, criterion);
-                    }
-                }
+                applyAdvancementState(player, advancement, msg.grant);
 
                 // 同步更新后的成就列表返回客户端
                 syncAdvancementsToClient(player);
             });
             ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 批量授予 / 撤销数据包（客户端 → 服务器）。
+     * <p>
+     * 一次操作可能涉及几十上百条成就，逐条发包既慢又会把服务端队列打满，
+     * 所以客户端把「选中集合」整体发上来，服务端一次性处理完只回一次列表。
+     */
+    public static final class BatchAdvancementPacket {
+        /** 单次操作最多接受的成就数，防止客户端构造超大包把服务端卡死。 */
+        private static final int MAX_IDS = 4096;
+
+        private final List<String> advancementIds;
+        private final boolean grant;
+
+        public BatchAdvancementPacket(List<String> advancementIds, boolean grant) {
+            this.advancementIds = advancementIds;
+            this.grant = grant;
+        }
+
+        public static void encode(BatchAdvancementPacket msg, FriendlyByteBuf buf) {
+            int size = Math.min(msg.advancementIds.size(), MAX_IDS);
+            buf.writeVarInt(size);
+            for (int i = 0; i < size; i++) {
+                buf.writeUtf(msg.advancementIds.get(i));
+            }
+            buf.writeBoolean(msg.grant);
+        }
+
+        public static BatchAdvancementPacket decode(FriendlyByteBuf buf) {
+            int size = Math.min(buf.readVarInt(), MAX_IDS);
+            List<String> ids = new ArrayList<>(size);
+            for (int i = 0; i < size; i++) {
+                ids.add(buf.readUtf());
+            }
+            return new BatchAdvancementPacket(ids, buf.readBoolean());
+        }
+
+        public static void handle(BatchAdvancementPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                MinecraftServer server = player.getServer();
+                if (server == null) return;
+
+                if (!canEditAdvancements(player)) {
+                    denyEdit(player);
+                    return;
+                }
+
+                for (String rawId : msg.advancementIds) {
+                    ResourceLocation advId = ResourceLocation.tryParse(rawId);
+                    if (advId == null) continue;
+                    Advancement advancement = server.getAdvancements().getAdvancement(advId);
+                    if (advancement == null) continue;
+                    applyAdvancementState(player, advancement, msg.grant);
+                }
+
+                syncAdvancementsToClient(player);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 配置要求 OP 时，权限等级 2 以下不能改成就。 */
+    private static boolean canEditAdvancements(ServerPlayer player) {
+        return !Config.ACHIEVEMENT_MANAGER_REQUIRE_OP.get() || player.hasPermissions(2);
+    }
+
+    private static void denyEdit(ServerPlayer player) {
+        player.displayClientMessage(
+                Component.translatable("screen.infinitestats.achievements.no_permission"), true);
+    }
+
+    /**
+     * 授予 / 撤销单个成就。
+     * <p>
+     * 撤销会<b>递归撤销所有子成就</b>：原版成就树里子成就的完成状态依赖父成就链，
+     * 只撤销父成就的话子成就仍留着完成标记，界面与奖励会自相矛盾（父成就是「未完成」，
+     * 子成就却是「已完成」且再也拿不到一遍）。
+     */
+    private static void applyAdvancementState(ServerPlayer player, Advancement advancement, boolean grant) {
+        var playerAdvancements = player.getAdvancements();
+        if (grant) {
+            // 授予所有条件 → 完成成就
+            for (String criterion : advancement.getCriteria().keySet()) {
+                playerAdvancements.award(advancement, criterion);
+            }
+        } else {
+            revokeWithChildren(playerAdvancements, advancement);
+        }
+    }
+
+    private static void revokeWithChildren(
+            net.minecraft.server.PlayerAdvancements playerAdvancements, Advancement advancement) {
+        for (String criterion : advancement.getCriteria().keySet()) {
+            playerAdvancements.revoke(advancement, criterion);
+        }
+        for (Advancement child : advancement.getChildren()) {
+            revokeWithChildren(playerAdvancements, child);
         }
     }
 
@@ -2033,28 +2153,77 @@ public final class NetworkHandler {
     // ========== 成就管理同步方法 ==========
 
     /**
-     * 构建成就信息列表并同步到客户端
+     * 构建成就信息列表并同步到客户端。
+     * <p>
+     * 顺序由服务端统一排好再下发：<b>模组命名空间 → 父成就先于子成就 → 标题 → id</b>。
+     * 之前直接把 {@code getAllAdvancements()} 的集合遍历顺序丢给客户端，
+     * 每次打开界面的排列都可能不同，找一条成就只能靠搜索。
      */
     public static void syncAdvancementsToClient(ServerPlayer player) {
         MinecraftServer server = player.getServer();
         if (server == null) return;
 
-        List<AchievementInfo> list = new ArrayList<>();
-        for (Advancement adv : server.getAdvancements().getAllAdvancements()) {
+        List<Advancement> all = new ArrayList<>(server.getAdvancements().getAllAdvancements());
+        all.sort(Comparator
+                .comparing((Advancement a) -> a.getId().getNamespace())
+                .thenComparingInt(NetworkHandler::advancementDepth)
+                .thenComparing(NetworkHandler::advancementTitle, String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(a -> a.getId().toString()));
+
+        var playerAdvancements = player.getAdvancements();
+        List<AchievementInfo> list = new ArrayList<>(all.size());
+        int skipped = 0;
+
+        for (Advancement adv : all) {
             var display = adv.getDisplay();
-            if (display == null) continue; // 跳过隐藏成就
+            if (display == null) {
+                // 没有 display 的是纯技术成就（原版 recipes/* 上千条），不进列表
+                skipped++;
+                continue;
+            }
 
             String id = adv.getId().toString();
             String name = display.getTitle().getString();
             String desc = display.getDescription().getString();
             String iconId = BuiltInRegistries.ITEM.getKey(display.getIcon().getItem()).toString();
-            boolean completed = player.getAdvancements().getOrStartProgress(adv).isDone();
 
-            list.add(new AchievementInfo(id, name, desc, iconId, completed));
+            var progress = playerAdvancements.getOrStartProgress(adv);
+            boolean completed = progress.isDone();
+            int criteriaTotal = adv.getCriteria().size();
+            int criteriaDone = 0;
+            for (String criterion : adv.getCriteria().keySet()) {
+                var criterionProgress = progress.getCriterion(criterion);
+                if (criterionProgress != null && criterionProgress.isDone()) criteriaDone++;
+            }
+            int percent = completed ? 100 : Math.round(progress.getPercent() * 100f);
+
+            list.add(new AchievementInfo(id, name, desc, iconId,
+                    completed, percent, criteriaDone, criteriaTotal,
+                    display.getFrame().ordinal(),
+                    id.contains(":") ? id.substring(0, id.indexOf(':')) : "minecraft",
+                    adv.getParent() != null ? adv.getParent().getId().toString() : "",
+                    display.isHidden()));
         }
 
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
-                new SyncAdvancementsPacket(list));
+                new SyncAdvancementsPacket(list, canEditAdvancements(player), skipped));
+    }
+
+    /** 成就树深度（根 = 0），用于「父成就排在子成就之前」。 */
+    private static int advancementDepth(Advancement advancement) {
+        int depth = 0;
+        Advancement parent = advancement.getParent();
+        // 数据包写坏时父子可能成环，加个上限防止死循环
+        while (parent != null && depth < 64) {
+            depth++;
+            parent = parent.getParent();
+        }
+        return depth;
+    }
+
+    private static String advancementTitle(Advancement advancement) {
+        var display = advancement.getDisplay();
+        return display == null ? "" : display.getTitle().getString();
     }
 
     // ========== 随身工作台 / 熔炉 联动 Refined Storage ==========

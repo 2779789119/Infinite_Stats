@@ -584,4 +584,31 @@ public final class RegressionTests {
         }
         helper.succeed();
     }
+
+    @GameTest(template = "empty")
+    public static void zeroHealthFallbackRespectsRealDeath(GameTestHelper helper) {
+        ServerPlayer player = player(helper);
+        PlayerStats stats = stats(player);
+        stats.setLastKnownHealth(19.0f);
+
+        // 外部直接清零、没走死亡流程：兜底应当拉回来
+        player.setHealth(0);
+        helper.assertTrue(DefenseHandler.preventZeroHealth(player, stats),
+                "Zero-health fallback ignored an external wipe");
+        close(19.0f, player.getHealth(), "Zero-health fallback restored the wrong value");
+
+        // 死亡流程已经放行（ServerPlayer#die 已给客户端发过死亡包）：兜底必须放手，
+        // 否则服务端角色被拉活、客户端死亡界面还挂着，怪物会继续攻击这具「尸体」。
+        stats.markDeathStarted();
+        player.setHealth(0);
+        helper.assertTrue(!DefenseHandler.preventZeroHealth(player, stats),
+                "Zero-health fallback revived a player whose death was already released");
+        close(0.0f, player.getHealth(), "Zero-health fallback touched health after a real death");
+
+        // 复活 / 重生路径清掉标记后，兜底恢复接管
+        stats.clearDeathStarted();
+        helper.assertTrue(DefenseHandler.preventZeroHealth(player, stats),
+                "Zero-health fallback stayed disabled after the death flag was cleared");
+        helper.succeed();
+    }
 }

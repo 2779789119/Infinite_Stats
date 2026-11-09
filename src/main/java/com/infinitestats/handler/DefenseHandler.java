@@ -324,6 +324,8 @@ public class DefenseHandler implements StatEffectHandler {
                     Math.max(1.0f, player.getMaxHealth() * Config.AUTO_REVIVE_HEALTH_PERCENT.get().floatValue()));
             player.setHealth(reviveHealth);
             player.setAirSupply(player.getMaxAirSupply());
+            // 复活成功 = 死亡流程被拦下，零血兜底继续对这个实体生效
+            stats.clearDeathStarted();
 
             // 清除效果：默认只清负面效果以保留其他模组的增益Buff；关闭则该回全部清除（旧行为）
             // 白名单保护中的效果两者都跳过（保护语义：自然结束前不接受外力清除，复活清效果也算外力）
@@ -506,6 +508,9 @@ public class DefenseHandler implements StatEffectHandler {
      * 为无敌玩家补满生命值
      */
     public static void applyInvincibilityTick(ServerPlayer player, PlayerStats stats) {
+        // 死亡流程已经放行（死亡包已发）的玩家不再补血：把人拉活只会让客户端卡在死亡界面，
+        // 而原版 handleClientCommand 看到服务端血量 > 0 会直接忽略「复活」请求。
+        if (player.isDeadOrDying() || stats.isDeathStarted()) return;
         if (stats.isToggleActive("invincibility")) {
             if (player.getHealth() < player.getMaxHealth()) {
                 player.setHealth(player.getMaxHealth());
@@ -580,24 +585,33 @@ public class DefenseHandler implements StatEffectHandler {
     }
 
     /**
-     * 零血兜底：血量已经归零、但死亡流程还没真正开始（{@code dead} 仍为 false）时，
-     * 用上一 tick 的血量快照拉回来。
+     * 零血兜底：血量被外部直接清零（没有走原版死亡流程）时，用上一 tick 的血量快照拉回来。
      * <p>
      * 为什么需要绕开事件：有些处决实现直接 {@code setHealth(0)} 并反复清零，而它们在
      * {@code LivingDeathEvent} 上以 LOWEST 优先级 {@code setCanceled(false)}，
      * 会把任何模组的「取消死亡」撤销掉 —— 事件层没有剩余手段。
      * <p>
-     * 只处理「血量为 0 且尚未 dead」的状态：一旦 {@code dead} 为 true（死亡动画已开始），
-     * 说明原版流程已经落地，再拉回来会和重生 / 掉落 / 统计打架。
+     * 必须区分「被清零」与「真的死了」：后者的死亡包已经发给客户端，客户端的死亡界面已经弹出来，
+     * 这时再把服务端血量拉回来，就会出现「客户端已死、服务端角色还活着被怪围殴」。
+     * 判断依据是 {@link PlayerStats#isDeathStarted()}（由 {@code ServerPlayer#die} 的注入打标记）；
+     * 不能只看 {@code Pose.DYING} —— {@code ServerPlayer.die} 不调用 {@code super.die}，
+     * 该姿态对玩家永远不会出现。
      *
      * @return true = 做过恢复，调用方负责同步给客户端
      */
     public static boolean preventZeroHealth(ServerPlayer player, PlayerStats stats) {
         if (player.isRemoved()) return false;
-        // Pose.DYING 由 die() 设置，是「死亡流程已经真正开始」的可靠标志；
-        // 只看血量会把「被外部清零但还没死」的情况一起排除掉。
+        if (player.getHealth() > 0) {
+            // 活着就不在死亡流程里（自动复活 / 第三方复活都会走到这里），顺手把标记清掉
+            stats.clearDeathStarted();
+            return false;
+        }
+        // 原版死亡流程已经放行（ServerPlayer.die 已经给客户端发过死亡包）：这时再拉回来，
+        // 服务端角色会变成「活着但客户端死亡界面还挂着」，怪物照常继续攻击这具尸体。
+        if (stats.isDeathStarted()) return false;
+        // Pose.DYING 兜底：ServerPlayer.die 不调用 super.die，这个姿态对玩家永远不成立，
+        // 但保留判断以免将来实现变化 / 其它实体路径漏标。
         if (player.getPose() == net.minecraft.world.entity.Pose.DYING) return false;
-        if (player.getHealth() > 0) return false;
 
         float restore = stats.getLastKnownHealth();
         if (!(restore > 0) || !Float.isFinite(restore)) {
@@ -631,6 +645,8 @@ public class DefenseHandler implements StatEffectHandler {
         player.deathTime = 0;
         player.setAirSupply(player.getMaxAirSupply());
         player.fallDistance = 0;
+        // 这一击被拦下了，死亡流程没有放行 —— 零血兜底仍然可以接管
+        stats.clearDeathStarted();
         return result;
     }
 

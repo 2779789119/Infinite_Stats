@@ -192,6 +192,14 @@ public final class StatEventHandler {
             if (event.isCanceled()) return;
         }
 
+        // 没有任何一层救下：这次死亡是真的。这里再补一次「死亡流程已放行」标记 ——
+        // 不依赖服务端 Mixin 是否注入成功，保证零血兜底不会把这次死亡当成「被外部清零」拉回来
+        // （拉回来会让服务端角色活着、客户端死亡界面挂着，点复活还会被原版以「血量 > 0」忽略）。
+        if (!event.isCanceled() && event.getEntity() instanceof ServerPlayer dyingPlayer) {
+            dyingPlayer.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                    .ifPresent(PlayerStats::markDeathStarted);
+        }
+
         // 击杀获得经验 + 击杀回蓝
         // 默认只认玩家本人造成的击杀；配置打开后，召唤物 / 宠物造成的击杀也算在主人头上。
         ServerPlayer killer = Config.XP_PER_KILL_COUNT_SUMMONS.get()

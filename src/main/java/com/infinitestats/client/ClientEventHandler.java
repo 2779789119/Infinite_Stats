@@ -17,6 +17,7 @@ import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.gui.screens.MenuScreens;
 import net.minecraft.client.gui.screens.inventory.AnvilScreen;
 import net.minecraft.client.player.LocalPlayer;
@@ -196,6 +197,15 @@ public final class ClientEventHandler {
         var mc = Minecraft.getInstance();
         var player = mc.player;
         if (player == null) return;
+
+        // 死亡界面兜底：服务端已经把人救回来了（客户端血量已恢复），但死亡包先一步到、
+        // DeathScreen 已经挂在屏幕上 —— 不收掉就是「角色活着、界面卡死、怪物继续围殴」。
+        // 真死时客户端血量恒为 0，这里不会误关；正常重生由原版 Respawn 包收尾。
+        if (mc.screen instanceof DeathScreen && !player.isDeadOrDying()) {
+            mc.setScreen(null);
+            // 顺带把死亡动画的计时清掉，否则尸体会在原地保持倒地姿势直到 20 tick
+            player.deathTime = 0;
+        }
 
         accelerateCooldowns(player);
 

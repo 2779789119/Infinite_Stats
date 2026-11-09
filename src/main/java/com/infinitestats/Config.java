@@ -66,6 +66,9 @@ public final class Config {
 
     public static ForgeConfigSpec.BooleanValue SHOW_HIDDEN_STATS;
 
+    /** 成就管理器是否只允许 OP（权限等级 2）授予 / 撤销成就。 */
+    public static ForgeConfigSpec.BooleanValue ACHIEVEMENT_MANAGER_REQUIRE_OP;
+
     /**
      * 「功能开关」把某项关掉时的执行模式（**全局设置，由整合包作者决定**，不按玩家存）。
      * <p>
@@ -544,6 +547,11 @@ public final class Config {
         registerHidePanel("achievements",
                 builder.comment("隐藏「成就管理器」入口（页脚按钮、U 键与 /infstats achievements 一起失效）。")
                         .define("hideAchievementsPanel", false));
+        ACHIEVEMENT_MANAGER_REQUIRE_OP = builder
+                .comment("成就管理器是否只允许管理员（权限等级 2）授予 / 撤销成就。",
+                        "false（默认）= 任何玩家都能给自己发成就；",
+                        "true = 只有 OP 能改，普通玩家打开面板只能查看（按钮置灰、服务端也会拒绝请求）。")
+                .define("achievementManagerRequireOp", false);
         registerHidePanel("item_editor",
                 builder.comment("隐藏「物品编辑器」入口（页脚按钮与 O 键一起失效）。")
                         .define("hideItemEditorPanel", false));

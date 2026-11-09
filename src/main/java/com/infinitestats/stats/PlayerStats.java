@@ -51,6 +51,18 @@ public class PlayerStats {
     private float lastKnownHealth = -1;
 
     /**
+     * 死亡流程是否已经被真正放行（{@code ServerPlayer.die} 走到了给客户端发死亡包那一步）。
+     * <p>
+     * 零血兜底必须靠它区分两种「血量为 0」：外部模组直接 {@code setHealth(0)}（人还没进死亡流程，
+     * 可以拉回来），与原版死亡流程已经落地（客户端死亡界面已弹出，再拉回来就会变成
+     * 「服务端角色活着、客户端已经死了」—— 怪物会继续攻击这具「尸体」）。
+     * <p>
+     * 不能只看 {@code Pose.DYING}：{@code ServerPlayer} 覆写了 {@code die} 且不调用 {@code super.die}，
+     * 设置该姿态的代码对玩家永远不会执行。此标记不落盘，也不随之上的 {@code copyFrom} 过继。
+     */
+    private boolean deathStarted;
+
+    /**
      * 闪避 / 格挡决策缓存：同一次伤害会依次经过 {@code LivingAttackEvent} / {@code LivingDamageEvent}
      * / {@code LivingDeathEvent} 多层，若每层都 roll 一次，实际触发率会变成 {@code 1-(1-p)^n}。
      * 这里按<b>攻击来源实例</b>缓存判定结果（伤害源本身，或弹射物实体 —— 两者在整条飞行 / 命中流程里
@@ -569,6 +581,21 @@ public class PlayerStats {
 
     public void setLastKnownHealth(float value) {
         lastKnownHealth = value;
+    }
+
+    /** 原版死亡流程是否已经开始（{@code ServerPlayer.die} 已放行到发包阶段）。 */
+    public boolean isDeathStarted() {
+        return deathStarted;
+    }
+
+    /** 标记死亡流程已放行，零血兜底从此不再接管这个实体。 */
+    public void markDeathStarted() {
+        deathStarted = true;
+    }
+
+    /** 清除死亡标记（复活 / 重生 / 血量已恢复正数）。 */
+    public void clearDeathStarted() {
+        deathStarted = false;
     }
 
     /**

@@ -14,6 +14,7 @@
     "FishingHookAccessor",
     "LivingEntityAccessor",
     "PlayerDieMixin",
+    "RespawnGuardMixin",
     "EnchantmentMixin",
     "EnchantmentHelperMixin",
     "TaczGunScriptApiMixin",
@@ -29,7 +30,8 @@
   "client": [
     "AnvilScreenMixin",
     "TaczCameraRecoilMixin",
-    "SbwClientEventHandlerMixin"
+    "SbwClientEventHandlerMixin",
+    "CombatKillPacketMixin"
   ],
   "injectors": {
     "defaultRequire": 0
