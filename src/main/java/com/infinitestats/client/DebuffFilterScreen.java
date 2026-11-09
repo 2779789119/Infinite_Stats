@@ -675,7 +675,7 @@ public class DebuffFilterScreen extends PanelScreen {
             lines.add("§7" + line);
         }
         lines.add("§8" + Component.translatable("screen.infinitestats.debuff_filter.tooltip_click").getString());
-        EditorUi.tooltip(g, mx, my, lines, useInherit ? COLOR_BENEFICIAL : EditorUi.SECONDARY);
+        queueTooltip(g, mx, my, lines, useInherit ? COLOR_BENEFICIAL : EditorUi.SECONDARY);
     }
 
     /** 悬停「模式」按钮时说明当前模式的语义（两者差别很大，只靠按钮上的两个字看不出来）。 */
@@ -692,7 +692,7 @@ public class DebuffFilterScreen extends PanelScreen {
                 ? "screen.infinitestats.debuff_filter.hint_blacklist"
                 : "screen.infinitestats.debuff_filter.hint_whitelist").getString());
         lines.add("§8" + Component.translatable("screen.infinitestats.debuff_filter.tooltip_mode_switch").getString());
-        EditorUi.tooltip(g, mx, my, lines, useBlacklist ? COLOR_HARMFUL : COLOR_BENEFICIAL);
+        queueTooltip(g, mx, my, lines, useBlacklist ? COLOR_HARMFUL : COLOR_BENEFICIAL);
     }
 
     private void drawCategoryButtons(GuiGraphics g, int mx, int my) {
@@ -835,7 +835,7 @@ public class DebuffFilterScreen extends PanelScreen {
         lines.add("§8" + entry.id());
         lines.add("§8" + Component.translatable("screen.infinitestats.debuff_filter.tooltip_click").getString());
 
-        EditorUi.tooltip(g, mx, my, lines, entry.color());
+        queueTooltip(g, mx, my, lines, entry.color());
     }
 
     /** 把 ARGB 映射到最接近的原版格式码，用于 tooltip 内的彩色片段。 */

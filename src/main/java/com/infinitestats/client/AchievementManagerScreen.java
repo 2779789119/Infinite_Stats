@@ -9,12 +9,14 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.locale.Language;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraftforge.fml.ModList;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.*;
@@ -352,7 +354,8 @@ public class AchievementManagerScreen extends PanelScreen {
         boolean active = moduleFilter != null;
         graphics.fill(x, y, x + MODULE_BTN_W, y + 14,
                 moduleMenuOpen ? BG_TAB_ACTIVE : (hover ? BG_ROW_HOVER : BG_TAB));
-        String label = active ? moduleFilter : tr("screen.infinitestats.achievements.module_all");
+        String label = active ? modDisplayName(moduleFilter)
+                : tr("screen.infinitestats.achievements.module_all");
         graphics.drawCenteredString(font,
                 EditorUi.ellipsize(font, label, MODULE_BTN_W - 8),
                 x + MODULE_BTN_W / 2, y + 3, active ? TEXT_PRIMARY : TEXT_SECONDARY);
@@ -558,6 +561,10 @@ public class AchievementManagerScreen extends PanelScreen {
     private void renderModuleMenu(GuiGraphics graphics, int mouseX, int mouseY) {
         if (!moduleMenuOpen) return;
 
+        // 下拉菜单是自绘的：先 flush 让列表里的按钮文字落地，
+        // 否则菜单背景会进「背景批次」、排在文字下面，文字就浮在菜单上了
+        graphics.flush();
+
         int x = leftPos + MODULE_BTN_X;
         int y = topPos + 43;
         int w = MODULE_BTN_W + 62;
@@ -581,13 +588,16 @@ public class AchievementManagerScreen extends PanelScreen {
             }
 
             String label = entry.id == null
-                    ? tr("screen.infinitestats.achievements.module_all") : entry.id;
+                    ? tr("screen.infinitestats.achievements.module_all") : modDisplayName(entry.id);
             graphics.drawString(font, EditorUi.ellipsize(font, label, w - 42),
                     x + 5, iy + 3, active ? EditorUi.ACCENT : TEXT_PRIMARY, false);
             String count = String.valueOf(entry.count);
             graphics.drawString(font, count, x + w - 6 - font.width(count), iy + 3,
                     TEXT_SECONDARY, false);
         }
+
+        // 菜单画完立刻落地，保证它压在列表文字之上
+        graphics.flush();
     }
 
     private void renderRowTooltip(GuiGraphics graphics, int mouseX, int mouseY) {
@@ -601,20 +611,16 @@ public class AchievementManagerScreen extends PanelScreen {
             lines.add("§7" + line);
         }
         lines.add("§8" + tr("screen.infinitestats.achievements.tip.id", info.id));
-        lines.add("§8" + tr("screen.infinitestats.achievements.tip.module", info.namespace));
+        lines.add("§8" + tr("screen.infinitestats.achievements.tip.module", modDisplayName(info.namespace)));
         lines.add("§8" + tr("screen.infinitestats.achievements.tip.type", frameName(info.frame)));
         if (info.criteriaTotal > 1) {
             lines.add("§8" + tr("screen.infinitestats.achievements.tip.progress",
                     info.criteriaDone, info.criteriaTotal, info.progressPercent));
         }
 
-        // 工具提示按屏幕坐标绘制：先把姿态压成单位矩阵，画完再还原
-        var pose = graphics.pose();
-        pose.pushPose();
-        pose.last().pose().identity();
-        EditorUi.tooltip(graphics, toScreenX(mouseX), toScreenY(mouseY), lines,
+        // 交给基类排队：等控件与下拉浮层都画完再绘制，保证浮窗永远在最上层
+        queueTooltip(graphics, mouseX, mouseY, lines,
                 info.completed ? TEXT_COMPLETED : frameColor(info.frame));
-        pose.popPose();
     }
 
     // ======================== 鼠标 ========================
@@ -976,6 +982,85 @@ public class AchievementManagerScreen extends PanelScreen {
 
     private static boolean inside(int mx, int my, int x, int y, int w, int h) {
         return mx >= x && mx < x + w && my >= y && my < y + h;
+    }
+
+    /**
+     * 常见模组的命名空间 → 中文名：<b>只在模组自己报的是英文名时</b>用来替换。
+     * 模组已经把 displayName 写成中文的，一律以模组为准。
+     */
+    private static final Map<String, String> KNOWN_MOD_NAMES = Map.ofEntries(
+            Map.entry("minecraft", "原版"),
+            Map.entry("create", "机械动力"),
+            Map.entry("twilightforest", "暮色森林"),
+            Map.entry("botania", "植物魔法"),
+            Map.entry("tconstruct", "匠魂"),
+            Map.entry("mekanism", "通用机械"),
+            Map.entry("immersiveengineering", "沉浸工程"),
+            Map.entry("ae2", "应用能源 2"),
+            Map.entry("appliedenergistics2", "应用能源 2"),
+            Map.entry("refinedstorage", "精致存储"),
+            Map.entry("apotheosis", "神化"),
+            Map.entry("farmersdelight", "农夫乐事"),
+            Map.entry("alexscaves", "Alex 的洞穴"),
+            Map.entry("alexsmobs", "Alex 的生物"),
+            Map.entry("iceandfire", "冰火传说"),
+            Map.entry("goety", "阴森"),
+            Map.entry("sophisticatedbackpacks", "精妙背包"),
+            Map.entry("sophisticatedcore", "精妙核心"),
+            Map.entry("waystones", "传送石碑"),
+            Map.entry("patchouli", "帕秋莉手册"),
+            Map.entry("kubejs", "KubeJS"),
+            Map.entry("jade", "Jade"),
+            Map.entry("geckolib", "GeckoLib"),
+            Map.entry("curios", "Curios API"));
+
+    /**
+     * 模组命名空间的显示名。
+     * <p>
+     * 原版没有「模组中文名」的查询接口，但 Forge 能拿到每个模组在 {@code mods.toml} 里
+     * 自己声明的 {@code displayName}，所以优先级是：
+     * <ol>
+     *   <li>语言文件覆盖 {@code gui.infinitestats.mod.<命名空间>}（整合包想自定义时用）；</li>
+     *   <li>模组自己声明的 displayName；如果它已经是中文就直接用；</li>
+     *   <li>displayName 是英文、且内置表里有对应中文名时，用内置中文名；</li>
+     *   <li>都没有就显示 displayName（再没有就显示原始命名空间）。</li>
+     * </ol>
+     */
+    static String modDisplayName(String namespace) {
+        if (namespace == null || namespace.isEmpty()) return "?";
+
+        String key = "gui.infinitestats.mod." + namespace;
+        String localized = Language.getInstance().getOrDefault(key, "");
+        if (localized != null && !localized.isEmpty() && !localized.equals(key)) return localized;
+
+        String declared = null;
+        ModList modList = ModList.get();
+        if (modList != null) {
+            var container = modList.getModContainerById(namespace);
+            if (container.isPresent()) {
+                String name = container.get().getModInfo().getDisplayName();
+                if (name != null && !name.isBlank() && !name.equalsIgnoreCase(namespace)) {
+                    declared = name;
+                }
+            }
+        }
+
+        if (declared != null) {
+            // 模组自己给的就是中文 → 用它；还是英文才考虑内置表
+            if (containsChinese(declared)) return declared;
+            String known = KNOWN_MOD_NAMES.get(namespace);
+            return known != null ? known : declared;
+        }
+
+        return KNOWN_MOD_NAMES.getOrDefault(namespace, namespace);
+    }
+
+    private static boolean containsChinese(String text) {
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c >= '\u4e00' && c <= '\u9fff') return true;
+        }
+        return false;
     }
 
     private static int frameColor(int frame) {

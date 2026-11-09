@@ -31,8 +31,10 @@ public class CrossDimScreen extends PanelScreen {
     private static final int TEXT_NEGATIVE = 0xFFF87171;
     private static final int TEXT_ACTIVE = 0xFF4ADE80;
 
-    // 列表区域（标题/状态栏下方到面板底部之间）
-    private static final int LIST_TOP_OFFSET = 66;
+    // 列表区域（搜索框下方到面板底部之间）
+    private static final int SEARCH_Y = 54;
+    private static final int SEARCH_H = 18;
+    private static final int LIST_TOP_OFFSET = 78;
     private static final int LIST_BOTTOM_OFFSET = 10;
 
     // 服务器下发的维度列表（完整注册名，如 minecraft:overworld / twilightforest:twilight_forest）
@@ -44,8 +46,17 @@ public class CrossDimScreen extends PanelScreen {
     private String currentDim = "";
     private long lastSoundTick;
 
+    /** 跨维度传送需要二次点击确认（第一次点只把按钮变成「确认？」）。 */
+    private final ConfirmAction confirm = new ConfirmAction();
+
     // 滚动状态
     private final List<Button> dimButtons = new ArrayList<>();
+    /** 当前显示的维度（已按搜索词过滤），与 {@link #dimButtons} 一一对应。 */
+    private List<String> displayed = new ArrayList<>();
+    private net.minecraft.client.gui.components.EditBox searchBox;
+    private String searchText = "";
+    /** 当前悬停的维度（给原始注册名提示用）。 */
+    private String hoveredDim;
     private int scrollOffset = 0;
     private int maxScroll = 0;
     private int contentHeight = 0;
@@ -66,13 +77,62 @@ public class CrossDimScreen extends PanelScreen {
         }
     }
 
+    /** 原版与少数有固定译名的维度的中文名。 */
+    private static final java.util.Map<String, String> KNOWN_DIMENSION_NAMES = java.util.Map.of(
+            "minecraft:overworld", "主世界",
+            "minecraft:the_nether", "下界",
+            "minecraft:the_end", "末地",
+            "twilightforest:twilight_forest", "暮色森林",
+            "aether:the_aether", "天境");
+
+    /**
+     * 维度显示名。
+     * <p>
+     * 原版<b>没有</b>「维度名」这一说：{@code Dimension} 是代码注册的，既没有 display 字段，
+     * 也不像生物群系那样带本地化键，所以拿不到「官方中文名」，只能三层兜底：
+     * <ol>
+     *   <li>内置的常见维度表；</li>
+     *   <li>语言文件里的 {@code gui.infinitestats.dimension.&lt;命名空间&gt;.&lt;路径&gt;}
+     *       —— 整合包作者想给某个模组维度起中文名，在资源包里加这一条就行；</li>
+     *   <li>把路径段转成可读形式（{@code twilight_forest} → {@code Twilight Forest}）。</li>
+     * </ol>
+     * 原始注册名始终保留在悬停提示与搜索匹配里，不会认错。
+     */
     private static String displayName(String rl) {
-        return switch (rl) {
-            case "minecraft:overworld" -> "主世界";
-            case "minecraft:the_nether" -> "下界";
-            case "minecraft:the_end" -> "末地";
-            default -> rl;
-        };
+        String known = KNOWN_DIMENSION_NAMES.get(rl);
+        if (known != null) return known;
+
+        int colon = rl.indexOf(':');
+        String ns = colon >= 0 ? rl.substring(0, colon) : "minecraft";
+        String path = colon >= 0 ? rl.substring(colon + 1) : rl;
+
+        String key = "gui.infinitestats.dimension." + ns + "." + path;
+        String localized = net.minecraft.locale.Language.getInstance().getOrDefault(key, "");
+        if (localized != null && !localized.isEmpty() && !localized.equals(key)) {
+            return localized;
+        }
+
+        return readable(path);
+    }
+
+    /** {@code twilight_forest} → {@code Twilight Forest}。 */
+    private static String readable(String path) {
+        String text = path.replace('_', ' ').replace('/', ' ');
+        StringBuilder sb = new StringBuilder(text.length());
+        boolean upper = true;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == ' ') {
+                sb.append(c);
+                upper = true;
+            } else if (upper) {
+                sb.append(Character.toUpperCase(c));
+                upper = false;
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     @Override
@@ -105,29 +165,62 @@ public class CrossDimScreen extends PanelScreen {
             });
         }
 
+        // 搜索框：模组维度一多就不用一路滚到底
+        searchText = "";
+        searchBox = new net.minecraft.client.gui.components.EditBox(font,
+                leftPos + 20, topPos + SEARCH_Y, GUI_W - 40, SEARCH_H, Component.empty());
+        searchBox.setMaxLength(48);
+        searchBox.setHint(Component.translatable("gui.infinitestats.crossdim_search_hint"));
+        searchBox.setResponder(v -> {
+            searchText = v;
+            scrollOffset = 0;
+            rebuildList();
+        });
+        addRenderableWidget(searchBox);
+
         // 向服务器请求完整的维度列表（含模组维度）
         NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.CrossDimListRequestPacket());
 
         rebuildList();
     }
 
+    /** 按搜索词过滤维度（匹配显示名、注册名或中文别名）。 */
+    private List<String> filteredDimensions() {
+        String q = searchText.toLowerCase(java.util.Locale.ROOT).trim();
+        if (q.isEmpty()) return SERVER_DIMENSIONS;
+
+        List<String> out = new ArrayList<>();
+        for (String key : SERVER_DIMENSIONS) {
+            if (key.toLowerCase(java.util.Locale.ROOT).contains(q)
+                    || displayName(key).toLowerCase(java.util.Locale.ROOT).contains(q)) {
+                out.add(key);
+            }
+        }
+        return out;
+    }
+
     /** 重建维度按钮列表，并重新计算滚动范围。 */
     private void rebuildList() {
-        this.clearWidgets();
+        // 只清维度按钮：搜索框要留着，否则每敲一个字就丢焦点
+        for (Button b : dimButtons) removeWidget(b);
         dimButtons.clear();
+        confirm.reset();
+
+        displayed = filteredDimensions();
 
         int btnW = GUI_W - 40;
         int listHeight = GUI_H - LIST_TOP_OFFSET - LIST_BOTTOM_OFFSET;
         int startY = topPos + LIST_TOP_OFFSET;
 
         int i = 0;
-        for (String dimKey : SERVER_DIMENSIONS) {
+        for (String dimKey : displayed) {
             final String key = dimKey;
             boolean isCurrent = currentDim.equals(key);
             int by = startY + i * (BTN_H + GAP);
-            Button btn = Button.builder(
-                            Component.literal(displayName(key) + (isCurrent ? "（当前）" : "")),
-                            b -> requestTeleport(key))
+            Component label = isCurrent
+                    ? Component.translatable("gui.infinitestats.crossdim_current", displayName(key))
+                    : Component.literal(displayName(key));
+            Button btn = Button.builder(label, b -> requestTeleport(key))
                     .bounds(leftPos + 20, by, btnW, BTN_H)
                     .build();
             btn.active = toggleActive && !isCurrent;
@@ -136,7 +229,7 @@ public class CrossDimScreen extends PanelScreen {
             i++;
         }
 
-        contentHeight = SERVER_DIMENSIONS.size() * (BTN_H + GAP);
+        contentHeight = displayed.size() * (BTN_H + GAP);
         maxScroll = Math.max(0, contentHeight - listHeight);
         clampScroll();
     }
@@ -146,8 +239,12 @@ public class CrossDimScreen extends PanelScreen {
         if (scrollOffset > maxScroll) scrollOffset = maxScroll;
     }
 
+    /** 传送前要再点一次：第一下只把按钮变成「确认？」，避免手滑直接换维度。 */
     private void requestTeleport(String dimKey) {
         playClickSound();
+        if (!confirm.confirm("dim:" + dimKey)) {
+            return;
+        }
         NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.CrossDimRequestPacket(dimKey));
         onClose();
     }
@@ -172,6 +269,8 @@ public class CrossDimScreen extends PanelScreen {
 
     @Override
     protected void renderPanel(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        hoveredDim = null;
+
         // 面板
         graphics.fill(leftPos - 2, topPos - 2, leftPos + GUI_W + 2, topPos + GUI_H + 2, 0x403B82F6);
         graphics.fill(leftPos - 1, topPos - 1, leftPos + GUI_W + 1, topPos + GUI_H + 1, 0xFF1E293B);
@@ -198,11 +297,38 @@ public class CrossDimScreen extends PanelScreen {
             int by = listTop + i * (BTN_H + GAP) - scrollOffset;
             btn.setY(by);
             btn.visible = by + BTN_H > listTop && by < listBottom;
+
+            // 二次确认态：被点过一次的那个按钮显示「确认？」
+            if (i < displayed.size()) {
+                String key = displayed.get(i);
+                boolean isCurrent = currentDim.equals(key);
+                boolean confirming = confirm.isConfirming("dim:" + key);
+                btn.setMessage(confirming
+                        ? Component.translatable("screen.infinitestats.ui.confirm")
+                        : isCurrent
+                                ? Component.translatable("gui.infinitestats.crossdim_current", displayName(key))
+                                : Component.literal(displayName(key)));
+
+                if (btn.visible && mouseX >= btn.getX() && mouseX < btn.getX() + btn.getWidth()
+                        && mouseY >= btn.getY() && mouseY < btn.getY() + btn.getHeight()) {
+                    hoveredDim = key;
+                }
+            }
         }
+
         for (var renderable : this.renderables) {
             renderable.render(graphics, mouseX, mouseY, partialTick);
         }
         endPanelScissor(graphics);
+
+        // 空状态：没有维度，或者被搜索条件筛没了
+        if (dimButtons.isEmpty()) {
+            graphics.drawCenteredString(font,
+                    Component.translatable(searchText.isBlank()
+                            ? "gui.infinitestats.crossdim_empty"
+                            : "gui.infinitestats.crossdim_no_match").getString(),
+                    leftPos + GUI_W / 2, listTop + 24, TEXT_NEGATIVE);
+        }
 
         // 底部提示 / 滚动条
         if (!toggleActive) {
@@ -211,6 +337,11 @@ public class CrossDimScreen extends PanelScreen {
                     leftPos + GUI_W / 2, topPos + GUI_H - 14, TEXT_NEGATIVE);
         } else if (maxScroll > 0) {
             drawScrollbar(graphics, listTop, listBottom);
+        }
+
+        // 显示名可能是兜底翻译出来的，悬停给原始注册名，避免认错维度
+        if (hoveredDim != null && !hoveredDim.equals(displayName(hoveredDim))) {
+            queueTooltip(graphics, mouseX, mouseY, List.of("§7" + hoveredDim), TEXT_ACTIVE);
         }
     }
 

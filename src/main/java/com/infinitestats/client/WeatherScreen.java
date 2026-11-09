@@ -55,6 +55,9 @@ public class WeatherScreen extends PanelScreen {
 
     private final List<Button> entryButtons = new ArrayList<>();
 
+    /** 切换天气需要二次点击确认（第一次点只把按钮变成「确认？」）。 */
+    private final ConfirmAction confirm = new ConfirmAction();
+
     public WeatherScreen() {
         super(Component.translatable("gui.infinitestats.weather.title"));
     }
@@ -117,6 +120,13 @@ public class WeatherScreen extends PanelScreen {
             toggleActive = active;
             for (Button btn : entryButtons) btn.active = active;
         }
+        // 二次确认态：被点过一次的档位显示「确认？」
+        for (int i = 0; i < entryButtons.size(); i++) {
+            String id = ENTRY_IDS[i];
+            entryButtons.get(i).setMessage(confirm.isConfirming("weather:" + id)
+                    ? Component.translatable("screen.infinitestats.ui.confirm")
+                    : text("entry." + id));
+        }
     }
 
     private static boolean isToggleActive() {
@@ -135,8 +145,10 @@ public class WeatherScreen extends PanelScreen {
         return "clear";
     }
 
+    /** 切天气前要再点一次：第一下只进入确认态，避免手滑把好不容易等来的雷暴切掉。 */
     private void request(String id) {
         playClickSound();
+        if (!confirm.confirm("weather:" + id)) return;
         NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.WeatherControlPacket(id));
     }
 

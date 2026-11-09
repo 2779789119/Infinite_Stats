@@ -93,6 +93,9 @@ public class EmcScreen extends PanelScreen implements MenuAccess<EmcMenu> {
     private long costPreview = -1;
     private final List<ItemStack> display = new ArrayList<>();
 
+    /** Ctrl+左键遗忘需要二次点击确认。 */
+    private final ConfirmAction confirm = new ConfirmAction();
+
     public EmcScreen(EmcMenu menu, Inventory inv, Component title) {
         super(title);
         this.menu = menu;
@@ -465,6 +468,16 @@ public class EmcScreen extends PanelScreen implements MenuAccess<EmcMenu> {
         if (!target.isEmpty()) {
             if (hasControlDown() && button == 0) {
                 ResourceLocation forgetId = BuiltInRegistries.ITEM.getKey(target.getItem());
+                // 遗忘会移出已学列表（不返还 EMC），第一次按只提示，再按一次才真的忘
+                if (!confirm.confirm("forget:" + forgetId)) {
+                    var mc = Minecraft.getInstance();
+                    if (mc.player != null) {
+                        mc.player.displayClientMessage(
+                                Component.translatable("screen.infinitestats.emc.confirm_forget",
+                                        target.getHoverName()), true);
+                    }
+                    return true;
+                }
                 NetworkHandler.CHANNEL.sendToServer(
                         new NetworkHandler.EmcForgetPacket(forgetId.toString()));
                 return true;

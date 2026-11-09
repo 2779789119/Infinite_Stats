@@ -175,6 +175,38 @@ public abstract class PanelScreen extends Screen {
     protected void renderPanelOverlay(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
     }
 
+    /**
+     * 排队一个提示框，等<b>控件与覆盖层全部画完</b>后再绘制。
+     * <p>
+     * 直接在 {@link #renderPanel} 里调 {@link EditorUi#tooltip} 的话，随后绘制的按钮
+     * （含按钮文字）、状态条会盖在浮窗上 —— 表现就是「浮窗被文字压住」。
+     * 传面板坐标，内部会换算成屏幕坐标并按单位矩阵绘制，边界避让才和真实屏幕一致。
+     */
+    protected final void queueTooltip(GuiGraphics g, int panelX, int panelY,
+                                      java.util.List<String> lines, int accent) {
+        if (lines == null || lines.isEmpty()) return;
+        int screenX = toScreenX(panelX);
+        int screenY = toScreenY(panelY);
+        queuedTooltips.add(() -> {
+            var pose = g.pose();
+            pose.pushPose();
+            pose.last().pose().identity();
+            EditorUi.tooltip(g, screenX, screenY, lines, accent);
+            pose.popPose();
+        });
+    }
+
+    /** 本帧排队的提示框：全部画完之后统一执行，保证永远在最上层。 */
+    private final java.util.List<Runnable> queuedTooltips = new java.util.ArrayList<>();
+
+    private void flushQueuedTooltips() {
+        if (queuedTooltips.isEmpty()) return;
+        for (Runnable painter : queuedTooltips) {
+            painter.run();
+        }
+        queuedTooltips.clear();
+    }
+
     @Override
     public final void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         renderBackground(g);
@@ -191,6 +223,8 @@ public abstract class PanelScreen extends Screen {
         int panelMouseX = toPanelX(mouseX);
         int panelMouseY = toPanelY(mouseY);
 
+        queuedTooltips.clear();
+
         var pose = g.pose();
         pose.pushPose();
         pose.translate(originX, originY, 0);
@@ -198,6 +232,8 @@ public abstract class PanelScreen extends Screen {
         renderPanel(g, panelMouseX, panelMouseY, partialTick);
         if (baseRendersWidgets()) renderWidgets(g, panelMouseX, panelMouseY, partialTick);
         renderPanelOverlay(g, panelMouseX, panelMouseY, partialTick);
+        // 提示框最后画：内容层 / 控件 / 覆盖层都盖不住它
+        flushQueuedTooltips();
         pose.popPose();
     }
 

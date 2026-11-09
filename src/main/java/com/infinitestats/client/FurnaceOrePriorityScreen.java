@@ -131,6 +131,12 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
     private static final int CLEAR_W = 42;
     private static final int CLEAR_H = 16;
 
+    /** 「全部加入」：把右栏当前筛选结果一次性加进优先列表（同类矿石一键全加）。 */
+    private static final int ADD_ALL_X = 156;
+    private static final int ADD_ALL_Y = 44;
+    private static final int ADD_ALL_W = 52;
+    private static final int ADD_ALL_H = 16;
+
     /** 底部分隔线与背包标签。 */
     private static final int SEP_Y = LIST_BOTTOM + 2;  // 164
     private static final int INV_LABEL_Y = 168;
@@ -310,6 +316,22 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
         sendUpdate();
     }
 
+    /**
+     * 把右栏<b>当前筛选结果</b>一次性加进优先列表。
+     * <p>
+     * 搜索框里输入模组名或矿石关键词后再点「全加」，就是「同类矿石一键全加」；
+     * 已经在列表里的会跳过，不会重复。
+     */
+    private void addAllAvailable() {
+        int added = 0;
+        for (String id : filteredAvailable()) {
+            if (id == null || id.isEmpty() || priorityView.contains(id)) continue;
+            priorityView.add(id);
+            added++;
+        }
+        if (added > 0) sendUpdate();
+    }
+
     private void sendUpdate() {
         // 清掉最近一次同步，避免服务器回包覆盖本地的乐观更新
         FurnaceOrePrioritySyncPacket.latest = null;
@@ -377,6 +399,12 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
                     priorityView.clear();
                     sendUpdate();
                 }
+                return true;
+            }
+
+            // 2.5) 全部加入：把右栏当前筛选结果一次性加进优先列表
+            if (isOver(relX, relY, ADD_ALL_X, ADD_ALL_Y, ADD_ALL_W, ADD_ALL_H)) {
+                addAllAvailable();
                 return true;
             }
 
@@ -613,6 +641,9 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
 
         drawButton(g, CLEAR_X, CLEAR_Y, CLEAR_W, CLEAR_H, clearLabel.getString(),
                 relX, relY, !priorityView.isEmpty());
+        drawButton(g, ADD_ALL_X, ADD_ALL_Y, ADD_ALL_W, ADD_ALL_H,
+                Component.translatable("gui.infinitestats.furnace.ore_priority.add_all").getString(),
+                relX, relY, !filteredAvailable().isEmpty());
     }
 
     private void drawPriorityRows(GuiGraphics g, int relX, int relY) {

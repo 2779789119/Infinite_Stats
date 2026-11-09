@@ -11,6 +11,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.util.Mth;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,6 +33,17 @@ public final class PortableToolsScreen extends PanelScreen {
 
     private static final int GUI_WIDTH = 440;
     private static final int GUI_HEIGHT = 376;
+
+    // 工具网格布局（滚动时按行偏移）
+    private static final int GRID_MARGIN = 16;
+    private static final int GRID_GAP = 8;
+    private static final int BTN_H = 24;
+    private static final int ROW_GAP = 6;
+    private static final int GRID_TOP = 62;
+    private static final int GRID_BOTTOM = GUI_HEIGHT - 50;
+    private static final int ROW_STRIDE = BTN_H + ROW_GAP;
+    private static final int VISIBLE_ROWS = Math.max(1, (GRID_BOTTOM - GRID_TOP) / ROW_STRIDE);
+    private static final int SCROLL_X = GUI_WIDTH - 8 - EditorUi.SCROLL_W;
     private static final int BG_PANEL = 0xE81A1A2E;
     private static final int BORDER_COLOR = 0x403B82F6;
     private static final int TEXT_TITLE = 0xFFFFD166;
@@ -67,8 +79,14 @@ public final class PortableToolsScreen extends PanelScreen {
     }
 
     private PlayerStats stats;
-    /** 与 {@link #TOOL_IDS} 一一对应的按钮，右键关闭时按位置命中。 */
+    /** 当前可见的按钮（只创建可见行，滚出视野的不存在）。 */
     private final List<Button> toolButtons = new ArrayList<>();
+    /** 与 {@link #toolButtons} 一一对应的工具 id，右键关闭时按位置命中。 */
+    private final List<String> visibleToolIds = new ArrayList<>();
+
+    /** 当前滚到第几行（工具多于可见行数时用）。 */
+    private int toolScrollRow;
+    private int toolMaxScroll;
 
     public PortableToolsScreen() {
         super(Component.translatable("gui.infinitestats.tools.title"));
@@ -78,21 +96,23 @@ public final class PortableToolsScreen extends PanelScreen {
     protected void init() {
         super.init();
         toolButtons.clear();
+        visibleToolIds.clear();
         stats = getClientStats();
 
-        int margin = 16;
-        int gap = 8;
-        int btnW = (GUI_WIDTH - margin * 2 - gap) / 2;
-        int btnH = 24;
-        int startY = 62;
-        int rowGap = 6;
+        int btnW = (GUI_WIDTH - GRID_MARGIN * 2 - GRID_GAP) / 2;
+        int totalRows = (TOOL_IDS.size() + 1) / 2;
+        toolMaxScroll = Math.max(0, totalRows - VISIBLE_ROWS);
+        toolScrollRow = Mth.clamp(toolScrollRow, 0, toolMaxScroll);
 
         for (int i = 0; i < TOOL_IDS.size(); i++) {
+            int row = i / 2;
+            int visibleRow = row - toolScrollRow;
+            if (visibleRow < 0 || visibleRow >= VISIBLE_ROWS) continue;
+
             String id = TOOL_IDS.get(i);
             int col = i % 2;
-            int row = i / 2;
-            int x = leftPos + margin + col * (btnW + gap);
-            int y = topPos + startY + row * (btnH + rowGap);
+            int x = leftPos + GRID_MARGIN + col * (btnW + GRID_GAP);
+            int y = topPos + GRID_TOP + visibleRow * ROW_STRIDE;
 
             boolean unlocked = isUnlocked(id);
             Component name = Component.translatable("stat.infinitestats." + id);
@@ -103,19 +123,75 @@ public final class PortableToolsScreen extends PanelScreen {
                     : Component.translatable("gui.infinitestats.tools.tip_locked", name);
 
             Button btn = Button.builder(label, b -> onLeftClick(id))
-                    .bounds(x, y, btnW, btnH)
+                    .bounds(x, y, btnW, BTN_H)
                     .tooltip(Tooltip.create(tip))
                     .build();
             addRenderableWidget(btn);
             toolButtons.add(btn);
+            visibleToolIds.add(id);
         }
 
         int footerY = topPos + GUI_HEIGHT - 32;
         addRenderableWidget(Button.builder(
+                        Component.translatable("gui.infinitestats.tools.unlock_all"),
+                        b -> unlockAll())
+                .bounds(leftPos + GRID_MARGIN, footerY, 84, 20).build());
+        addRenderableWidget(Button.builder(
+                        Component.translatable("gui.infinitestats.tools.lock_all"),
+                        b -> lockAll())
+                .bounds(leftPos + GRID_MARGIN + 88, footerY, 84, 20).build());
+        addRenderableWidget(Button.builder(
                         Component.translatable("gui.infinitestats.tools.back"),
                         b -> backToStats())
-                .bounds(leftPos + GUI_WIDTH / 2 - 60, footerY, 120, 20)
+                .bounds(leftPos + GUI_WIDTH - GRID_MARGIN - 120, footerY, 120, 20)
                 .build());
+    }
+
+    /**
+     * 一键解锁全部随身工具：点数够就一直开到底，不够就停在买不起的那一个，
+     * 已经解锁的跳过（不重复扣点）。
+     */
+    private void unlockAll() {
+        if (stats == null) return;
+        int unlocked = 0;
+        for (String id : TOOL_IDS) {
+            if (isUnlocked(id)) continue;
+            StatType stat = StatType.fromId(id);
+            if (stat == null) continue;
+            // 点数投满了却仍不可用 → 是「功能开关」把整条关掉了，跳过
+            if (stats.getStatLevel(stat) >= stat.getMaxLevel()) continue;
+
+            long needed = Math.max(1, stat.getMaxLevel() - stats.getStatLevel(stat));
+            if (stats.getAvailablePoints() < needed) continue;
+            if (!stats.addPoints(stat, needed)) continue;
+
+            NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.ModifyStatPacket(id, needed));
+            unlocked++;
+        }
+        showMessage(unlocked > 0
+                ? Component.translatable("gui.infinitestats.tools.unlocked_n", unlocked)
+                : Component.translatable("message.infinitestats.not_enough_points"));
+        rebuildWidgets();
+    }
+
+    /** 一键关闭全部随身工具：把每条已经投进去的点数原样退回来。 */
+    private void lockAll() {
+        if (stats == null) return;
+        int locked = 0;
+        for (String id : TOOL_IDS) {
+            StatType stat = StatType.fromId(id);
+            if (stat == null) continue;
+            long level = stats.getStatLevel(stat);
+            if (level <= 0) continue;
+            if (!stats.removePoints(stat, level)) continue;
+
+            NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.ModifyStatPacket(id, -level));
+            locked++;
+        }
+        if (locked > 0) {
+            showMessage(Component.translatable("gui.infinitestats.tools.locked_n", locked));
+        }
+        rebuildWidgets();
     }
 
     /** 左键：已解锁就打开界面，未解锁就花点数解锁。 */
@@ -133,12 +209,20 @@ public final class PortableToolsScreen extends PanelScreen {
         if (button == 1) {
             for (int i = 0; i < toolButtons.size(); i++) {
                 if (toolButtons.get(i).isMouseOver(mouseX, mouseY)) {
-                    deactivateTool(TOOL_IDS.get(i));
+                    deactivateTool(visibleToolIds.get(i));
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    @Override
+    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
+        if (toolMaxScroll <= 0 || delta == 0) return false;
+        toolScrollRow = Mth.clamp(toolScrollRow - (int) Math.signum(delta), 0, toolMaxScroll);
+        rebuildWidgets();
+        return true;
     }
 
     /**
@@ -242,6 +326,11 @@ public final class PortableToolsScreen extends PanelScreen {
                 leftPos + GUI_WIDTH / 2, topPos + 28, TEXT_SUBTITLE);
         graphics.drawCenteredString(font, Component.translatable("gui.infinitestats.tools.hint"),
                 leftPos + GUI_WIDTH / 2, topPos + GUI_HEIGHT - 44, TEXT_HINT);
+
+        if (toolMaxScroll > 0) {
+            EditorUi.scrollbar(graphics, mouseX, mouseY, leftPos + SCROLL_X, topPos + GRID_TOP,
+                    VISIBLE_ROWS * ROW_STRIDE - ROW_GAP, toolScrollRow, toolMaxScroll, VISIBLE_ROWS);
+        }
     }
 
     @Override

@@ -12,6 +12,7 @@ import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.client.sounds.SoundManager;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.util.Mth;
 
 /**
  * 「矿透 · 矿物种类」界面 —— 逐类决定哪些矿石要描边。
@@ -28,20 +29,29 @@ public class OreVisionGroupsScreen extends PanelScreen {
     private static final int GUI_W = 320;
     private static final int COLS = 2;
     private static final int COL_GAP = 8;
-    private static final int COL_W = (GUI_W - EditorUi.GAP * 2 - COL_GAP) / COLS;
+    /** 列表右侧给滚动条留的宽度，避免按钮压在滚动条下面。 */
+    private static final int SCROLL_RESERVE = 7;
+    private static final int COL_W = (GUI_W - EditorUi.GAP * 2 - COL_GAP - SCROLL_RESERVE) / COLS;
     private static final int ROW_H = 22;
     private static final int BTN_H = 18;
     private static final int HINT_Y = EditorUi.HEADER_H + 4;
     private static final int LIST_Y = HINT_Y + 20;
+    /** 列表可见行数（不是分组总数）：分组变多时滚动，面板尺寸不变。 */
     private static final int ROWS = 6;
+    private static final int LIST_H = ROWS * ROW_H;
     private static final int FOOTER_H = 20;
-    private static final int FOOTER_Y = LIST_Y + ROWS * ROW_H + 6;
+    private static final int FOOTER_Y = LIST_Y + LIST_H + 6;
     private static final int GUI_H = FOOTER_Y + FOOTER_H + EditorUi.GAP;
+    private static final int SCROLL_X = GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
 
     // ======================== 状态 ========================
 
     private final Screen parent;
     private final OreVisionConfig cfg = new OreVisionConfig();
+
+    /** 当前滚到第几行（按「行」滚动，一行放 COLS 个分组）。 */
+    private int scrollRow;
+    private int maxScrollRow;
 
     public OreVisionGroupsScreen(Screen parent) {
         super(Component.translatable("screen.infinitestats.ore_groups"));
@@ -87,12 +97,22 @@ public class OreVisionGroupsScreen extends PanelScreen {
 
     private void buildWidgets() {
         var groups = OreVisionConfig.groups();
+
+        // 分组变多时按行滚动：只创建可见行里的按钮，滚出视野的连控件都不存在，
+        // 面板高度固定，不会像以前那样「第 13 组直接画到面板外面」。
+        int totalRows = (groups.size() + COLS - 1) / COLS;
+        maxScrollRow = Math.max(0, totalRows - ROWS);
+        scrollRow = Mth.clamp(scrollRow, 0, maxScrollRow);
+
         for (int i = 0; i < groups.size(); i++) {
+            int row = i / COLS;
+            int visibleRow = row - scrollRow;
+            if (visibleRow < 0 || visibleRow >= ROWS) continue;
+
             OreVisionConfig.OreGroup group = groups.get(i);
-            int col = i / ROWS;
-            int row = i % ROWS;
+            int col = i % COLS;
             int x = leftPos + EditorUi.GAP + col * (COL_W + COL_GAP);
-            int y = topPos + LIST_Y + row * ROW_H;
+            int y = topPos + LIST_Y + visibleRow * ROW_H;
             addRenderableWidget(new GroupButton(x, y, COL_W, BTN_H, group, b -> {
                 cfg.setGroupHidden(group, !cfg.isGroupHidden(group));
                 playClick();
@@ -102,18 +122,24 @@ public class OreVisionGroupsScreen extends PanelScreen {
 
         addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.ore_groups.show_all"),
-                        b -> {
-                            for (OreVisionConfig.OreGroup group : OreVisionConfig.groups()) {
-                                cfg.setGroupHidden(group, false);
-                            }
-                            playClick();
-                            submit();
-                        })
-                .bounds(leftPos + EditorUi.GAP, topPos + FOOTER_Y, 80, FOOTER_H).build());
+                        b -> setAllHidden(false))
+                .bounds(leftPos + EditorUi.GAP, topPos + FOOTER_Y, 72, FOOTER_H).build());
+        addRenderableWidget(Button.builder(
+                        Component.translatable("screen.infinitestats.ore_groups.hide_all"),
+                        b -> setAllHidden(true))
+                .bounds(leftPos + EditorUi.GAP + 76, topPos + FOOTER_Y, 72, FOOTER_H).build());
         addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.deposit_filter.done"),
                         b -> onClose())
                 .bounds(leftPos + GUI_W - EditorUi.GAP - 64, topPos + FOOTER_Y, 64, FOOTER_H).build());
+    }
+
+    private void setAllHidden(boolean hidden) {
+        for (OreVisionConfig.OreGroup group : OreVisionConfig.groups()) {
+            cfg.setGroupHidden(group, hidden);
+        }
+        playClick();
+        submit();
     }
 
     /** 提交给服务端，并同步改一份本地数据（按钮状态立刻反映结果）。 */
@@ -134,6 +160,20 @@ public class OreVisionGroupsScreen extends PanelScreen {
         EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
         g.drawString(font, Component.translatable("screen.infinitestats.ore_groups.hint").getString(),
                 leftPos + EditorUi.GAP, topPos + HINT_Y, EditorUi.SECONDARY);
+
+        if (maxScrollRow > 0) {
+            EditorUi.scrollbar(g, mx, my, leftPos + SCROLL_X, topPos + LIST_Y, LIST_H,
+                    scrollRow, maxScrollRow, ROWS);
+        }
+    }
+
+    @Override
+    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
+        if (maxScrollRow <= 0 || delta == 0) return false;
+        scrollRow = Mth.clamp(scrollRow - (int) Math.signum(delta), 0, maxScrollRow);
+        // 按钮是真实控件、只创建可见行，所以滚动后整体重建一次（分组数量很小，开销可忽略）
+        rebuildWidgets();
+        return true;
     }
 
     private void playClick() {

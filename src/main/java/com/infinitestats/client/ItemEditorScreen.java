@@ -379,7 +379,8 @@ public class ItemEditorScreen extends PanelScreen {
     @Override
     protected void renderPanelOverlay(GuiGraphics g, int mx, int my, float pt) {
         if (hoveredEnchant != null) {
-            renderEnchantDescription(g, mx, my, hoveredEnchant);
+            List<String> lines = enchantDescriptionLines(hoveredEnchant);
+            if (lines != null) queueTooltip(g, mx, my, lines, EditorUi.ACCENT);
         } else if (hoveredAttr != null) {
             renderAttrTooltip(g, mx, my, hoveredAttr);
         }
@@ -517,7 +518,7 @@ public class ItemEditorScreen extends PanelScreen {
         lines.add("§7原始 ID: " + a.id());
         lines.add("§7操作: " + OP_LABELS[clampOp(a.op())] + "  §7数值: " + EditorUi.amount(a.amount()));
         lines.add("§7生效槽位: " + slotLabel(a.slot()));
-        EditorUi.tooltip(g, mx, my, lines, EditorUi.INFO);
+        queueTooltip(g, mx, my, lines, EditorUi.INFO);
     }
 
     // ======================== 输入 ========================
@@ -905,10 +906,10 @@ public class ItemEditorScreen extends PanelScreen {
         return val;
     }
 
-    /** 在鼠标附近绘制附魔描述浮窗（多行自动折行），供选择列表与编辑列表 hover 时调用。 */
-    static void renderEnchantDescription(GuiGraphics g, int mx, int my, ResourceLocation rl) {
+    /** 附魔描述的折行结果（未安装描述模组时返回 null），由调用方决定画在哪一层。 */
+    static List<String> enchantDescriptionLines(ResourceLocation rl) {
         String desc = enchantDescription(rl);
-        if (desc == null) return;
+        if (desc == null) return null;
         Font font = Minecraft.getInstance().font;
         int maxWidth = 220;
         List<String> lines = new ArrayList<>();
@@ -926,6 +927,12 @@ public class ItemEditorScreen extends PanelScreen {
             }
             if (cur.length() > 0) lines.add(cur.toString());
         }
-        EditorUi.tooltip(g, mx, my, lines, EditorUi.ACCENT);
+        return lines;
+    }
+
+    /** 在鼠标附近绘制附魔描述浮窗（多行自动折行），供选择列表与编辑列表 hover 时调用。 */
+    static void renderEnchantDescription(GuiGraphics g, int mx, int my, ResourceLocation rl) {
+        List<String> lines = enchantDescriptionLines(rl);
+        if (lines != null) EditorUi.tooltip(g, mx, my, lines, EditorUi.ACCENT);
     }
 }

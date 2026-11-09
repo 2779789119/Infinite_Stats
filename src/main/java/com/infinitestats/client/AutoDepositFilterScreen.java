@@ -71,6 +71,9 @@ public class AutoDepositFilterScreen extends PanelScreen {
     private boolean useWhitelist;
     private boolean onlySelected;
 
+    /** 「清空」需要二次点击确认。 */
+    private final ConfirmAction confirm = new ConfirmAction();
+
     private String searchText = "";
     private int scroll, maxScroll;
     private boolean scrollbarDragging;
@@ -150,6 +153,8 @@ public class AutoDepositFilterScreen extends PanelScreen {
 
     private void rebuild() {
         clearWidgets();
+        // 切换筛选 / 模式后旧的那次「确认清空」不再适用
+        confirm.reset();
 
         searchBox = new EditBox(font, leftPos + EditorUi.GAP, topPos + SEARCH_Y,
                 GUI_W - EditorUi.GAP * 2 - MODE_W - 4, SEARCH_H, Component.empty());
@@ -175,6 +180,16 @@ public class AutoDepositFilterScreen extends PanelScreen {
             applyFilter();
             b.setMessage(onlySelectedLabel());
         }).bounds(leftPos + EditorUi.GAP + 64, topPos + FOOTER_Y, 76, FOOTER_H).build());
+
+        // 批量：把当前筛选结果整批加入 / 移出（配合搜索框的 @模组 就是「按模组一次加入」）
+        addRenderableWidget(Button.builder(
+                        Component.translatable("screen.infinitestats.deposit_filter.add_all"),
+                        b -> massToggle(true))
+                .bounds(leftPos + EditorUi.GAP + 140, topPos + FOOTER_Y, 44, FOOTER_H).build());
+        addRenderableWidget(Button.builder(
+                        Component.translatable("screen.infinitestats.deposit_filter.remove_all"),
+                        b -> massToggle(false))
+                .bounds(leftPos + EditorUi.GAP + 188, topPos + FOOTER_Y, 44, FOOTER_H).build());
 
         addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.deposit_filter.clear"),
@@ -208,9 +223,20 @@ public class AutoDepositFilterScreen extends PanelScreen {
 
     private void applyFilter() {
         String q = searchText.toLowerCase(Locale.ROOT).trim();
+        // @modid：只看某个模组的物品（配合「全加」就是按模组一次性加入白/黑名单）
+        String namespaceFilter = null;
+        if (q.startsWith("@")) {
+            namespaceFilter = q.substring(1).trim();
+            q = "";
+        }
+
         filtered = new ArrayList<>();
         for (Candidate c : all) {
             if (onlySelected && !selectedIds.contains(c.id().toString())) continue;
+            if (namespaceFilter != null && !namespaceFilter.isEmpty()
+                    && !c.id().getNamespace().toLowerCase(Locale.ROOT).startsWith(namespaceFilter)) {
+                continue;
+            }
             if (q.isEmpty()
                     || PinyinSearchBridge.matches(c.display().toLowerCase(Locale.ROOT), q)
                     || c.id().toString().toLowerCase(Locale.ROOT).contains(q)) {
@@ -219,6 +245,33 @@ public class AutoDepositFilterScreen extends PanelScreen {
         }
         maxScroll = Math.max(0, filtered.size() - VISIBLE_ROWS);
         scroll = clamp(scroll, 0, maxScroll);
+    }
+
+    /**
+     * 批量加入 / 移出当前筛选结果。
+     * <p>
+     * 配上搜索框的 {@code @模组名} 就是「把这个模组的物品一次性全部加进名单」。
+     */
+    private void massToggle(boolean add) {
+        if (filtered.isEmpty()) return;
+
+        int changed = 0;
+        for (Candidate c : filtered) {
+            String id = c.id().toString();
+            boolean ok = add ? selectedIds.add(id) : selectedIds.remove(id);
+            if (ok) changed++;
+        }
+        if (changed == 0) {
+            setStatus(Component.translatable("screen.infinitestats.deposit_filter.mass_no_change").getString());
+            return;
+        }
+
+        playClick();
+        setStatus(Component.translatable(add
+                ? "screen.infinitestats.deposit_filter.mass_added"
+                : "screen.infinitestats.deposit_filter.mass_removed", changed).getString());
+        if (onlySelected) applyFilter();
+        sendUpdate();
     }
 
     private void toggleMode() {
@@ -281,6 +334,12 @@ public class AutoDepositFilterScreen extends PanelScreen {
 
     private void clearAll() {
         if (selectedIds.isEmpty()) return;
+        // 清空名单是一次性抹掉整份配置，第一次点只提示，2.5 秒内再点才执行
+        if (!confirm.confirm("clear")) {
+            playClick();
+            setStatus(Component.translatable("screen.infinitestats.deposit_filter.clear_confirm").getString());
+            return;
+        }
         selectedIds.clear();
         playClick();
         applyFilter();
@@ -368,6 +427,12 @@ public class AutoDepositFilterScreen extends PanelScreen {
 
     @Override
     protected void renderPanelOverlay(GuiGraphics g, int mx, int my, float pt) {
+        // 行内名称是截断显示的，悬停给完整名称 + 注册名
+        if (hovered != null) {
+            queueTooltip(g, mx, my, List.of(
+                    "§f" + hovered.display(),
+                    "§7" + hovered.id()), EditorUi.INFO);
+        }
         if (System.currentTimeMillis() < statusUntil) {
             g.drawCenteredString(font, statusMsg, leftPos + GUI_W / 2, topPos + GUI_H - 10, EditorUi.GOLD);
         }

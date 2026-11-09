@@ -53,8 +53,12 @@ public class OreVisionSettingsScreen extends PanelScreen {
 
     private Button sneakBtn;
     private Button groupsBtn;
+    private Button resetBtn;
     private int rangeValueX;
     private int blocksValueX;
+
+    /** 「重置」会覆盖全部设置，需要二次点击确认。 */
+    private final ConfirmAction confirm = new ConfirmAction();
 
     public OreVisionSettingsScreen(Screen parent) {
         super(Component.translatable("screen.infinitestats.ore_settings"));
@@ -116,14 +120,9 @@ public class OreVisionSettingsScreen extends PanelScreen {
 
         groupsBtn = addRenderableWidget(simpleButton(rowX(), y0 + ROW_H * 3, SWITCH_W, this::openGroups));
 
-        addRenderableWidget(Button.builder(
+        resetBtn = addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.ore_settings.reset"),
-                        b -> {
-                            cfg.resetToDefault();
-                            playClick();
-                            refreshLabels();
-                            submit();
-                        })
+                        b -> requestReset())
                 .bounds(leftPos + EditorUi.GAP, topPos + FOOTER_Y, 76, FOOTER_H).build());
         addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.deposit_filter.done"),
@@ -185,6 +184,15 @@ public class OreVisionSettingsScreen extends PanelScreen {
         minecraft.setScreen(new OreVisionGroupsScreen(this));
     }
 
+    /** 重置全部设置：第一次点只进入确认态，2.5 秒内再点才真的重置。 */
+    private void requestReset() {
+        playClick();
+        if (!confirm.confirm("reset")) return;
+        cfg.resetToDefault();
+        refreshLabels();
+        submit();
+    }
+
     /** 提交给服务端，并同步改一份本地数据（界面立即反映结果，不必等服务端回包）。 */
     private void submit() {
         NetworkHandler.CHANNEL.sendToServer(new UpdateOreVisionConfigPacket(cfg));
@@ -235,6 +243,13 @@ public class OreVisionSettingsScreen extends PanelScreen {
 
         drawValue(g, 0, rangeValueX, String.valueOf(cfg.getRange()));
         drawValue(g, 1, blocksValueX, String.valueOf(cfg.getMaxBlocks()));
+
+        // 底部「重置」的二次确认态：第一次点后按钮直接变成「确认？」
+        if (resetBtn != null) {
+            resetBtn.setMessage(Component.translatable(confirm.isConfirming("reset")
+                    ? "screen.infinitestats.ui.confirm"
+                    : "screen.infinitestats.ore_settings.reset"));
+        }
     }
 
     private String rowLabel(int row) {

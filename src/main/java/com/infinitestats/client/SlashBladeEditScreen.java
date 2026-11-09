@@ -238,11 +238,11 @@ public class SlashBladeEditScreen extends PanelScreen {
     @Override
     protected void renderPanelOverlay(GuiGraphics g, int mx, int my, float pt) {
         if (hoveredSa != null) {
-            EditorUi.tooltip(g, mx, my, List.of(
+            queueTooltip(g, mx, my, List.of(
                     "§e" + SlashBladeCompat.slashArtsName(hoveredSa),
                     "§7" + hoveredSa), EditorUi.INFO);
         } else if (hoveredSe != null) {
-            EditorUi.tooltip(g, mx, my, List.of(
+            queueTooltip(g, mx, my, List.of(
                     "§e" + SlashBladeCompat.specialEffectsName(hoveredSe),
                     "§7" + hoveredSe), EditorUi.INFO);
         }

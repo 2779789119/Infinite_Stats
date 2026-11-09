@@ -12,6 +12,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.util.Mth;
 
 import java.util.function.DoubleConsumer;
 import java.util.function.DoubleSupplier;
@@ -33,12 +34,20 @@ public class VeinMinerSettingsScreen extends PanelScreen {
 
     private static final int GUI_W = 340;
     private static final int ROW_H = EditorUi.ROW_H;
+    /** 设置项总数。 */
     private static final int ROWS = 13;
+    /** 可见行数：设置项变多时滚动，面板高度固定，不会「再加一行就溢出」。 */
+    private static final int VISIBLE_ROWS = 10;
+    private static final int LIST_H = VISIBLE_ROWS * ROW_H;
     private static final int HINT_Y = EditorUi.HEADER_H + 4;
     private static final int LIST_Y = HINT_Y + 20;
     private static final int FOOTER_H = 20;
-    private static final int FOOTER_Y = LIST_Y + ROWS * ROW_H + 6;
+    private static final int FOOTER_Y = LIST_Y + LIST_H + 6;
     private static final int GUI_H = FOOTER_Y + FOOTER_H + EditorUi.GAP;
+
+    /** 右侧给滚动条留出的宽度：控件整体左移，避免压住滚动条。 */
+    private static final int SCROLL_RESERVE = 7;
+    private static final int SCROLL_X = GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
 
     private static final int BTN_H = 16;
     private static final int STEP_W = 18;
@@ -79,6 +88,14 @@ public class VeinMinerSettingsScreen extends PanelScreen {
 
     /** 数值行的档位与读写器（渲染时用它们画当前值） */
     private int blockValueX, radiusValueX, hungerValueX, xpValueX;
+
+    /** 当前滚到第几行。 */
+    private int scrollRow;
+    private int maxScrollRow;
+
+    private Button resetBtn;
+    /** 「重置」会覆盖全部设置，需要二次点击确认。 */
+    private final ConfirmAction confirm = new ConfirmAction();
 
     public VeinMinerSettingsScreen(Screen parent) {
         super(Component.translatable("screen.infinitestats.vein_settings"));
@@ -127,83 +144,79 @@ public class VeinMinerSettingsScreen extends PanelScreen {
     // ======================== 控件 ========================
 
     private void buildWidgets() {
-        int y0 = topPos + LIST_Y;
+        maxScrollRow = Math.max(0, ROWS - VISIBLE_ROWS);
+        scrollRow = Mth.clamp(scrollRow, 0, maxScrollRow);
 
         // 0 匹配方式
-        matchBtn = addRenderableWidget(simpleButton(rowX(), y0, SWITCH_W, this::cycleMatchMode));
+        matchBtn = addRowWidget(0, () -> simpleButton(rowX(), 0, SWITCH_W, this::cycleMatchMode));
 
         // 1 单次方块数
-        blockValueX = addIntStepper(y0 + ROW_H, BLOCK_STEPS, cfg::getMaxBlocks, cfg::setMaxBlocks);
+        blockValueX = addIntStepper(1, BLOCK_STEPS, cfg::getMaxBlocks, cfg::setMaxBlocks);
         // 2 搜索半径
-        radiusValueX = addIntStepper(y0 + ROW_H * 2, RADIUS_STEPS, cfg::getMaxRadius, cfg::setMaxRadius);
+        radiusValueX = addIntStepper(2, RADIUS_STEPS, cfg::getMaxRadius, cfg::setMaxRadius);
 
         // 3 斜向连锁
-        diagonalBtn = addRenderableWidget(simpleButton(rowX(), y0 + ROW_H * 3, SWITCH_W, () -> {
+        diagonalBtn = addRowWidget(3, () -> simpleButton(rowX(), 0, SWITCH_W, () -> {
             cfg.setDiagonal(!cfg.isDiagonal());
             refreshLabels();
             submit();
         }));
 
         // 4 需正确工具
-        correctToolBtn = addRenderableWidget(simpleButton(rowX(), y0 + ROW_H * 4, SWITCH_W, () -> {
+        correctToolBtn = addRowWidget(4, () -> simpleButton(rowX(), 0, SWITCH_W, () -> {
             cfg.setRequireCorrectTool(!cfg.isRequireCorrectTool());
             refreshLabels();
             submit();
         }));
 
         // 5 需潜行激活
-        sneakBtn = addRenderableWidget(simpleButton(rowX(), y0 + ROW_H * 5, SWITCH_W, () -> {
+        sneakBtn = addRowWidget(5, () -> simpleButton(rowX(), 0, SWITCH_W, () -> {
             cfg.setRequireSneak(!cfg.isRequireSneak());
             refreshLabels();
             submit();
         }));
 
         // 6 工具保护
-        protectBtn = addRenderableWidget(simpleButton(rowX(), y0 + ROW_H * 6, SWITCH_W, () -> {
+        protectBtn = addRowWidget(6, () -> simpleButton(rowX(), 0, SWITCH_W, () -> {
             cfg.setProtectTool(!cfg.isProtectTool());
             refreshLabels();
             submit();
         }));
 
         // 7 掉落直接进背包
-        collectBtn = addRenderableWidget(simpleButton(rowX(), y0 + ROW_H * 7, SWITCH_W, () -> {
+        collectBtn = addRowWidget(7, () -> simpleButton(rowX(), 0, SWITCH_W, () -> {
             cfg.setCollectDrops(!cfg.isCollectDrops());
             refreshLabels();
             submit();
         }));
 
         // 8 范围预览
-        previewBtn = addRenderableWidget(simpleButton(rowX(), y0 + ROW_H * 8, SWITCH_W, () -> {
+        previewBtn = addRowWidget(8, () -> simpleButton(rowX(), 0, SWITCH_W, () -> {
             cfg.setShowPreview(!cfg.isShowPreview());
             refreshLabels();
             submit();
         }));
 
         // 9 饥饿消耗
-        hungerValueX = addDoubleStepper(y0 + ROW_H * 9, HUNGER_STEPS,
+        hungerValueX = addDoubleStepper(9, HUNGER_STEPS,
                 cfg::getExhaustionPerBlock, cfg::setExhaustionPerBlock);
         // 10 经验消耗
-        xpValueX = addDoubleStepper(y0 + ROW_H * 10, XP_STEPS, cfg::getXpPerBlock, cfg::setXpPerBlock);
+        xpValueX = addDoubleStepper(10, XP_STEPS, cfg::getXpPerBlock, cfg::setXpPerBlock);
 
         // 11 右键整片
-        rightClickBtn = addRenderableWidget(simpleButton(rowX(), y0 + ROW_H * 11, SWITCH_W, () -> {
+        rightClickBtn = addRowWidget(11, () -> simpleButton(rowX(), 0, SWITCH_W, () -> {
             cfg.setRightClickVein(!cfg.isRightClickVein());
             refreshLabels();
             submit();
         }));
 
         // 12 自定义名单
-        listBtn = addRenderableWidget(simpleButton(rowX(), y0 + ROW_H * 12, SWITCH_W, this::openFilter));
+        listBtn = addRowWidget(12, () -> simpleButton(rowX(), 0, SWITCH_W, this::openFilter));
 
         // 页脚
-        addRenderableWidget(Button.builder(
+        resetBtn = addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.vein_settings.reset"),
-                        b -> {
-                            cfg.resetToDefault();
-                            playClick();
-                            refreshLabels();
-                            submit();
-                        })
+                        b -> requestReset())
                 .bounds(leftPos + EditorUi.GAP, topPos + FOOTER_Y, 76, FOOTER_H).build());
         addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.deposit_filter.done"),
@@ -214,7 +227,23 @@ public class VeinMinerSettingsScreen extends PanelScreen {
     }
 
     private int rowX() {
-        return leftPos + GUI_W - EditorUi.GAP - SWITCH_W;
+        return leftPos + GUI_W - EditorUi.GAP - SWITCH_W - SCROLL_RESERVE;
+    }
+
+    /** 某一行在当前滚动位置下的面板 y；不在可见范围时返回 -1。 */
+    private int rowY(int row) {
+        int visible = row - scrollRow;
+        if (visible < 0 || visible >= VISIBLE_ROWS) return -1;
+        return topPos + LIST_Y + visible * ROW_H;
+    }
+
+    /** 只在可见时创建控件：滚出视野的行连控件都不存在，不会画到页脚上。 */
+    private Button addRowWidget(int row, java.util.function.Supplier<Button> factory) {
+        int y = rowY(row);
+        if (y < 0) return null;
+        Button button = factory.get();
+        button.setY(y + 3);
+        return addRenderableWidget(button);
     }
 
     private Button simpleButton(int x, int y, int w, Runnable action) {
@@ -225,39 +254,45 @@ public class VeinMinerSettingsScreen extends PanelScreen {
     }
 
     /** 数值行：{@code -} / 当前值 / {@code +}，返回画当前值用的坐标。 */
-    private int addIntStepper(int y, int[] steps, IntSupplier getter, IntConsumer setter) {
-        int plusX = leftPos + GUI_W - EditorUi.GAP - STEP_W;
+    private int addIntStepper(int row, int[] steps, IntSupplier getter, IntConsumer setter) {
+        int plusX = leftPos + GUI_W - EditorUi.GAP - STEP_W - SCROLL_RESERVE;
         int minusX = plusX - VALUE_W - 4 - STEP_W;
-        addRenderableWidget(Button.builder(Component.literal("-"), b -> {
-            setter.accept(shiftInt(steps, getter.getAsInt(), -1));
-            playClick();
-            refreshLabels();
-            submit();
-        }).bounds(minusX, y + 3, STEP_W, BTN_H).build());
-        addRenderableWidget(Button.builder(Component.literal("+"), b -> {
-            setter.accept(shiftInt(steps, getter.getAsInt(), 1));
-            playClick();
-            refreshLabels();
-            submit();
-        }).bounds(plusX, y + 3, STEP_W, BTN_H).build());
+        int y = rowY(row);
+        if (y >= 0) {
+            addRenderableWidget(Button.builder(Component.literal("-"), b -> {
+                setter.accept(shiftInt(steps, getter.getAsInt(), -1));
+                playClick();
+                refreshLabels();
+                submit();
+            }).bounds(minusX, y + 3, STEP_W, BTN_H).build());
+            addRenderableWidget(Button.builder(Component.literal("+"), b -> {
+                setter.accept(shiftInt(steps, getter.getAsInt(), 1));
+                playClick();
+                refreshLabels();
+                submit();
+            }).bounds(plusX, y + 3, STEP_W, BTN_H).build());
+        }
         return minusX + STEP_W + 2;
     }
 
-    private int addDoubleStepper(int y, double[] steps, DoubleSupplier getter, DoubleConsumer setter) {
-        int plusX = leftPos + GUI_W - EditorUi.GAP - STEP_W;
+    private int addDoubleStepper(int row, double[] steps, DoubleSupplier getter, DoubleConsumer setter) {
+        int plusX = leftPos + GUI_W - EditorUi.GAP - STEP_W - SCROLL_RESERVE;
         int minusX = plusX - VALUE_W - 4 - STEP_W;
-        addRenderableWidget(Button.builder(Component.literal("-"), b -> {
-            setter.accept(shiftDouble(steps, getter.getAsDouble(), -1));
-            playClick();
-            refreshLabels();
-            submit();
-        }).bounds(minusX, y + 3, STEP_W, BTN_H).build());
-        addRenderableWidget(Button.builder(Component.literal("+"), b -> {
-            setter.accept(shiftDouble(steps, getter.getAsDouble(), 1));
-            playClick();
-            refreshLabels();
-            submit();
-        }).bounds(plusX, y + 3, STEP_W, BTN_H).build());
+        int y = rowY(row);
+        if (y >= 0) {
+            addRenderableWidget(Button.builder(Component.literal("-"), b -> {
+                setter.accept(shiftDouble(steps, getter.getAsDouble(), -1));
+                playClick();
+                refreshLabels();
+                submit();
+            }).bounds(minusX, y + 3, STEP_W, BTN_H).build());
+            addRenderableWidget(Button.builder(Component.literal("+"), b -> {
+                setter.accept(shiftDouble(steps, getter.getAsDouble(), 1));
+                playClick();
+                refreshLabels();
+                submit();
+            }).bounds(plusX, y + 3, STEP_W, BTN_H).build());
+        }
         return minusX + STEP_W + 2;
     }
 
@@ -306,6 +341,15 @@ public class VeinMinerSettingsScreen extends PanelScreen {
     private void openFilter() {
         if (minecraft == null) return;
         minecraft.setScreen(new VeinMinerFilterScreen(this));
+    }
+
+    /** 重置全部设置：第一次点只进入确认态，2.5 秒内再点才真的重置。 */
+    private void requestReset() {
+        playClick();
+        if (!confirm.confirm("reset")) return;
+        cfg.resetToDefault();
+        refreshLabels();
+        submit();
     }
 
     /** 提交给服务端，并同步改一份本地数据（界面立即反映结果，不必等服务端回包）。 */
@@ -360,7 +404,8 @@ public class VeinMinerSettingsScreen extends PanelScreen {
                 leftPos + EditorUi.GAP, topPos + HINT_Y, EditorUi.SECONDARY);
 
         for (int i = 0; i < ROWS; i++) {
-            int y = topPos + LIST_Y + i * ROW_H;
+            int y = rowY(i);
+            if (y < 0) continue;
             g.fill(leftPos + EditorUi.GAP - 2, y, leftPos + GUI_W - EditorUi.GAP + 2, y + ROW_H - 2,
                     (i % 2 == 0) ? EditorUi.BG_ROW : EditorUi.BG_ROW_HOVER);
             g.drawString(font, rowLabel(i), leftPos + EditorUi.GAP + 4, y + 6,
@@ -368,10 +413,30 @@ public class VeinMinerSettingsScreen extends PanelScreen {
                             ? EditorUi.SECONDARY : EditorUi.PRIMARY);
         }
 
+        if (maxScrollRow > 0) {
+            EditorUi.scrollbar(g, mx, my, leftPos + SCROLL_X, topPos + LIST_Y, LIST_H,
+                    scrollRow, maxScrollRow, VISIBLE_ROWS);
+        }
+
         drawValue(g, 1, blockValueX, blockLabel());
         drawValue(g, 2, radiusValueX, radiusLabel());
         drawValue(g, 9, hungerValueX, trim(cfg.getExhaustionPerBlock()));
         drawValue(g, 10, xpValueX, trim(cfg.getXpPerBlock()));
+
+        // 底部「重置」的二次确认态：第一次点后按钮直接变成「确认？」
+        if (resetBtn != null) {
+            resetBtn.setMessage(Component.translatable(confirm.isConfirming("reset")
+                    ? "screen.infinitestats.ui.confirm"
+                    : "screen.infinitestats.vein_settings.reset"));
+        }
+    }
+
+    @Override
+    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
+        if (maxScrollRow <= 0 || delta == 0) return false;
+        scrollRow = Mth.clamp(scrollRow - (int) Math.signum(delta), 0, maxScrollRow);
+        rebuildWidgets();
+        return true;
     }
 
     private String rowLabel(int row) {
@@ -393,8 +458,9 @@ public class VeinMinerSettingsScreen extends PanelScreen {
     }
 
     private void drawValue(GuiGraphics g, int row, int valueX, String text) {
-        int y = topPos + LIST_Y + row * ROW_H + 6;
-        g.drawCenteredString(font, text, valueX + VALUE_W / 2, y, EditorUi.GOLD);
+        int y = rowY(row);
+        if (y < 0) return;
+        g.drawCenteredString(font, text, valueX + VALUE_W / 2, y + 6, EditorUi.GOLD);
     }
 
     private String blockLabel() {

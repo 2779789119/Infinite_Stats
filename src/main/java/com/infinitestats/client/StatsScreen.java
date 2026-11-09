@@ -1656,7 +1656,11 @@ public class StatsScreen extends PanelScreen {
                 visualLines.add(Component.literal(wrapped).getVisualOrderText());
             }
         }
+        // GuiGraphics 按批次提交（先所有背景、再所有文字），不先落地的话
+        // 浮窗的背景会排在已有文字下面，表现就是「文字浮在浮窗上」
+        g.flush();
         g.renderTooltip(font, visualLines, screenX, screenY);
+        g.flush();
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.infinitestats.client;
 
+import com.infinitestats.compat.PinyinSearchBridge;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.network.WaystoneEntry;
 import com.infinitestats.network.WaypointActionPacket;
@@ -27,10 +28,16 @@ import java.util.*;
 public class WaypointScreen extends PanelScreen {
 
     private static final int GUI_W = 420;
-    private static final int GUI_H = 300;
+    private static final int GUI_H = 340;
     private static final int ROW_H = 24;
-    private static final int MAX_VISIBLE = 8;
+    private static final int MAX_VISIBLE = 7;
     private static final int SCROLLBAR_W = 6;
+
+    /** 搜索框 / 排序按钮所在行。 */
+    private static final int SEARCH_Y = 90;
+    private static final int SEARCH_H = 18;
+    private static final int SORT_W = 84;
+    private static final int LIST_TOP = 116;
 
     private static final int BG_PANEL = 0xE81A1A2E;
     private static final int BG_ROW = 0x50252535;
@@ -61,9 +68,16 @@ public class WaypointScreen extends PanelScreen {
     }
 
     private EditBox nameField;
+    private EditBox searchBox;
     private final List<Button> rowButtons = new ArrayList<>();
     private int scrollOffset;
     private int maxScroll;
+
+    private String searchText = "";
+    /** 0=名称升序，1=坐标 X 升序，2=维度优先。 */
+    private int sortMode;
+    private Button sortBtn;
+    private String hoveredRowInfo;
 
     private Map<String, Waypoint> currentWaypoints = new HashMap<>();
     /** 服务端下发的「已激活传送石碑」（读自 {@link NetworkHandler#pendingWaystones}）。 */
@@ -74,6 +88,10 @@ public class WaypointScreen extends PanelScreen {
     private String lastSignature = "";
     private long lastSoundTick;
 
+    /** 删除需要二次点击确认（第一次点只把按钮变成「确认？」）。 */
+    private final ConfirmAction confirm = new ConfirmAction();
+    private boolean confirmPending;
+
     public WaypointScreen() {
         super(Component.translatable("screen.infinitestats.waypoint"));
     }
@@ -81,10 +99,30 @@ public class WaypointScreen extends PanelScreen {
     @Override
     protected void init() {
         super.init();
-        listTop = topPos + 92;
+        listTop = topPos + LIST_TOP;
         listLeft = leftPos + 10;
         rowW = GUI_W - 20 - SCROLLBAR_W - 4;
         listH = MAX_VISIBLE * ROW_H;
+
+        // 搜索框：传送点多的时候不用再滚着找
+        searchBox = new EditBox(font, leftPos + 12, topPos + SEARCH_Y,
+                GUI_W - 24 - SORT_W - 6, SEARCH_H, Component.empty());
+        searchBox.setMaxLength(48);
+        searchBox.setHint(Component.translatable("gui.infinitestats.wp_search_hint"));
+        searchBox.setResponder(v -> {
+            searchText = v;
+            scrollOffset = 0;
+            rebuildRows();
+        });
+        addRenderableWidget(searchBox);
+
+        sortBtn = addRenderableWidget(Button.builder(sortLabel(), b -> {
+            sortMode = (sortMode + 1) % 3;
+            b.setMessage(sortLabel());
+            playClickSound();
+            scrollOffset = 0;
+            rebuildRows();
+        }).bounds(leftPos + GUI_W - 12 - SORT_W, topPos + SEARCH_Y, SORT_W, SEARCH_H).build());
 
         // 名称输入框
         nameField = new EditBox(font, leftPos + 12, topPos + 64, 200, 18, Component.literal(""));
@@ -114,6 +152,12 @@ public class WaypointScreen extends PanelScreen {
             lastSignature = sig;
             rebuildRows();
         }
+        // 确认态超时 / 切换目标后要刷新按钮文字
+        boolean pending = confirm.isPending();
+        if (pending != confirmPending) {
+            confirmPending = pending;
+            rebuildRows();
+        }
     }
 
     private void refreshData() {
@@ -137,9 +181,58 @@ public class WaypointScreen extends PanelScreen {
         scrollOffset = Mth.clamp(scrollOffset, 0, maxScroll);
     }
 
-    /** 列表总行数：自己的路径点在前，已激活的传送石碑排在后面。 */
+    /** 列表总行数：自己的路径点在前，已激活的传送石碑排在后面（都已过滤 / 排序）。 */
     private int rowCount() {
-        return currentWaypoints.size() + currentWaystones.size();
+        return displayNames().size() + displayWaystones().size();
+    }
+
+    /** 过滤 + 排序后的自有传送点名。 */
+    private List<String> displayNames() {
+        List<String> names = new ArrayList<>();
+        for (String n : currentWaypoints.keySet()) {
+            if (matches(n, currentWaypoints.get(n))) names.add(n);
+        }
+        switch (sortMode) {
+            case 1 -> names.sort(Comparator.comparingDouble(n -> currentWaypoints.get(n).x));
+            case 2 -> names.sort(Comparator
+                    .comparing((String n) -> currentWaypoints.get(n).dimension)
+                    .thenComparing(String::compareToIgnoreCase));
+            default -> names.sort(String::compareToIgnoreCase);
+        }
+        return names;
+    }
+
+    /** 过滤后的传送石碑（内部仍按名称排序）。 */
+    private List<WaystoneEntry> displayWaystones() {
+        List<WaystoneEntry> out = new ArrayList<>();
+        for (WaystoneEntry e : sortedWaystones()) {
+            if (matchesWaystone(e)) out.add(e);
+        }
+        return out;
+    }
+
+    private boolean matches(String name, Waypoint wp) {
+        String q = searchText.toLowerCase(Locale.ROOT).trim();
+        if (q.isEmpty()) return true;
+        if (PinyinSearchBridge.matches(name.toLowerCase(Locale.ROOT), q)) return true;
+        if (wp.dimension.toLowerCase(Locale.ROOT).contains(q)) return true;
+        return (((int) wp.x) + "," + ((int) wp.y) + "," + ((int) wp.z)).contains(q);
+    }
+
+    private boolean matchesWaystone(WaystoneEntry e) {
+        String q = searchText.toLowerCase(Locale.ROOT).trim();
+        if (q.isEmpty()) return true;
+        if (PinyinSearchBridge.matches(e.name.toLowerCase(Locale.ROOT), q)) return true;
+        if (e.dimension.toLowerCase(Locale.ROOT).contains(q)) return true;
+        return (((int) e.x) + "," + ((int) e.y) + "," + ((int) e.z)).contains(q);
+    }
+
+    private Component sortLabel() {
+        return Component.translatable("gui.infinitestats.wp_sort." + switch (sortMode) {
+            case 1 -> "x";
+            case 2 -> "dim";
+            default -> "name";
+        });
     }
 
     /** 石碑按名称排序后的副本（绘制与重建行都用它，保证两次的顺序一致）。 */
@@ -173,8 +266,8 @@ public class WaypointScreen extends PanelScreen {
         }
         rowButtons.clear();
 
-        List<String> names = sortedNames();
-        List<WaystoneEntry> waystones = sortedWaystones();
+        List<String> names = displayNames();
+        List<WaystoneEntry> waystones = displayWaystones();
         int ownSize = names.size();
 
         for (int i = 0; i < MAX_VISIBLE; i++) {
@@ -194,8 +287,12 @@ public class WaypointScreen extends PanelScreen {
                         .bounds(tpX, rowY + 2, 56, ROW_H - 4).build();
                 Button renameBtn = Button.builder(Component.translatable("button.infinitestats.wp_rename"),
                         b -> openRename(name)).bounds(renameX, rowY + 2, 48, ROW_H - 4).build();
-                Button delBtn = Button.builder(Component.translatable("button.infinitestats.wp_delete"),
-                        b -> sendAction(WaypointActionPacket.Action.DELETE, name))
+                boolean confirmingDelete = confirm.isConfirming("del:" + name);
+                Button delBtn = Button.builder(
+                        Component.translatable(confirmingDelete
+                                ? "screen.infinitestats.ui.confirm"
+                                : "button.infinitestats.wp_delete"),
+                        b -> requestDelete(name))
                         .bounds(delX, rowY + 2, 48, ROW_H - 4).build();
 
                 delBtn.active = toggleActive;
@@ -252,6 +349,16 @@ public class WaypointScreen extends PanelScreen {
                 player.getYRot(), player.getXRot()));
         nameField.setValue("");
         playClickSound();
+    }
+
+    /** 删除路径点：第一次点只进入确认态，2.5 秒内再点才真的删。 */
+    private void requestDelete(String name) {
+        if (!confirm.confirm("del:" + name)) {
+            playClickSound();
+            rebuildRows();
+            return;
+        }
+        sendAction(WaypointActionPacket.Action.DELETE, name);
     }
 
     private void sendAction(WaypointActionPacket.Action action, String name) {
@@ -311,10 +418,11 @@ public class WaypointScreen extends PanelScreen {
         // 列表区域背景
         graphics.fill(listLeft - 2, listTop - 2, listLeft + rowW + 2, listTop + listH + 2, 0x30151525);
 
-        // 绘制行（自己的路径点在前，已激活的传送石碑在后）
-        List<String> names = sortedNames();
-        List<WaystoneEntry> waystones = sortedWaystones();
+        // 绘制行（自己的路径点在前，已激活的传送石碑在后；搜索与排序已应用）
+        List<String> names = displayNames();
+        List<WaystoneEntry> waystones = displayWaystones();
         int ownSize = names.size();
+        hoveredRowInfo = null;
         for (int i = 0; i < MAX_VISIBLE; i++) {
             int idx = i + scrollOffset;
             if (idx >= ownSize + waystones.size()) break;
@@ -337,6 +445,11 @@ public class WaypointScreen extends PanelScreen {
                 String coords = wp.dimension.substring(wp.dimension.indexOf(':') + 1) + "  "
                         + String.format("%.0f, %.0f, %.0f", wp.x, wp.y, wp.z);
                 graphics.drawString(font, truncate(coords, 130), listLeft + 120, textY, coordsColor);
+
+                if (hovered) {
+                    hoveredRowInfo = name + "\n" + wp.dimension + "\n"
+                            + String.format("%.1f, %.1f, %.1f", wp.x, wp.y, wp.z);
+                }
             } else {
                 // 石碑行用金色名字，与自己的点区分开
                 WaystoneEntry entry = waystones.get(idx - ownSize);
@@ -349,7 +462,21 @@ public class WaypointScreen extends PanelScreen {
                         : entry.dimension;
                 String coords = dim + "  " + String.format("%.0f, %.0f, %.0f", entry.x, entry.y, entry.z);
                 graphics.drawString(font, truncate(coords, 130), listLeft + 120, textY, coordsColor);
+
+                if (hovered) {
+                    hoveredRowInfo = entry.name + "\n" + entry.dimension + "\n"
+                            + String.format("%.1f, %.1f, %.1f", entry.x, entry.y, entry.z);
+                }
             }
+        }
+
+        // 空状态：一条都没有，或者被搜索条件筛没了
+        if (names.isEmpty() && waystones.isEmpty()) {
+            graphics.drawCenteredString(font,
+                    Component.translatable(searchText.isBlank()
+                            ? "gui.infinitestats.wp_empty"
+                            : "gui.infinitestats.wp_no_match").getString(),
+                    listLeft + rowW / 2, listTop + listH / 2 - 4, TEXT_SECONDARY);
         }
 
         // 滚动条
@@ -363,6 +490,11 @@ public class WaypointScreen extends PanelScreen {
         // 渲染按钮等控件
         for (var renderable : this.renderables) {
             renderable.render(graphics, mouseX, mouseY, partialTick);
+        }
+
+        // 悬停行：完整名称 / 维度 / 精确坐标（行内是截断显示的）
+        if (hoveredRowInfo != null) {
+            queueTooltip(graphics, mouseX, mouseY, Arrays.asList(hoveredRowInfo.split("\n")), TEXT_GOLD);
         }
     }
 

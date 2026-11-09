@@ -1,5 +1,6 @@
 package com.infinitestats.client;
 
+import com.infinitestats.compat.PinyinSearchBridge;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.StatType;
 import com.infinitestats.util.AttributeValueMath;
@@ -27,6 +28,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -53,7 +55,11 @@ import java.util.Map;
 public class EntityPanelScreen extends PanelScreen {
 
     private static final int GUI_W = 336;
-    private static final int GUI_H = 258;
+    private static final int GUI_H = 292;
+
+    /** 属性页的搜索框（开关页隐藏）。 */
+    private static final int SEARCH_Y = 74;
+    private static final int SEARCH_H = 18;
 
     /** 页签（属性 / 开关）。 */
     private static final int TAB_Y = 56;
@@ -63,16 +69,21 @@ public class EntityPanelScreen extends PanelScreen {
     private static final int TAB_W = 110;
 
     /** 列表区（面板坐标）。两页共用，切页时重新算能滚多远。 */
-    private static final int LIST_TOP = 74;
+    private static final int LIST_TOP = 96;
     private static final int LIST_H = 148;
     private static final int ROW_H = 18;
     private static final int VISIBLE_ROWS = LIST_H / ROW_H;
+
+    /** 开关页右侧的「全开 / 全关」按钮（与页签同一行）。 */
+    private static final int BULK_W = 46;
+    private static final int BULK_ON_X = 240;
+    private static final int BULK_OFF_X = 288;
 
     private static final int LIST_X = 4;
     private static final int SCROLL_X = GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
     private static final int VALUE_RIGHT = SCROLL_X - 4;
 
-    private static final int CLOSE_BTN_Y = 232;
+    private static final int CLOSE_BTN_Y = 266;
 
     /** 属性页改数值时，行尾那个输入框的宽度。 */
     private static final int FIELD_W = 78;
@@ -111,6 +122,10 @@ public class EntityPanelScreen extends PanelScreen {
 
     private int scroll;
     private int maxScroll;
+
+    /** 属性页搜索框与关键词。 */
+    private EditBox searchBox;
+    private String searchText = "";
     private int hovered = -1;
     private int hoveredToggle = -1;
     private boolean scrollbarDragging;
@@ -189,6 +204,20 @@ public class EntityPanelScreen extends PanelScreen {
         editingIndex = -1;
         rebuildRows();
 
+        // 属性页搜索：属性一多就不用一路滚到底
+        searchBox = new EditBox(font, leftPos + 4, topPos + SEARCH_Y,
+                GUI_W - EditorUi.GAP - EditorUi.SCROLL_W - 8, SEARCH_H, Component.empty());
+        searchBox.setMaxLength(48);
+        searchBox.setHint(Component.translatable("gui.infinitestats.entity_panel.search_hint"));
+        searchBox.setValue(searchText);
+        searchBox.setResponder(v -> {
+            searchText = v;
+            scroll = 0;
+            rebuildRows();
+        });
+        searchBox.setVisible(!showToggles);
+        addRenderableWidget(searchBox);
+
         // 改数值用的输入框：常驻但默认隐藏，编辑某一行时才挪到那行、显示出来
         valueField = new EditBox(font, 0, 0, FIELD_W, 14, Component.empty());
         valueField.setMaxLength(24);
@@ -255,14 +284,22 @@ public class EntityPanelScreen extends PanelScreen {
         instances.sort(Comparator.comparingInt(this::rank).thenComparing(this::idOf));
 
         rows.clear();
+        String query = searchText.toLowerCase(Locale.ROOT).trim();
         for (AttributeInstance instance : instances) {
             String id = idOf(instance);
+            String name = displayName(instance.getAttribute(), id);
+            // 搜索：名称（含拼音）或注册名，命中其一即保留
+            if (!query.isEmpty()
+                    && !PinyinSearchBridge.matches(name.toLowerCase(Locale.ROOT), query)
+                    && !id.toLowerCase(Locale.ROOT).contains(query)) {
+                continue;
+            }
             List<String> modifiers = new ArrayList<>();
             for (AttributeModifier modifier : instance.getModifiers()) {
                 modifiers.add(modifierLine(modifier));
             }
             modifiers.sort(String::compareTo);
-            rows.add(new Row(displayName(instance.getAttribute(), id), id,
+            rows.add(new Row(name, id,
                     instance.getValue(), instance.getBaseValue(), modifiers, id.startsWith("minecraft:")));
         }
 
@@ -427,6 +464,41 @@ public class EntityPanelScreen extends PanelScreen {
                 Component.translatable("gui.infinitestats.entity_panel.tab.attributes", rows.size()));
         drawTab(g, mouseX, mouseY, TAB2_X, true,
                 Component.translatable("gui.infinitestats.entity_panel.tab.toggles", toggles.size()));
+        renderBulkToggleButtons(g, mouseX, mouseY);
+    }
+
+    /** 开关页右侧的「全开 / 全关」：一次改这个生物身上全部可用开关。 */
+    private void renderBulkToggleButtons(GuiGraphics g, int mouseX, int mouseY) {
+        if (!showToggles || !editable) return;
+
+        int y = topPos + TAB_Y;
+        int h = TAB_H;
+
+        boolean hoverOn = mouseX >= leftPos + BULK_ON_X && mouseX < leftPos + BULK_ON_X + BULK_W
+                && mouseY >= y && mouseY < y + h;
+        g.fill(leftPos + BULK_ON_X, y, leftPos + BULK_ON_X + BULK_W, y + h,
+                hoverOn ? 0xFF2D8A4E : 0xFF1A5334);
+        g.drawCenteredString(font, Component.translatable("gui.infinitestats.entity_panel.bulk_on").getString(),
+                leftPos + BULK_ON_X + BULK_W / 2, y + (h - font.lineHeight) / 2 + 1, 0xFFFFFFFF);
+
+        boolean hoverOff = mouseX >= leftPos + BULK_OFF_X && mouseX < leftPos + BULK_OFF_X + BULK_W
+                && mouseY >= y && mouseY < y + h;
+        g.fill(leftPos + BULK_OFF_X, y, leftPos + BULK_OFF_X + BULK_W, y + h,
+                hoverOff ? 0xFF8A3D2D : 0xFF6B2A1A);
+        g.drawCenteredString(font, Component.translatable("gui.infinitestats.entity_panel.bulk_off").getString(),
+                leftPos + BULK_OFF_X + BULK_W / 2, y + (h - font.lineHeight) / 2 + 1, 0xFFFFFFFF);
+    }
+
+    /** 一次性把所有适用开关设成同一个值（只发状态真的不同的那些）。 */
+    private void setAllToggles(boolean on) {
+        if (!editable) return;
+        for (EntityPanelToggles.Toggle toggle : toggles) {
+            if (EntityPanelToggles.isEnabled(enabledMask, toggle) == on) continue;
+            if (on) enabledMask |= toggle.getBit();
+            else enabledMask &= ~toggle.getBit();
+            NetworkHandler.CHANNEL.sendToServer(
+                    new NetworkHandler.EntityPanelActionPacket(entity.getId(), toggle.ordinal(), on));
+        }
     }
 
     private void drawTab(GuiGraphics g, int mouseX, int mouseY, int x, boolean page, Component label) {
@@ -558,13 +630,13 @@ public class EntityPanelScreen extends PanelScreen {
     protected void renderPanelOverlay(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         if (showToggles) {
             if (hoveredToggle >= 0 && hoveredToggle < toggles.size()) {
-                EditorUi.tooltip(g, mouseX, mouseY, toggleTooltip(toggles.get(hoveredToggle)), EditorUi.ACCENT);
+                queueTooltip(g, mouseX, mouseY, toggleTooltip(toggles.get(hoveredToggle)), EditorUi.ACCENT);
             }
             return;
         }
         // 正在编辑的那一行不弹浮窗，免得盖住输入框
         if (hovered >= 0 && hovered < rows.size() && hovered != editingIndex) {
-            EditorUi.tooltip(g, mouseX, mouseY, tooltipLines(rows.get(hovered)), EditorUi.INFO);
+            queueTooltip(g, mouseX, mouseY, tooltipLines(rows.get(hovered)), EditorUi.INFO);
         }
     }
 
@@ -620,6 +692,19 @@ public class EntityPanelScreen extends PanelScreen {
     protected boolean onPanelClick(int mouseX, int mouseY, int button) {
         if (button != 0) return false;
 
+        // 开关页的「全开 / 全关」
+        if (showToggles && editable
+                && mouseY >= topPos + TAB_Y && mouseY < topPos + TAB_Y + TAB_H) {
+            if (mouseX >= leftPos + BULK_ON_X && mouseX < leftPos + BULK_ON_X + BULK_W) {
+                setAllToggles(true);
+                return true;
+            }
+            if (mouseX >= leftPos + BULK_OFF_X && mouseX < leftPos + BULK_OFF_X + BULK_W) {
+                setAllToggles(false);
+                return true;
+            }
+        }
+
         // 有正在编辑的行：点到自己就交给输入框处理（挪光标），点到别处先提交再继续
         if (editingIndex >= 0 && !showToggles) {
             if (rowIndexAt(mouseX, mouseY) == editingIndex) return false;
@@ -629,12 +714,14 @@ public class EntityPanelScreen extends PanelScreen {
         // 页签
         if (inTab(mouseX, mouseY, TAB1_X) && showToggles) {
             showToggles = false;
+            if (searchBox != null) searchBox.setVisible(true);
             scroll = 0;
             updateMaxScroll();
             return true;
         }
         if (inTab(mouseX, mouseY, TAB2_X) && !showToggles) {
             showToggles = true;
+            if (searchBox != null) searchBox.setVisible(false);
             scroll = 0;
             updateMaxScroll();
             return true;

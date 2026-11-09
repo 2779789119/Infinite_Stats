@@ -17,9 +17,14 @@ public class WaypointRenameScreen extends PanelScreen {
     private static final int GUI_W = 240;
     private static final int GUI_H = 100;
 
+    /** 输入框允许的最大长度（同时显示在底部字数提示里）。 */
+    private static final int MAX_NAME_LEN = 32;
+
     private final Screen parent;
     private final String oldName;
     private EditBox nameField;
+    /** 校验失败的原因；非空时显示在按钮下方，并且不关闭界面。 */
+    private String error;
     public WaypointRenameScreen(Screen parent, String oldName) {
         super(Component.translatable("gui.infinitestats.wp_rename_title"));
         this.parent = parent;
@@ -47,9 +52,10 @@ public class WaypointRenameScreen extends PanelScreen {
         super.init();
 
         nameField = new EditBox(font, leftPos + 20, topPos + 36, GUI_W - 40, 18, Component.literal(oldName));
-        nameField.setMaxLength(32);
+        nameField.setMaxLength(MAX_NAME_LEN);
         nameField.setValue(oldName);
         nameField.setFocused(true);
+        nameField.setResponder(s -> error = null);
         addRenderableWidget(nameField);
 
         Button confirm = Button.builder(Component.translatable("button.infinitestats.wp_confirm"),
@@ -62,7 +68,16 @@ public class WaypointRenameScreen extends PanelScreen {
 
     private void confirm() {
         String newName = nameField.getValue().trim();
-        if (!newName.isEmpty() && !newName.equals(oldName)) {
+        if (newName.isEmpty()) {
+            // 以前这里直接 close()，玩家以为改名成功；现在留在界面上说明原因
+            error = Component.translatable("gui.infinitestats.wp_rename_empty").getString();
+            return;
+        }
+        if (newName.length() > MAX_NAME_LEN) {
+            error = Component.translatable("gui.infinitestats.wp_rename_too_long", MAX_NAME_LEN).getString();
+            return;
+        }
+        if (!newName.equals(oldName)) {
             NetworkHandler.CHANNEL.sendToServer(new WaypointActionPacket(
                     WaypointActionPacket.Action.RENAME, oldName, newName, null, 0, 0, 0, 0, 0));
         }
@@ -87,6 +102,16 @@ public class WaypointRenameScreen extends PanelScreen {
 
         for (var renderable : this.renderables) {
             renderable.render(graphics, mouseX, mouseY, partialTick);
+        }
+
+        // 底部一行：有校验错误就显示原因，否则显示字数
+        if (error != null) {
+            graphics.drawString(font, EditorUi.ellipsize(font, error, GUI_W - 40),
+                    leftPos + 20, topPos + 87, EditorUi.DANGER);
+        } else {
+            String count = nameField.getValue().length() + "/" + MAX_NAME_LEN;
+            graphics.drawString(font, count, leftPos + GUI_W - 20 - font.width(count),
+                    topPos + 87, 0xFF5A6478);
         }
     }
 

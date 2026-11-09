@@ -16,6 +16,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.util.Mth;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -47,8 +48,12 @@ public class NetworkPriorityScreen extends PanelScreen {
     private static final int FOOTER_H = 20;
     private static final int HINT_Y = EditorUi.HEADER_H + 4;  // 28
     private static final int LIST_Y = HINT_Y + 20;            // 48
-    private static final int FOOTER_Y = LIST_Y + 5 * ROW_H + 8;
+    /** 可见行数（不是存储总数）：将来多接一个存储桥接时滚动，面板尺寸不变。 */
+    private static final int VISIBLE_ROWS = 5;
+    private static final int LIST_H = VISIBLE_ROWS * ROW_H;
+    private static final int FOOTER_Y = LIST_Y + LIST_H + 8;
     private static final int GUI_H = FOOTER_Y + FOOTER_H + EditorUi.GAP;
+    private static final int SCROLL_X = GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
 
     // ======================== 状态 ========================
 
@@ -63,6 +68,13 @@ public class NetworkPriorityScreen extends PanelScreen {
 
 
     private int hoveredRow = -1;
+    /** 当前滚到第几行（存储数量超过可见行数时用）。 */
+    private int scrollRow;
+    private int maxScrollRow;
+
+    private Button resetBtn;
+    /** 「恢复默认」会覆盖自定义顺序，需要二次点击确认。 */
+    private final ConfirmAction confirm = new ConfirmAction();
 
     public NetworkPriorityScreen(Screen parent, String scope) {
         super(Component.translatable("screen.infinitestats.network_priority." + scope + ".title"));
@@ -107,9 +119,17 @@ public class NetworkPriorityScreen extends PanelScreen {
 
     @Override
     protected void init() {
+        super.init();
+
+        maxScrollRow = Math.max(0, order.size() - VISIBLE_ROWS);
+        scrollRow = Mth.clamp(scrollRow, 0, maxScrollRow);
+
         for (int i = 0; i < order.size(); i++) {
+            int visibleRow = i - scrollRow;
+            if (visibleRow < 0 || visibleRow >= VISIBLE_ROWS) continue;
+
             final int index = i;
-            int rowY = topPos + LIST_Y + i * ROW_H;
+            int rowY = topPos + LIST_Y + visibleRow * ROW_H;
             int downX = leftPos + GUI_W - EditorUi.GAP - MOVE_BTN_W;
             int upX = downX - MOVE_BTN_W - 2;
 
@@ -124,9 +144,9 @@ public class NetworkPriorityScreen extends PanelScreen {
             addRenderableWidget(down);
         }
 
-        addRenderableWidget(Button.builder(
+        resetBtn = addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.network_priority.reset"),
-                        b -> resetToDefault())
+                        b -> requestReset())
                 .bounds(leftPos + EditorUi.GAP, topPos + FOOTER_Y, 92, FOOTER_H).build());
 
         addRenderableWidget(Button.builder(
@@ -143,6 +163,13 @@ public class NetworkPriorityScreen extends PanelScreen {
         playClick();
         submit();
         rebuildWidgets();
+    }
+
+    /** 恢复默认顺序：第一次点只进入确认态，2.5 秒内再点才真的恢复。 */
+    private void requestReset() {
+        playClick();
+        if (!confirm.confirm("reset")) return;
+        resetToDefault();
     }
 
     /** 恢复配置里的默认顺序：给服务端发空列表，服务端会按配置补全。 */
@@ -182,7 +209,10 @@ public class NetworkPriorityScreen extends PanelScreen {
         hoveredRow = -1;
         int textYOffset = (ROW_H - 8) / 2;
         for (int i = 0; i < order.size(); i++) {
-            int rowY = topPos + LIST_Y + i * ROW_H;
+            int visibleRow = i - scrollRow;
+            if (visibleRow < 0 || visibleRow >= VISIBLE_ROWS) continue;
+
+            int rowY = topPos + LIST_Y + visibleRow * ROW_H;
             boolean hover = mouseX >= leftPos + EditorUi.GAP && mouseX < leftPos + GUI_W - EditorUi.GAP
                     && mouseY >= rowY && mouseY < rowY + ROW_H;
             if (hover) hoveredRow = i;
@@ -206,6 +236,18 @@ public class NetworkPriorityScreen extends PanelScreen {
                     loaded ? EditorUi.INFO : EditorUi.DANGER);
         }
 
+        if (maxScrollRow > 0) {
+            EditorUi.scrollbar(g, mouseX, mouseY, leftPos + SCROLL_X, topPos + LIST_Y, LIST_H,
+                    scrollRow, maxScrollRow, VISIBLE_ROWS);
+        }
+
+        // 底部「恢复默认」的二次确认态：第一次点后按钮直接变成「确认？」
+        if (resetBtn != null) {
+            resetBtn.setMessage(Component.translatable(confirm.isConfirming("reset")
+                    ? "screen.infinitestats.ui.confirm"
+                    : "screen.infinitestats.network_priority.reset"));
+        }
+
         if (hoveredRow >= 0) {
             List<String> lines = new ArrayList<>();
             lines.add(Component.translatable(
@@ -214,8 +256,16 @@ public class NetworkPriorityScreen extends PanelScreen {
                 lines.add(Component.translatable(
                         "screen.infinitestats.network_priority.missing_tip").getString());
             }
-            EditorUi.tooltip(g, mouseX, mouseY, lines, EditorUi.INFO);
+            queueTooltip(g, mouseX, mouseY, lines, EditorUi.INFO);
         }
+    }
+
+    @Override
+    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
+        if (maxScrollRow <= 0 || delta == 0) return false;
+        scrollRow = Mth.clamp(scrollRow - (int) Math.signum(delta), 0, maxScrollRow);
+        rebuildWidgets();
+        return true;
     }
 
     // ======================== 工具 ========================

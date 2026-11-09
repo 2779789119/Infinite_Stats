@@ -43,7 +43,7 @@ final class EditorUi {
     static final int BG_SB_TRACK = 0x30151520;
     static final int BG_SB = 0x80555570;
     static final int BG_SB_HOVER = 0xB08888A0;
-    static final int BG_TOOLTIP = 0xF01A1A2E;
+    static final int BG_TOOLTIP = 0xFF12121C;
     static final int BG_BAR_TRACK = 0xFF2A2A3A;
 
     // ======================== 尺寸 ========================
@@ -137,7 +137,19 @@ final class EditorUi {
         return color;
     }
 
-    /** 鼠标附近的浮窗，自动避让屏幕边界。 */
+    /**
+     * 鼠标附近的浮窗，自动避让屏幕边界。
+     *
+     * <h2>为什么开头和结尾都要 flush</h2>
+     * {@link GuiGraphics} 不是「调用一次画一次」：它把顶点分门别类塞进不同的
+     * {@code RenderType} 缓冲，最后按批次统一提交 —— <b>所有 {@code fill} 一批、所有文字一批</b>。
+     * 直接画浮窗的话，它的背景会跟着「所有背景」那批走在前面，而界面上已有的按钮文字
+     * 在「所有文字」那批里排在后面，结果就是<b>文字浮在浮窗上面</b>
+     * （按钮的底色反倒被盖住了，看起来特别怪）。
+     * <p>
+     * 所以画之前先 {@code flush()} 把之前的内容落地，画完再 {@code flush()} 一次，
+     * 让浮窗自成一票，永远压在已有内容之上。
+     */
     static void tooltip(GuiGraphics g, int mx, int my, List<String> lines, int accent) {
         if (lines == null || lines.isEmpty()) return;
         Font font = Minecraft.getInstance().font;
@@ -152,6 +164,8 @@ final class EditorUi {
         if (by + boxH > sh) by = my - 14 - boxH;
         bx = Math.max(0, bx);
         by = Math.max(0, by);
+
+        g.flush();
         g.fill(bx, by, bx + boxW, by + boxH, BG_TOOLTIP);
         g.fill(bx, by, bx + boxW, by + 1, accent);
         int ty = by + 4;
@@ -159,6 +173,7 @@ final class EditorUi {
             g.drawString(font, l, bx + 6, ty, PRIMARY);
             ty += lineH;
         }
+        g.flush();
     }
 
     /** 按像素宽度折行（保留原文换行），中英文通用的逐字符折行，用于浮窗里的长文本。 */
