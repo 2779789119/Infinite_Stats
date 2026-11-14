@@ -8,11 +8,16 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 「自动入库」：把玩家背包里的物品自动写入存储网络（RS / AE2 / 汤姆存储 / 背包 / BD）。
@@ -27,10 +32,81 @@ import java.util.List;
  *   <li>支持配置黑名单（物品 ID，前缀 {@code #} 表示物品标签）；</li>
  *   <li>默认不碰快捷栏（0-8 号槽），避免把随身工具/武器吸走，可由配置改为只保留当前手持那一格。</li>
  * </ul>
+ * <p>
+ * <b>触发方式：背包变了才查存储</b>。原先是每 tick 取模固定间隔无条件扫一遍背包，即使玩家一直站着不动、
+ * 背包里什么也没发生，也照样每秒去问一次存储网络（这一步要反射进 RS / AE2 / 汤姆存储，是本模块最贵的部分）。
+ * 现在改成变更驱动：{@code InventoryChangeMixin} 在 {@code Inventory#setChanged / setItem / add} 上打标记
+ * （见 {@link #markInventoryChanged(Player)}），{@link #tick} 每 tick 只做一次 {@code Set} 查询，
+ * 有标记才真正执行 {@link #deposit}。配置的项目间隔从「扫描间隔」变成「两次执行之间的最短间隔」，
+ * 用来避免一次批量拾取 / 连续合成里反复查询存储网络。
  */
 public final class AutoDeposit {
 
+    /** 背包内容发生过变化、等着下次入库的玩家。 */
+    private static final Set<UUID> DIRTY = ConcurrentHashMap.newKeySet();
+    /** 玩家 UUID → 上一次真正执行入库的 tickCount（节流用，tickCount 取 {@code ServerPlayer#tickCount}）。 */
+    private static final Map<UUID, Long> LAST_RUN = new ConcurrentHashMap<>();
+    /**
+     * 正在执行入库：入库自己也会写背包（{@code items.set} + {@code setChanged}），
+     * 不屏蔽的话每次执行都会重新打上标记，变成「每 tick 空跑一次存储网络查询」。
+     */
+    private static boolean depositing;
+
     private AutoDeposit() {
+    }
+
+    /**
+     * 背包内容变化时由 Mixin 调用：只记一个标记，不做任何查询。
+     * <p>
+     * 客户端背包同样会走到这里，非 {@link ServerPlayer} 直接返回；入库自己写的背包也不记。
+     */
+    public static void markInventoryChanged(Player player) {
+        if (depositing) return;
+        if (!(player instanceof ServerPlayer serverPlayer)) return;
+        DIRTY.add(serverPlayer.getUUID());
+    }
+
+    /** 玩家退出时清掉会话级记录（{@code PlayerEvent.PlayerLoggedOutEvent} 调用）。 */
+    public static void forget(Player player) {
+        if (player == null) return;
+        DIRTY.remove(player.getUUID());
+        LAST_RUN.remove(player.getUUID());
+    }
+
+    /**
+     * 每 tick 调用一次：背包这一 tick 内确实变过、并且已经过了配置的最短间隔，才真正查一次存储网络。
+     * <p>
+     * 没变化时只做一次 {@code Set.contains}，代价与「背包有多大」无关。
+     */
+    public static void tick(ServerPlayer player, PlayerStats stats, long tickCount) {
+        UUID id = player.getUUID();
+        if (!DIRTY.contains(id)) return;
+        // 功能没解锁 / 被功能开关关掉：标记就地丢弃，别留到下次解锁
+        if (!stats.isToggleActive("auto_deposit")) {
+            DIRTY.remove(id);
+            return;
+        }
+        // 当前不能入库（死亡 / 旁观 / 正在开别的容器）：标记<b>留着</b>，等条件满足再处理。
+        // 这一步必须在消费标记之前 —— 否则玩家一边开箱子一边拾取，标记被吃掉、箱子关掉后又没有新的变更，
+        // 这批物品就永远等不到入库了。
+        if (player.isDeadOrDying() || player.isSpectator() || player.containerMenu != player.inventoryMenu) {
+            return;
+        }
+        long interval = Math.max(1, Config.AUTO_DEPOSIT_INTERVAL.get());
+        Long last = LAST_RUN.get(id);
+        if (last != null) {
+            long elapsed = tickCount - last;
+            // elapsed < 0 ＝ 玩家实体换过（重生 / 换维度后 tickCount 归零），当作冷却已过
+            if (elapsed >= 0 && elapsed < interval) return; // 标记保留，冷却结束的那个 tick 再处理
+        }
+        LAST_RUN.put(id, tickCount);
+        DIRTY.remove(id);
+        depositing = true;
+        try {
+            deposit(player, stats);
+        } finally {
+            depositing = false;
+        }
     }
 
     /**

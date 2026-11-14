@@ -3,22 +3,28 @@ package com.infinitestats.util;
 import net.minecraft.world.entity.AgeableMob;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.TamableAnimal;
+import net.minecraft.world.entity.animal.Sheep;
 
 /**
  * 生物面板里可以直接切换的「生物开关」—— 也就是生物身上那些**一开一关**的原版能力。
  *
  * <h2>为什么是这几项</h2>
- * 全部挑的是原版就有、且<b>服务端改了就会同步给所有人</b>的字段：
+ * 全部挑的是原版就有、且<b>双向</b>的公开 setter：
  * {@code Silent} / {@code Invulnerable} / {@code NoGravity} / {@code Glowing} / {@code Invisible}
- * 走 {@code Entity} 的公开 setter，{@code NoAI} 在 {@code Mob} 上，{@code Baby} 在 {@code AgeableMob} 上。
+ * 走 {@code Entity}，{@code NoAI} / {@code CanPickUpLoot} 在 {@code Mob} 上，
+ * {@code Baby} 在 {@code AgeableMob} 上，{@code Tamed} / {@code OrderedToSit} 在 {@code TamableAnimal} 上，
+ * {@code Sheared} 在 {@code Sheep} 上。
  * 像「禁止自然消失」这种只有单向 setter（{@code Mob#setPersistenceRequired()} 没有关闭用重载）的字段
- * <b>不做</b>，免得出现「开了关不掉」这种半边功能。
+ * <b>不做成开关</b>，免得出现「开了关不掉」这种半边功能 —— 它被放进了动作页（{@link EntityPanelActions}）。
  *
  * <h2>为什么状态要由服务端下发</h2>
  * 这几个开关<b>大多不是</b>同步实体数据（{@code SynchedEntityData}）里的字段 —— 客户端本地那份
- * 可能长期是旧值甚至默认值。所以面板打开时由服务端把「有哪些开关可用 + 当前是开是关」一起发过来
+ * 可能长期是旧值甚至默认值（{@code NoAI} / {@code Silent} / {@code CanPickUpLoot} 尤其如此），
+ * 所以面板打开时由服务端把「有哪些开关可用 + 当前是开是关」一起发过来
  * （两个位掩码，见 {@link #applicableMask} / {@link #enabledMask}），
  * 每次切换也由服务端执行并回包覆盖，玩家看到的永远是权威状态。
+ * 掩码是 {@code int}：目前用到 11 位，离 32 位上限还远，但再加开关时记得同步面板里的显示顺序。
  *
  * <h2>改别人 / 别人的生物是允许的，但有闸</h2>
  * 服务端在 {@code NetworkHandler.EntityPanelActionPacket} 里校验：
@@ -42,7 +48,15 @@ public final class EntityPanelToggles {
         /** 无敌（免疫除虚空 / 指令外的一切伤害）。 */
         INVULNERABLE("invulnerable", 1 << 5),
         /** 无重力（不再下坠）。 */
-        NO_GRAVITY("no_gravity", 1 << 6);
+        NO_GRAVITY("no_gravity", 1 << 6),
+        /** 拾取物品（Mob）：关掉后地上的掉落物它不再捡。 */
+        PICKUP("pickup", 1 << 7),
+        /** 已驯服（TamableAnimal）：关掉就变回野生，不再认主人。 */
+        TAMED("tamed", 1 << 8),
+        /** 坐下（TamableAnimal）：让已驯服的宠物原地待命。 */
+        SIT("sit", 1 << 9),
+        /** 已剃毛（Sheep）：切换有无羊毛。 */
+        SHEARED("sheared", 1 << 10);
 
         private final String id;
         private final int bit;
@@ -74,8 +88,10 @@ public final class EntityPanelToggles {
         public boolean appliesTo(Entity entity) {
             if (entity == null) return false;
             return switch (this) {
-                case AI -> entity instanceof Mob;
+                case AI, PICKUP -> entity instanceof Mob;
                 case BABY -> entity instanceof AgeableMob;
+                case TAMED, SIT -> entity instanceof TamableAnimal;
+                case SHEARED -> entity instanceof Sheep;
                 default -> true;
             };
         }
@@ -91,6 +107,10 @@ public final class EntityPanelToggles {
                 case GLOWING -> entity.hasGlowingTag();
                 case INVULNERABLE -> entity.isInvulnerable();
                 case NO_GRAVITY -> entity.isNoGravity();
+                case PICKUP -> entity instanceof Mob mob && mob.canPickUpLoot();
+                case TAMED -> entity instanceof TamableAnimal animal && animal.isTame();
+                case SIT -> entity instanceof TamableAnimal animal && animal.isOrderedToSit();
+                case SHEARED -> entity instanceof Sheep sheep && sheep.isSheared();
             };
         }
 
@@ -105,6 +125,10 @@ public final class EntityPanelToggles {
                 case GLOWING -> entity.setGlowingTag(value);
                 case INVULNERABLE -> entity.setInvulnerable(value);
                 case NO_GRAVITY -> entity.setNoGravity(value);
+                case PICKUP -> ((Mob) entity).setCanPickUpLoot(value);
+                case TAMED -> ((TamableAnimal) entity).setTame(value);
+                case SIT -> ((TamableAnimal) entity).setOrderedToSit(value);
+                case SHEARED -> ((Sheep) entity).setSheared(value);
             }
         }
     }

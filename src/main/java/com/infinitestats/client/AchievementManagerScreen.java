@@ -115,6 +115,8 @@ public class AchievementManagerScreen extends PanelScreen {
     private List<AchievementInfo> filteredAchievements = new ArrayList<>();
     private final List<ModuleEntry> modules = new ArrayList<>();
     private final Map<String, ItemStack> iconCache = new HashMap<>();
+    /** 命名空间 → 模组显示名缓存（过滤时每条成就都要问一次，别反复查 Forge）。 */
+    private final Map<String, String> modNameCache = new HashMap<>();
 
     private EditBox searchField;
     private String searchText = "";
@@ -193,6 +195,7 @@ public class AchievementManagerScreen extends PanelScreen {
             skippedCount = NetworkHandler.pendingAdvancementsSkipped;
             dataReceived = true;
             iconCache.clear();
+            modNameCache.clear();
             rebuildModules();
             applyFilter(false);
             pruneSelection();
@@ -225,15 +228,7 @@ public class AchievementManagerScreen extends PanelScreen {
             if (filterTab == 1 && !info.completed) continue;
             if (filterTab == 2 && info.completed) continue;
             if (moduleFilter != null && !moduleFilter.equals(info.namespace)) continue;
-            if (!lower.isEmpty()) {
-                String name = info.displayName == null || info.displayName.isEmpty()
-                        ? fallbackName(info.id) : info.displayName;
-                if (!PinyinSearchBridge.matches(name.toLowerCase(Locale.ROOT), lower)
-                        && !PinyinSearchBridge.matches(info.description.toLowerCase(Locale.ROOT), lower)
-                        && !PinyinSearchBridge.matches(info.id.toLowerCase(Locale.ROOT), lower)) {
-                    continue;
-                }
-            }
+            if (!lower.isEmpty() && !matchesQuery(info, lower)) continue;
             next.add(info);
         }
 
@@ -242,6 +237,29 @@ public class AchievementManagerScreen extends PanelScreen {
 
         if (resetScroll) scrollOffset = 0;
         updateMaxScroll();
+    }
+
+    /**
+     * 搜索命中：成就名 / 描述 / 成就 ID，以及<b>所属模组的显示名与命名空间</b>。
+     * <p>
+     * 最后一项是关键：输入「机械动力」或「create」就能把这个模组的成就全列出来，
+     * 不用先去下拉里翻模组。中文模组名一样支持拼音（{@code jixiedongli}）。
+     */
+    private boolean matchesQuery(AchievementInfo info, String lower) {
+        String name = info.displayName == null || info.displayName.isEmpty()
+                ? fallbackName(info.id) : info.displayName;
+        if (PinyinSearchBridge.matches(name.toLowerCase(Locale.ROOT), lower)) return true;
+        if (PinyinSearchBridge.matches(info.description.toLowerCase(Locale.ROOT), lower)) return true;
+        if (PinyinSearchBridge.matches(info.id.toLowerCase(Locale.ROOT), lower)) return true;
+
+        String modName = cachedModName(info.namespace).toLowerCase(Locale.ROOT);
+        if (PinyinSearchBridge.matches(modName, lower)) return true;
+        return info.namespace.toLowerCase(Locale.ROOT).contains(lower);
+    }
+
+    /** 模组显示名按命名空间缓存：过滤时每条成就都要问一次，别每次都查 Forge。 */
+    private String cachedModName(String namespace) {
+        return modNameCache.computeIfAbsent(namespace, AchievementManagerScreen::modDisplayName);
     }
 
     /** 排序：默认保持服务端下发的树序，其余在客户端重排。 */
@@ -354,7 +372,7 @@ public class AchievementManagerScreen extends PanelScreen {
         boolean active = moduleFilter != null;
         graphics.fill(x, y, x + MODULE_BTN_W, y + 14,
                 moduleMenuOpen ? BG_TAB_ACTIVE : (hover ? BG_ROW_HOVER : BG_TAB));
-        String label = active ? modDisplayName(moduleFilter)
+        String label = active ? cachedModName(moduleFilter)
                 : tr("screen.infinitestats.achievements.module_all");
         graphics.drawCenteredString(font,
                 EditorUi.ellipsize(font, label, MODULE_BTN_W - 8),
@@ -552,16 +570,30 @@ public class AchievementManagerScreen extends PanelScreen {
 
     @Override
     protected void renderPanelOverlay(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderModuleMenu(graphics, mouseX, mouseY);
         if (hoveredInfo != null && !moduleMenuOpen) {
             renderRowTooltip(graphics, mouseX, mouseY);
         }
     }
 
+    /**
+     * 模组下拉列表画在<b>一帧最后一层</b>。
+     * <p>
+     * 原版浮窗就是在这一层画的（{@code Screen#renderWithTooltip} 在 {@code render()} 之后补画，
+     * 见 {@code ScreenTopLayerMixin}）。下拉列表如果留在覆盖层，会被本帧更晚提交的文字
+     * （列表行 / 底栏按钮 / 延迟提示）压在下面 —— 表现为「列表文字穿透了菜单底色」。
+     */
+    @Override
+    public void renderTopLayer(GuiGraphics graphics, int screenMouseX, int screenMouseY, float partialTick) {
+        if (!moduleMenuOpen) return;
+        beginPanelPose(graphics);
+        renderModuleMenu(graphics, toPanelX(screenMouseX), toPanelY(screenMouseY));
+        endPanelPose(graphics);
+    }
+
     private void renderModuleMenu(GuiGraphics graphics, int mouseX, int mouseY) {
         if (!moduleMenuOpen) return;
 
-        // 下拉菜单是自绘的：先 flush 让列表里的按钮文字落地，
+        // 下拉列表是自绘浮层：先 flush 让列表里的按钮文字落地，
         // 否则菜单背景会进「背景批次」、排在文字下面，文字就浮在菜单上了
         graphics.flush();
 
@@ -570,8 +602,8 @@ public class AchievementManagerScreen extends PanelScreen {
         int w = MODULE_BTN_W + 62;
         int h = moduleMenuVisible() * 14 + 2;
 
-        graphics.fill(x, y, x + w, y + h, 0xF0121524);
-        graphics.fill(x, y, x + w, y + 1, EditorUi.INFO);
+        // 底框用原版浮窗的暗底 + 紫渐变边框，观感与所有浮窗一致，且完全不透明
+        EditorUi.vanillaBackdrop(graphics, x, y, w, h);
 
         for (int i = 0; i < moduleMenuVisible(); i++) {
             int idx = moduleMenuScroll + i;
@@ -581,19 +613,23 @@ public class AchievementManagerScreen extends PanelScreen {
             boolean hover = inside(mouseX, mouseY, x + 1, iy, w - 2, 14);
             boolean active = Objects.equals(moduleFilter, entry.id);
 
+            // 行内高亮也按原版的克制程度：悬停亮一档，当前选中再加一条左侧竖线
             if (hover) {
-                graphics.fill(x + 1, iy, x + w - 1, iy + 14, 0x503A5A9E);
+                graphics.fill(x + 1, iy, x + w - 1, iy + 14, 0x40FFFFFF);
             } else if (active) {
-                graphics.fill(x + 1, iy, x + w - 1, iy + 14, 0x30FFFFFF);
+                graphics.fill(x + 1, iy, x + w - 1, iy + 14, 0x20FFFFFF);
+            }
+            if (active) {
+                graphics.fill(x + 1, iy, x + 2, iy + 14, 0xFF5000FF);
             }
 
             String label = entry.id == null
-                    ? tr("screen.infinitestats.achievements.module_all") : modDisplayName(entry.id);
+                    ? tr("screen.infinitestats.achievements.module_all") : cachedModName(entry.id);
             graphics.drawString(font, EditorUi.ellipsize(font, label, w - 42),
-                    x + 5, iy + 3, active ? EditorUi.ACCENT : TEXT_PRIMARY, false);
+                    x + 6, iy + 3, 0xFFFFFFFF, false);
             String count = String.valueOf(entry.count);
-            graphics.drawString(font, count, x + w - 6 - font.width(count), iy + 3,
-                    TEXT_SECONDARY, false);
+            graphics.drawString(font, count, x + w - 7 - font.width(count), iy + 3,
+                    0xFFA0A0A0, false);
         }
 
         // 菜单画完立刻落地，保证它压在列表文字之上
@@ -611,7 +647,7 @@ public class AchievementManagerScreen extends PanelScreen {
             lines.add("§7" + line);
         }
         lines.add("§8" + tr("screen.infinitestats.achievements.tip.id", info.id));
-        lines.add("§8" + tr("screen.infinitestats.achievements.tip.module", modDisplayName(info.namespace)));
+        lines.add("§8" + tr("screen.infinitestats.achievements.tip.module", cachedModName(info.namespace)));
         lines.add("§8" + tr("screen.infinitestats.achievements.tip.type", frameName(info.frame)));
         if (info.criteriaTotal > 1) {
             lines.add("§8" + tr("screen.infinitestats.achievements.tip.progress",

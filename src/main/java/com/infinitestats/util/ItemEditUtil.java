@@ -5,6 +5,7 @@ import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -73,6 +74,73 @@ public final class ItemEditUtil {
             });
         }
         return result;
+    }
+
+    /**
+     * 读取「运行时才有、但不在 {@code AttributeModifiers} 里」的属性修饰符。
+     * <p>
+     * 词缀（重铸台生成的 affix）和其它模组的属性事件都是通过
+     * {@code ItemAttributeModifierEvent} 在 {@code ItemStack#getAttributeModifiers(EquipmentSlot)}
+     * 里临时塞进去的，NBT 里查不到 —— 所以只读 NBT 的编辑器会漏掉它们
+     * （典型表现：工具提示上明明有「+125 最大法力值」，编辑器属性栏却只列出物品自带的几条）。
+     * 这里把整份结果读出来，再减去已经由 {@code base} 覆盖的部分，剩下的就是外部来源。
+     *
+     * @param base {@link #readAttributes} 的结果，用于去重（NBT 条目或物品内置属性）
+     * @return 与 {@code AttributeModifiers} 同格式的条目（AttributeName / Operation / Amount / Slot / Name / UUID）；
+     *         全部槽位都生效的条目不写 {@code Slot}
+     */
+    public static ListTag readInjectedAttributes(ItemStack stack, ListTag base) {
+        Set<UUID> baseUuids = new HashSet<>();
+        Set<String> baseKeys = new HashSet<>();
+        for (int i = 0; i < base.size(); i++) {
+            CompoundTag c = base.getCompound(i);
+            if (c.hasUUID("UUID")) baseUuids.add(c.getUUID("UUID"));
+            String slot = c.contains("Slot") && !c.getString("Slot").isEmpty() ? c.getString("Slot") : "any";
+            baseKeys.add(attributeKey(c.getString("AttributeName"), c.getInt("Operation"), c.getDouble("Amount"), slot));
+        }
+
+        // 同一个修饰符会在多个槽位上重复出现，按 UUID 合并；同时记下它出现在哪些槽位
+        Map<UUID, CompoundTag> found = new LinkedHashMap<>();
+        Map<UUID, Set<String>> slots = new LinkedHashMap<>();
+        for (EquipmentSlot slot : EquipmentSlot.values()) {
+            for (Map.Entry<Attribute, AttributeModifier> e : stack.getAttributeModifiers(slot).entries()) {
+                ResourceLocation id = ForgeRegistries.ATTRIBUTES.getKey(e.getKey());
+                if (id == null) continue;
+                AttributeModifier modifier = e.getValue();
+                UUID uuid = modifier.getId();
+                if (baseUuids.contains(uuid)) continue;
+                // 直接拿 save() 里的 Operation / Amount，省得依赖 Operation 的取值方法
+                CompoundTag saved = modifier.save();
+                int operation = saved.getInt("Operation");
+                double amount = saved.getDouble("Amount");
+                // 值完全相同、只是 UUID 被重建成另一个的条目也算已覆盖，避免同一行显示两遍
+                if (baseKeys.contains(attributeKey(id.toString(), operation, amount, "any"))
+                        || baseKeys.contains(attributeKey(id.toString(), operation, amount, slot.getName()))) {
+                    continue;
+                }
+                if (found.get(uuid) == null) {
+                    saved.putString("AttributeName", id.toString());
+                    found.put(uuid, saved);
+                }
+                slots.computeIfAbsent(uuid, k -> new HashSet<>()).add(slot.getName());
+            }
+        }
+
+        ListTag result = new ListTag();
+        int slotCount = EquipmentSlot.values().length;
+        for (Map.Entry<UUID, CompoundTag> e : found.entrySet()) {
+            CompoundTag entry = e.getValue();
+            Set<String> used = slots.get(e.getKey());
+            if (used == null || used.isEmpty()) continue;
+            if (used.size() >= slotCount) entry.remove("Slot");   // 所有槽位都生效 → 「任意」
+            else entry.putString("Slot", used.iterator().next());
+            result.add(entry);
+        }
+        return result;
+    }
+
+    private static String attributeKey(String id, int operation, double amount, String slot) {
+        return id + '|' + operation + '|' + amount + '|' + slot;
     }
 
     /**

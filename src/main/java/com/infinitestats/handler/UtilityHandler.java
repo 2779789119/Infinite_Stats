@@ -94,14 +94,12 @@ public class UtilityHandler implements StatEffectHandler {
             applyAutoRepair(player, stats);
         }
 
-        // 自动入库：按配置间隔扫描背包，把物品写入存储网络（隔离异常，避免影响其它功能）
-        int depositInterval = Math.max(1, Config.AUTO_DEPOSIT_INTERVAL.get());
-        if (tickCount % depositInterval == 0 && stats.isToggleActive("auto_deposit")) {
-            try {
-                com.infinitestats.compat.AutoDeposit.deposit(player, stats);
-            } catch (Throwable t) {
-                t.printStackTrace();
-            }
+        // 自动入库：变更驱动 —— 背包这一 tick 内变过（InventoryChangeMixin 打的标记）才查存储网络，
+        // 内部再按配置的最短间隔节流。没变化时只有一次 Set 查询，不再每秒无条件扫背包。
+        try {
+            com.infinitestats.compat.AutoDeposit.tick(player, stats, tickCount);
+        } catch (Throwable t) {
+            t.printStackTrace();
         }
 
         // 交易即刻补货：正在与村民交易时把已消耗的条目立刻补满

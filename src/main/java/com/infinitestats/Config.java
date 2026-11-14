@@ -183,7 +183,7 @@ public final class Config {
 
     // ========== 自动入库设置 ==========
 
-    /** 自动入库的扫描间隔（tick），值越小越及时、但存储网络调用开销越高。 */
+    /** 自动入库两次执行之间的最短间隔（tick）：入库本身由背包变更触发，这里只做节流。 */
     public static ForgeConfigSpec.IntValue AUTO_DEPOSIT_INTERVAL;
 
     /** true = 快捷栏（0-8 号槽）的物品不会被自动存入存储，避免把随身工具吸走。 */
@@ -650,9 +650,10 @@ public final class Config {
         // 自动入库设置
         builder.push("AutoDeposit");
         AUTO_DEPOSIT_INTERVAL = builder
-                .comment("「自动入库」的扫描间隔（tick），默认 20tick = 1 秒。",
-                         "间隔越短越及时，但每秒都会查询一次存储网络，间隔过小会带来额外开销。")
-                .defineInRange("autoDepositInterval", 20, 5, 1200);
+                .comment("「自动入库」两次执行之间的最短间隔（tick），默认 20tick = 1 秒。",
+                         "入库不再按固定间隔扫背包：只有背包内容真的发生变化（拾取 / 合成 / 容器交互等）才会查询存储网络。",
+                         "这一项只是节流 —— 避免一次批量拾取或连续合成里反复查询存储网络，设小一点更及时。")
+                .defineInRange("autoDepositInterval", 20, 1, 1200);
         AUTO_DEPOSIT_KEEP_HOTBAR = builder
                 .comment("是否保留快捷栏（0-8 号槽）中的物品不被自动入库。",
                          "true（默认）= 只把主背包 27 格里的物品自动存入存储，随身工具/武器不会被吸走；",

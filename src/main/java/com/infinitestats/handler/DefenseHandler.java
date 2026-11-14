@@ -9,6 +9,7 @@ import com.infinitestats.stats.StatType;
 import com.infinitestats.util.TeleportUtil;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.protocol.game.ClientboundRemoveMobEffectPacket;
+import net.minecraft.network.protocol.game.ClientboundUpdateMobEffectPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -33,6 +34,15 @@ public class DefenseHandler implements StatEffectHandler {
 
     /** 虚空脱困防抖用的持久化 NBT 键（存在 player 实体上，随实体走）。 */
     private static final String VOID_ESCAPE_TICK = "infinitestats_void_escape_tick";
+
+    /**
+     * 受保护效果的「状态重发」间隔（tick）。
+     * <p>
+     * 用来治「服务端还在、客户端没了」的单边缺失：客户端那张效果表不在我们掌控内
+     * （别的模组在本地删、remove / update 包丢失），只有周期性重发才能自愈。
+     * 20 tick = 1 秒，每个受保护效果一条小包，开销可忽略。
+     */
+    private static final int PROTECTED_RESEND_INTERVAL = 20;
 
     @Override
     public String getId() {
@@ -231,6 +241,11 @@ public class DefenseHandler implements StatEffectHandler {
      *       {@code MobEffectEvent.Applicable} 上的拦截 —— 保护就是拒绝外力干预）。</li>
      * </ol>
      * 快照里的剩余时长逐 tick 递减，耗尽即视为「自然结束」，撤销保护不再补回。
+     * <p>
+     * 另有一条<b>服务端权威兜底</b>：每 {@link #PROTECTED_RESEND_INTERVAL} tick 把受保护效果的当前
+     * 状态重发一次（{@code ClientboundUpdateMobEffectPacket}）。补回只能修「服务端丢了」这一侧 ——
+     * 服务端还在、客户端丢了（别的模组在客户端本地删表、丢包）时，{@code forceAddEffect} 不会发包，
+     * 客户端那份就永远缺着；而这条重发包在客户端走的是 {@code forceAddEffect}，缺了会重建、多了会覆盖。
      */
     private void applyProtectedEffects(ServerPlayer player, PlayerStats stats) {
         if (!stats.hasProtectedEffects() || player.isDeadOrDying()) return;
@@ -242,6 +257,17 @@ public class DefenseHandler implements StatEffectHandler {
             String id = effectId(inst.getEffect());
             if (id == null || !stats.isProtectedEffect(id)) continue;
             snapshots.computeIfAbsent(id, k -> new PlayerStats.ProtectedEffect()).capture(inst);
+        }
+
+        // 周期性重发：一次只补一条小包 / 每个受保护效果，1 秒一次的开销可以忽略。
+        // 权威始终在服务端（时长以服务端实例为准），客户端自行写回只负责「不让它消失」。
+        if (player.tickCount % PROTECTED_RESEND_INTERVAL == 0 && player.connection != null) {
+            for (MobEffectInstance inst : player.getActiveEffects()) {
+                if (inst.getEffect() == null) continue;
+                String id = effectId(inst.getEffect());
+                if (id == null || !stats.isProtectedEffect(id)) continue;
+                player.connection.send(new ClientboundUpdateMobEffectPacket(player.getId(), inst));
+            }
         }
 
         if (snapshots.isEmpty()) return;

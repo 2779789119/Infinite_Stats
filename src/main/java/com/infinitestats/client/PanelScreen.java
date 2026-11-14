@@ -176,11 +176,13 @@ public abstract class PanelScreen extends Screen {
     }
 
     /**
-     * 排队一个提示框，等<b>控件与覆盖层全部画完</b>后再绘制。
+     * 排队一个提示框（原版外观），等<b>控件与覆盖层全部画完</b>后再绘制。
      * <p>
-     * 直接在 {@link #renderPanel} 里调 {@link EditorUi#tooltip} 的话，随后绘制的按钮
-     * （含按钮文字）、状态条会盖在浮窗上 —— 表现就是「浮窗被文字压住」。
-     * 传面板坐标，内部会换算成屏幕坐标并按单位矩阵绘制，边界避让才和真实屏幕一致。
+     * 直接在 {@link #renderPanel} 里画的话，随后绘制的按钮（含按钮文字）、状态条会盖在浮窗上 ——
+     * 表现就是「浮窗被文字压住」。传面板坐标，内部会换算成屏幕坐标并按单位矩阵绘制，
+     * 原版的边界避让才和真实屏幕一致（面板缩放 &lt;1 时也不会变小、偏向左上）。
+     *
+     * @param accent 已废弃（原版浮窗没有顶部彩线），保留只为不动各界面调用点
      */
     protected final void queueTooltip(GuiGraphics g, int panelX, int panelY,
                                       java.util.List<String> lines, int accent) {
@@ -192,6 +194,65 @@ public abstract class PanelScreen extends Screen {
             pose.pushPose();
             pose.last().pose().identity();
             EditorUi.tooltip(g, screenX, screenY, lines, accent);
+            pose.popPose();
+        });
+    }
+
+    /**
+     * 排队一个<b>原版浮窗</b>（外观仍是原版灰底框，只借这条队列解决层级与坐标）。
+     * <p>
+     * 面板内容是在「平移 + 缩放」的姿态里画的：直接把面板坐标交给 {@code renderTooltip}
+     * 会连带被缩放（面板缩放 &lt;1 时浮窗变小、往左上偏）。这里统一换成屏幕坐标 + 单位矩阵，
+     * 并等控件与覆盖层都画完再绘制，原版外观不变、层级与位置都对。
+     *
+     * @param lines 已经折好行的文本（原版不会自己折行）
+     */
+    protected final void queueRawTooltip(GuiGraphics g, int panelX, int panelY,
+                                         java.util.List<net.minecraft.util.FormattedCharSequence> lines) {
+        if (lines == null || lines.isEmpty()) return;
+        int screenX = toScreenX(panelX);
+        int screenY = toScreenY(panelY);
+        queuedTooltips.add(() -> {
+            var pose = g.pose();
+            pose.pushPose();
+            pose.last().pose().identity();
+            EditorUi.vanillaTooltip(g, lines, screenX, screenY);
+            pose.popPose();
+        });
+    }
+
+    /** {@link #queueRawTooltip} 的 Component 版本（单段文本，内部换行交给原版）。 */
+    protected final void queueComponentTooltip(GuiGraphics g, int panelX, int panelY,
+                                               net.minecraft.network.chat.Component text) {
+        if (text == null) return;
+        int screenX = toScreenX(panelX);
+        int screenY = toScreenY(panelY);
+        queuedTooltips.add(() -> {
+            var pose = g.pose();
+            pose.pushPose();
+            pose.last().pose().identity();
+            EditorUi.vanillaTooltip(g, text, screenX, screenY);
+            pose.popPose();
+        });
+    }
+
+    /**
+     * 排队一个<b>原版物品提示框</b>（与 {@link #queueTooltip} 同一条队列）。
+     * <p>
+     * 物品提示的内容（名称 / 附魔 / 模组追加的说明）由原版收集，不能改写成纯文本，
+     * 所以仍交给 {@code GuiGraphics#renderTooltip}；但坐标必须换成屏幕坐标、姿态压成单位矩阵，
+     * 否则会跟着面板缩放一起缩小并偏向左上角（面板缩放 <1 时特别明显）。
+     */
+    protected final void queueItemTooltip(GuiGraphics g, int panelX, int panelY,
+                                          net.minecraft.world.item.ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return;
+        int screenX = toScreenX(panelX);
+        int screenY = toScreenY(panelY);
+        queuedTooltips.add(() -> {
+            var pose = g.pose();
+            pose.pushPose();
+            pose.last().pose().identity();
+            EditorUi.itemTooltip(g, stack, screenX, screenY);
             pose.popPose();
         });
     }
@@ -240,6 +301,36 @@ public abstract class PanelScreen extends Screen {
     /** 绘制注册的控件（原 {@code super.render(...)} 那一步）。 */
     protected final void renderWidgets(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         super.render(g, mouseX, mouseY, partialTick);
+    }
+
+    /**
+     * <b>最顶层</b>绘制：由 {@code ScreenTopLayerMixin} 在 {@code Screen#renderWithTooltip} 的末尾
+     * 调用 —— 也就是原版画完延迟提示框之后，一帧里最后的一道工序。
+     *
+     * <h2>为什么自绘浮层必须画在这里</h2>
+     * 原版浮窗（控件 {@code Tooltip}、物品提示）不是界面自己画的：{@code AbstractWidget} 只是把提示
+     * 攒起来，{@code Screen#renderWithTooltip} 在 {@code render()} <b>返回之后</b>再画一次。
+     * 所以在 {@link #renderPanelOverlay} 里画的自绘浮层，理论上已经是最上面一层了 ——
+     * 但只要还有任何内容在本帧更晚提交（延迟提示、控件循环里的文字、裁剪区切换前的批次），
+     * 就会反过来压在它上面，表现就是「浮层被底下的文字穿透」。
+     * <p>
+     * 想画「绝对压在所有东西之上」的自绘浮层（例如下拉列表），就覆写这个方法：
+     * 它保证在 {@code render()} 与原版延迟提示都画完之后才执行。
+     * 坐标记得用 {@link #beginPanelPose} 换回面板坐标系。
+     */
+    public void renderTopLayer(GuiGraphics g, int screenMouseX, int screenMouseY, float partialTick) {
+    }
+
+    /** 进入面板姿态（平移 + 缩放），在 {@link #renderTopLayer} 里画自绘浮层前调用。 */
+    protected final void beginPanelPose(GuiGraphics g) {
+        g.pose().pushPose();
+        g.pose().translate(originX, originY, 0);
+        g.pose().scale(uiScale, uiScale, 1f);
+    }
+
+    /** 退出 {@link #beginPanelPose} 的姿态。 */
+    protected final void endPanelPose(GuiGraphics g) {
+        g.pose().popPose();
     }
 
     /**

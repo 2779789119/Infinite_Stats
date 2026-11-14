@@ -5,6 +5,7 @@ import com.infinitestats.Config;
 import com.infinitestats.emc.EmcMenu;
 import com.infinitestats.emc.ModMenuTypes;
 import com.infinitestats.crafting.PortableCraftingMenu;
+import com.infinitestats.event.StatEventHandler;
 import com.infinitestats.furnace.PortableFurnaceMenu;
 import com.infinitestats.furnace.FurnaceFuelBufferMenu;
 import com.infinitestats.furnace.FurnaceOrePriorityMenu;
@@ -16,6 +17,7 @@ import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
+import com.infinitestats.util.EntityPanelWand;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.gui.screens.MenuScreens;
@@ -23,12 +25,15 @@ import net.minecraft.client.gui.screens.inventory.AnvilScreen;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.BrushItem;
 import net.minecraft.world.item.CrossbowItem;
 import net.minecraft.world.item.TridentItem;
+import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraftforge.api.distmarker.Dist;
@@ -36,15 +41,42 @@ import net.minecraftforge.client.event.InputEvent;
 import net.minecraftforge.client.event.RegisterGuiOverlaysEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.living.LivingEntityUseItemEvent;
+import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
+import net.minecraftforge.registries.ForgeRegistries;
 
 /**
  * 客户端事件处理器 — 处理按键输入和 GUI 覆盖层注册
  */
 @Mod.EventBusSubscriber(modid = InfiniteStats.MODID, value = Dist.CLIENT)
 public final class ClientEventHandler {
+
+    // ========== 生物观察杖：右键空气打开「附近生物列表」 ==========
+
+    /**
+     * 手持生物观察杖右键空气 → 打开附近生物列表。
+     * <p>
+     * 右键空气只有客户端能感知（原版不发服务端包），所以界面上直接本地开；
+     * 列表里的实体也是客户端已有的追踪数据。点选之后才由
+     * {@code EntityPanelRequestPacket} 走服务端校验并下发权威的开关状态。
+     */
+    @SubscribeEvent
+    public static void onRightClickEmpty(PlayerInteractEvent.RightClickEmpty event) {
+        if (event.getHand() != InteractionHand.MAIN_HAND) return;
+        Minecraft mc = Minecraft.getInstance();
+        LocalPlayer player = mc.player;
+        if (player == null || event.getEntity() != player) return;
+        if (mc.screen != null) return;
+        if (!EntityPanelWand.isWand(event.getItemStack())) return;
+
+        boolean active = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .map(stats -> stats.isToggleActive(EntityPanelWand.STAT_ID))
+                .orElse(false);
+        if (!active) return;
+        mc.setScreen(new EntityPickerScreen());
+    }
 
     // ========== 使用速度加速（客户端动画同步） ==========
 
@@ -222,6 +254,13 @@ public final class ClientEventHandler {
 
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
             var map = player.getActiveEffectsMap();
+
+            // 客户端本地清扫「效果过滤」黑名单（与服务端清扫互补，见 sweepBlockedEffects 注释）
+            sweepBlockedEffects(player, stats);
+
+            // 白名单（保护）模式的客户端一半：受保护效果被本地删掉时按快照写回
+            applyClientProtectedEffects(player, stats);
+
             if (stats.isToggleActive("night_vision")) {
                 map.put(MobEffects.NIGHT_VISION, new MobEffectInstance(
                         MobEffects.NIGHT_VISION,
@@ -249,6 +288,139 @@ public final class ClientEventHandler {
             // N 段跳 / 爬梯加速：移动是客户端权威的，必须本地改速度
             applyMovementExtras(player, stats);
         });
+    }
+
+    // ========== 效果过滤：客户端本地清扫 ==========
+    /**
+     * 在客户端本地清扫「效果过滤」黑名单效果。
+     * <p>
+     * 服务端的清扫（{@code DefenseHandler#applyDebuffImmunity}）只能动服务端那张效果表。只要效果
+     * 不是由服务端加进来的、或者服务端删掉之后又被补回客户端本地表（别的模组在客户端写效果、
+     * 客户端侧的额外施加、丢掉 remove 包留下的鬼影），服务端清多少次客户端都还挂着 ——
+     * 界面上「当前生效中：∞」读的正是本地这张表，于是表现为「名单里明明勾了，就是清不掉」。
+     * <p>
+     * 把清除写在 {@code MobEffect#applyEffectTick} 里的写法（双端执行）之所以看起来更灵，就是因为
+     * 客户端也有一份清扫。这里补上这一半：<b>只删本地效果表，不发包、不动服务端数据</b>，
+     * 服务端仍由自己的清扫与 {@code hardRemoveEffect} 兜底，两端各管各的，不会互相打架。
+     * <p>
+     * 前置条件与服务端完全一致（开关 + 黑名单非空 + 条目命中），因此白名单（保护）模式下
+     * {@code shouldBlockEffect} 恒为 false，不会误删受保护的效果。
+     */
+    private static void sweepBlockedEffects(LocalPlayer player, PlayerStats stats) {
+        if (!stats.isToggleActive("debuff_immunity") || !stats.hasBlockingEffects()) return;
+
+        var map = player.getActiveEffectsMap();
+        if (map.isEmpty()) return;
+
+        // 遍历副本再删：直接边遍历边改会踩 ConcurrentModificationException
+        for (MobEffect effect : new java.util.ArrayList<>(map.keySet())) {
+            if (effect == null) continue;
+            ResourceLocation key = ForgeRegistries.MOB_EFFECTS.getKey(effect);
+            if (key == null) continue;
+            String id = key.toString();
+
+            // 本模组自己维持的 Utility 效果（夜视 / 隐身 / 幸运）不参与过滤：
+            // 名单里写 `*` 时也不该把上面刚写进本地表的无限夜视顺手删掉
+            if (StatEventHandler.isOwnUtilityEffect(stats, id)) continue;
+            if (!stats.shouldBlockEffect(id)) continue;
+
+            if (player.removeEffect(effect)) continue;
+            // 被 MobEffectEvent.Remove 驳回（与服务端 hardRemoveEffect 同理）：直接删本地表。
+            // 客户端不涉及发包，但属性修饰符与两个显示标志要手工补回。
+            MobEffectInstance removed = player.removeEffectNoUpdate(effect);
+            if (removed == null) continue;
+            effect.removeAttributeModifiers(player, player.getAttributes(), removed.getAmplifier());
+            player.setInvisible(player.hasEffect(MobEffects.INVISIBILITY));
+            player.setGlowingTag(player.hasEffect(MobEffects.GLOWING));
+        }
+    }
+
+    // ========== 效果过滤：白名单（保护）的客户端一半 ==========
+
+    /**
+     * 客户端侧的保护快照：效果 ID → 最后一次观察到的实例状态与剩余时长。
+     * <p>
+     * 与服务端 {@code PlayerStats#protectedSnapshots} 各自独立 —— 服务端那份是权威（时长以服务端实例为准），
+     * 这一份只负责「本地被删掉时不让它消失」。两边的剩余时长各自递减，服务端每
+     * {@code PROTECTED_RESEND_INTERVAL} tick 会重发一次真实状态把偏差拉回来。
+     */
+    private static final java.util.Map<String, PlayerStats.ProtectedEffect> CLIENT_PROTECTED =
+            new java.util.HashMap<>();
+
+    /** 上面这份快照属于哪个客户端实体；换维度 / 重生会换实体，此时必须整体作废。 */
+    private static int protectedSnapshotOwner = -1;
+
+    /**
+     * 白名单（保护）模式的客户端清扫：受保护效果在本地被删掉时，按快照写回本地效果表。
+     * <p>
+     * 服务端 {@code DefenseHandler#applyProtectedEffects} 的补回只看服务端那张表：
+     * 服务端还在、客户端没了（别的模组在客户端本地删表、remove / update 包丢失）时
+     * {@code player.hasEffect(...)} 仍为 true，服务端不会补也不会发包，客户端会一直缺着。
+     * 这里补上这一半，让「保护」在两端都成立。
+     * <p>
+     * 安全边界：
+     * <ul>
+     *   <li>只在白名单模式且名单非空时运行，黑名单模式直接清空快照退出；</li>
+     *   <li>客户端实体变了（换维度 / 重生）立即作废快照，避免把旧实体的效果写回新实体；</li>
+     *   <li>死亡时不写回；剩余时长递减到 0 视为自然结束，放手不再补；</li>
+     *   <li>用 {@code forceAddEffect} 写回，绕过 {@code MobEffectEvent.Applicable}：
+     *       保护本来就是「拒绝外力干预」。</li>
+     * </ul>
+     */
+    private static void applyClientProtectedEffects(LocalPlayer player, PlayerStats stats) {
+        if (!stats.hasProtectedEffects()) {
+            CLIENT_PROTECTED.clear();
+            protectedSnapshotOwner = -1;
+            return;
+        }
+
+        // 换维度 / 重生 → 本地实体换了，旧快照不能搬过去（服务端会重新下发这些效果）
+        if (player.getId() != protectedSnapshotOwner) {
+            CLIENT_PROTECTED.clear();
+            protectedSnapshotOwner = player.getId();
+        }
+        if (player.isDeadOrDying()) return;
+
+        // 1) 采样：还在身上的刷新快照（等级 / 粒子 / 剩余时长）
+        for (MobEffectInstance inst : player.getActiveEffects()) {
+            if (inst.getEffect() == null) continue;
+            ResourceLocation key = ForgeRegistries.MOB_EFFECTS.getKey(inst.getEffect());
+            if (key == null) continue;
+            String id = key.toString();
+            if (!stats.isProtectedEffect(id)) continue;
+            CLIENT_PROTECTED.computeIfAbsent(id, k -> new PlayerStats.ProtectedEffect()).capture(inst);
+        }
+
+        // 2) 补回：快照里有、本地却没了 = 被外力从客户端表里删掉，按剩余时长写回
+        java.util.Iterator<java.util.Map.Entry<String, PlayerStats.ProtectedEffect>> it =
+                CLIENT_PROTECTED.entrySet().iterator();
+        while (it.hasNext()) {
+            java.util.Map.Entry<String, PlayerStats.ProtectedEffect> entry = it.next();
+            if (!stats.isProtectedEffect(entry.getKey())) {
+                // 玩家已取消保护
+                it.remove();
+                continue;
+            }
+            MobEffect effect = effectById(entry.getKey());
+            if (effect == null) {
+                // 效果随模组卸载消失，补不回来
+                it.remove();
+                continue;
+            }
+            if (player.hasEffect(effect)) continue;
+            if (!entry.getValue().tickDown()) {
+                // 剩余时长耗尽 = 自然结束，放手
+                it.remove();
+                continue;
+            }
+            player.forceAddEffect(entry.getValue().toInstance(effect), player);
+        }
+    }
+
+    /** 由效果 ID 反查效果；ID 非法或未注册时返回 {@code null}。 */
+    private static MobEffect effectById(String id) {
+        ResourceLocation rl = ResourceLocation.tryParse(id);
+        return rl == null ? null : ForgeRegistries.MOB_EFFECTS.getValue(rl);
     }
 
     // ========== N 段跳 / 爬梯加速 ==========

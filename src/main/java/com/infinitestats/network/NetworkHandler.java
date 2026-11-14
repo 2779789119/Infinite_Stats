@@ -22,7 +22,9 @@ import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import com.infinitestats.stats.StatType;
 import com.infinitestats.handler.AttributeHandler;
+import com.infinitestats.handler.AttributeLockHandler;
 import com.infinitestats.util.AttributeValueMath;
+import com.infinitestats.util.EntityPanelActions;
 import com.infinitestats.util.EntityPanelToggles;
 import com.infinitestats.util.EntityPanelWand;
 import com.infinitestats.util.TeleportUtil;
@@ -84,7 +86,10 @@ public final class NetworkHandler {
     // 29：新增 EmcForgetPacket（客户端请求遗忘某个已学物品）
     // 30：成就管理器改版：AchievementInfo 增加进度 / 框架 / 模组 / 父成就 / 隐藏标记，
     //     SyncAdvancementsPacket 带「可编辑」标志与跳过计数，新增 BatchAdvancementPacket
-    private static final String PROTOCOL_VERSION = "30";
+    // 31：生物面板加强：新增 EntityPanelCommandPacket（动作）/ EntityPanelEffectPacket（移除单个效果）
+    //     / EntityPanelRequestPacket（附近生物列表点选后请求开面板）
+    // 32：生物面板属性锁定：新增 EntityPanelLockPacket / EntityPanelLockSyncPacket
+    private static final String PROTOCOL_VERSION = "32";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -128,6 +133,14 @@ public final class NetworkHandler {
     public static volatile List<WaystoneEntry> pendingWaystones = List.of();
     /** 上面那份列表的版本号：每次同步自增，界面据此重建列表。 */
     public static volatile long waystoneListVersion = 0;
+
+    /**
+     * 待读取的「生物属性锁」：{@code 实体 id → snapshot}。
+     * <p>
+     * 服务端在打开面板时就会把锁表发过来，但客户端可能还没建好界面（比如从附近生物列表点进来），
+     * 所以先按实体 id 暂存一份，面板初始化时取走。
+     */
+    public static final Map<Integer, CompoundTag> pendingEntityLocks = new HashMap<>();
 
     /**
      * 注册所有数据包
@@ -507,6 +520,36 @@ public final class NetworkHandler {
                 EntityPanelAttributePacket::decode,
                 EntityPanelAttributePacket::handle);
 
+        // 生物面板：执行一个一次性动作（回血 / 清效果 / 传送 / 复制 / 杀死……，客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EntityPanelCommandPacket.class,
+                EntityPanelCommandPacket::encode,
+                EntityPanelCommandPacket::decode,
+                EntityPanelCommandPacket::handle);
+
+        // 生物面板：移除生物身上的单个药水效果（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EntityPanelEffectPacket.class,
+                EntityPanelEffectPacket::encode,
+                EntityPanelEffectPacket::decode,
+                EntityPanelEffectPacket::handle);
+
+        // 生物面板：附近生物列表里点中某只后，请求打开它的面板（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EntityPanelRequestPacket.class,
+                EntityPanelRequestPacket::encode,
+                EntityPanelRequestPacket::decode,
+                EntityPanelRequestPacket::handle);
+
+        // 生物面板：锁定 / 解锁某条属性（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EntityPanelLockPacket.class,
+                EntityPanelLockPacket::encode,
+                EntityPanelLockPacket::decode,
+                EntityPanelLockPacket::handle);
+
+        // 生物面板：把实体的锁定表同步给客户端（服务器 → 客户端）
+        CHANNEL.registerMessage(packetId++, EntityPanelLockSyncPacket.class,
+                EntityPanelLockSyncPacket::encode,
+                EntityPanelLockSyncPacket::decode,
+                EntityPanelLockSyncPacket::handle);
+
     }
 
     /**
@@ -532,6 +575,14 @@ public final class NetworkHandler {
                         EntityPanelToggles.applicableMask(target),
                         EntityPanelToggles.enabledMask(target),
                         editable));
+        // 锁定状态跟着一起来：面板要据此在行尾画「基 / 终」标记
+        sendEntityPanelLocks(player, target);
+    }
+
+    /** 把某个实体身上的属性锁同步给指定玩家。 */
+    private static void sendEntityPanelLocks(ServerPlayer player, Entity target) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new EntityPanelLockSyncPacket(target.getId(), AttributeLockHandler.snapshot(target)));
     }
 
     /**
@@ -1615,8 +1666,9 @@ public final class NetworkHandler {
                 if (player == null) return;
                 if (!PlayerStats.NETWORK_SCOPES.contains(msg.scope)) return;
                 player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
+                    // 只挡「被功能开关整条关掉」的情况：没加点的玩家也能先把优先级配好
                     if (PlayerStats.SCOPE_AUTO_DEPOSIT.equals(msg.scope)
-                            && !stats.isToggleActive("auto_deposit")) {
+                            && stats.isStatInactive("auto_deposit")) {
                         return;
                     }
                     stats.setNetworkPriority(msg.scope, normalizeNetworkOrder(msg.order));
@@ -1659,7 +1711,8 @@ public final class NetworkHandler {
                 ServerPlayer player = ctx.get().getSender();
                 if (player == null) return;
                 player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
-                    if (!stats.isToggleActive("auto_deposit")) return;
+                    // 只挡「被功能开关整条关掉」的情况：没加点也能先维护白 / 黑名单
+                    if (stats.isStatInactive("auto_deposit")) return;
                     stats.setAutoDepositFilterList(normalizeFilterIds(msg.itemIds), msg.useWhitelist);
                     syncToClient(player);
                 });
@@ -3201,14 +3254,239 @@ public final class NetworkHandler {
                 if (attribute == net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH) {
                     living.setHealth(Math.min(living.getHealth(), living.getMaxHealth()));
                 }
+                // 这条属性如果正被锁定，锁的目标要跟着改 —— 否则下一 tick 就被压回旧值
+                try {
+                    AttributeLockHandler.onAttributeEdited(living, msg.attributeId, wanted, base);
+                } catch (Throwable ignored) {
+                    // 锁定更新失败不影响这次写入本身
+                }
             });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，执行「动作」页里的一个一次性操作。
+     * <p>
+     * 只传「实体 id + 动作下标」，能不能做由服务端说了算（与开关、属性编辑同一条
+     * {@link #canEditEntity} 权限链）。执行后回一发 {@link OpenEntityPanelPacket}：
+     * 动作会改血量 / 效果 / 状态，客户端据此刷新，且顺便把「可编辑」标志校正回权威值。
+     */
+    public static final class EntityPanelCommandPacket {
+        private final int entityId;
+        private final int actionIndex;
+
+        public EntityPanelCommandPacket(int entityId, int actionIndex) {
+            this.entityId = entityId;
+            this.actionIndex = actionIndex;
+        }
+
+        public static void encode(EntityPanelCommandPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeVarInt(msg.actionIndex);
+        }
+
+        public static EntityPanelCommandPacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelCommandPacket(buf.readVarInt(), buf.readVarInt());
+        }
+
+        public static void handle(EntityPanelCommandPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                Entity target = player.level().getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity living)) return;
+                if (!canEditEntity(player, target)) {
+                    sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
+                    return;
+                }
+
+                EntityPanelActions.Action action = EntityPanelActions.byIndex(msg.actionIndex);
+                if (action != null) EntityPanelActions.apply(player, living, action);
+                // 杀死之后目标已经没了，客户端会自己检测到实体消失并关面板，这里不再回包
+                if (target.isAlive()) {
+                    sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，移除生物身上的单个药水效果（效果页点某一行）。
+     * <p>
+     * 用注册名而不是下标：药水效果来自所有模组，客户端与服务端的注册表顺序虽然一致，
+     * 但写注册名更抗「中途加删模组 / 数据包」这类情况，代价只是几十字节。
+     */
+    public static final class EntityPanelEffectPacket {
+        private final int entityId;
+        private final String effectId;
+
+        public EntityPanelEffectPacket(int entityId, String effectId) {
+            this.entityId = entityId;
+            this.effectId = effectId == null ? "" : effectId;
+        }
+
+        public static void encode(EntityPanelEffectPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeUtf(msg.effectId, 128);
+        }
+
+        public static EntityPanelEffectPacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelEffectPacket(buf.readVarInt(), buf.readUtf(128));
+        }
+
+        public static void handle(EntityPanelEffectPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                Entity target = player.level().getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity living)) return;
+                if (!canEditEntity(player, target)) return;
+                EntityPanelActions.removeEffect(living, msg.effectId);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，请求打开「附近生物列表」里点中的那只生物的面板。
+     * <p>
+     * 客户端能自己列出附近的实体（实体追踪数据本来就在本地），但开关状态（NoAI / 静音……）
+     * 只有服务端知道，所以点选之后仍然要由服务端下发一次 {@link OpenEntityPanelPacket}。
+     * 校验比「改生物」宽松：只要求身上有观察杖 + 属性激活 + 距离在 64 格内，不要求可编辑 ——
+     * 只读服也该能翻看生物。
+     */
+    public static final class EntityPanelRequestPacket {
+        private final int entityId;
+
+        public EntityPanelRequestPacket(int entityId) {
+            this.entityId = entityId;
+        }
+
+        public static void encode(EntityPanelRequestPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+        }
+
+        public static EntityPanelRequestPacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelRequestPacket(buf.readVarInt());
+        }
+
+        public static void handle(EntityPanelRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                Entity target = player.level().getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity)) return;
+                if (!EntityPanelWand.hasWand(player)) return;
+
+                boolean active = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                        .map(stats -> stats.isToggleActive(EntityPanelWand.STAT_ID))
+                        .orElse(false);
+                if (!active) return;
+                if (target.distanceToSqr(player) > 64.0D * 64.0D) return;
+
+                sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，锁定 / 解锁某条属性。
+     * <p>
+     * {@code mode} 为 {@code 0} 表示解锁；{@code 1} 锁基础值；{@code 2} 锁最终值。
+     * 目标值由客户端带上（锁基础值时给基础值，锁最终值时给最终值），
+     * 服务端只做校验与落地，真正的「每 tick 压回去」在 {@link AttributeLockHandler} 里。
+     */
+    public static final class EntityPanelLockPacket {
+        private final int entityId;
+        private final String attributeId;
+        private final int mode;
+        private final double value;
+
+        public EntityPanelLockPacket(int entityId, String attributeId, int mode, double value) {
+            this.entityId = entityId;
+            this.attributeId = attributeId == null ? "" : attributeId;
+            this.mode = mode;
+            this.value = value;
+        }
+
+        public static void encode(EntityPanelLockPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeUtf(msg.attributeId, 128);
+            buf.writeVarInt(msg.mode);
+            buf.writeDouble(msg.value);
+        }
+
+        public static EntityPanelLockPacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelLockPacket(buf.readVarInt(), buf.readUtf(128),
+                    buf.readVarInt(), buf.readDouble());
+        }
+
+        public static void handle(EntityPanelLockPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                Entity target = player.level().getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity living)) return;
+                if (!canEditEntity(player, target)) {
+                    sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
+                    return;
+                }
+
+                ResourceLocation id = ResourceLocation.tryParse(msg.attributeId);
+                if (id == null || ForgeRegistries.ATTRIBUTES.getValue(id) == null) return;
+                if (msg.mode != AttributeLockHandler.MODE_NONE
+                        && msg.mode != AttributeLockHandler.MODE_BASE
+                        && msg.mode != AttributeLockHandler.MODE_FINAL) return;
+                if (msg.mode != AttributeLockHandler.MODE_NONE && !Double.isFinite(msg.value)) return;
+
+                AttributeLockHandler.set(living, msg.attributeId, msg.mode, msg.value);
+                sendEntityPanelLocks(player, target);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：服务端 → 客户端，同步某个实体身上的属性锁。
+     * <p>
+     * 内容是 {@code 属性注册名 → {mode, value}} 的 NBT：锁的数量通常只有个位数，
+     * 没必要为它设计一套紧凑的平行结构；界面只关心「这条锁没锁、锁的哪种」。
+     */
+    public static final class EntityPanelLockSyncPacket {
+        private final int entityId;
+        private final CompoundTag locks;
+
+        public EntityPanelLockSyncPacket(int entityId, CompoundTag locks) {
+            this.entityId = entityId;
+            this.locks = locks == null ? new CompoundTag() : locks;
+        }
+
+        public static void encode(EntityPanelLockSyncPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeNbt(msg.locks);
+        }
+
+        public static EntityPanelLockSyncPacket decode(FriendlyByteBuf buf) {
+            int entityId = buf.readVarInt();
+            CompoundTag tag = buf.readNbt();
+            return new EntityPanelLockSyncPacket(entityId, tag);
+        }
+
+        public static void handle(EntityPanelLockSyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> EntityPanelScreen.applyLockSnapshot(msg.entityId, msg.locks));
             ctx.get().setPacketHandled(true);
         }
     }
 
     /** 生物面板「改生物」的距离基数兜底值（格）。 */
     private static final double EDIT_RANGE_BASE = 16.0D;
-
     /** 当前生效的距离基数（配置项 Modules.entityPanelEditRange）。 */
     private static double editRangeBase() {
         try {

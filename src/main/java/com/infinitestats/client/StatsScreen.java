@@ -403,23 +403,29 @@ public class StatsScreen extends PanelScreen {
 
     // ======================== 自动入库优先级 ========================
 
-    /** 刷新优先级 / 过滤按钮的文案与提示（未解锁时显示灰色占位）。 */
+    /**
+     * 刷新优先级 / 过滤按钮的文案与提示。
+     * <p>
+     * 「能不能改这两个设置」只看属性有没有被<b>功能开关</b>关掉（关掉时按钮干脆不创建），
+     * 与有没有加点无关：没加点也能先把白 / 黑名单与存储优先级配好，等加点解锁后立刻按这套设置生效。
+     * 这里只在玩家数据还没同步（{@code cachedStats == null}）时显示占位文案。
+     */
     private void updateDepositLabel() {
         if (depositBtn == null) return;
-        boolean unlocked = cachedStats != null && cachedStats.isToggleActive("auto_deposit");
-        List<String> order = unlocked ? cachedStats.getEffectiveAutoDepositPriority() : List.of();
-        int filterSize = unlocked ? cachedStats.getAutoDepositFilterList().size() : 0;
+        boolean available = cachedStats != null;
+        List<String> order = available ? cachedStats.getEffectiveAutoDepositPriority() : List.of();
+        int filterSize = available ? cachedStats.getAutoDepositFilterList().size() : 0;
 
-        boolean whitelist = unlocked && cachedStats.isAutoDepositUseWhitelist();
+        boolean whitelist = available && cachedStats.isAutoDepositUseWhitelist();
 
-        String signature = unlocked + "|" + String.join(",", order) + "|" + filterSize + "|" + whitelist;
+        String signature = available + "|" + String.join(",", order) + "|" + filterSize + "|" + whitelist;
         if (signature.equals(depositLabelCache)) return;
         depositLabelCache = signature;
 
         // 过滤入口按钮：名称固定（避免与页脚导航的「过滤」混淆），明细放进浮窗
         if (depositFilterBtn != null) {
             depositFilterBtn.setMessage(Component.translatable("gui.infinitestats.deposit.filter"));
-            depositFilterBtn.setTooltip(Tooltip.create(unlocked
+            depositFilterBtn.setTooltip(Tooltip.create(available
                     ? Component.translatable("gui.infinitestats.deposit.filter_tooltip",
                             Component.translatable(whitelist
                                     ? "gui.infinitestats.deposit.mode_whitelist"
@@ -428,7 +434,7 @@ public class StatsScreen extends PanelScreen {
                     : Component.translatable("gui.infinitestats.deposit.locked_tip")));
         }
 
-        if (!unlocked) {
+        if (!available) {
             depositBtn.setMessage(Component.translatable("gui.infinitestats.deposit.locked"));
             depositBtn.setTooltip(Tooltip.create(
                     Component.translatable("gui.infinitestats.deposit.locked_tip")));
@@ -451,9 +457,14 @@ public class StatsScreen extends PanelScreen {
                 Component.translatable("gui.infinitestats.deposit.tooltip", orderTip.toString())));
     }
 
-    /** 打开自动入库的白 / 黑名单过滤界面（需已解锁 auto_deposit）。 */
+    /**
+     * 打开自动入库的白 / 黑名单过滤界面。
+     * <p>
+     * 不要求已加点：这两个界面只是「设置」，先把名单配好、再加点解锁效果是正常用法
+     * （原先要求 {@code isToggleActive}，导致没加点的玩家连入库黑名单都打不开）。
+     */
     private void openDepositFilter() {
-        if (cachedStats == null || !cachedStats.isToggleActive("auto_deposit")) {
+        if (cachedStats == null || cachedStats.isStatDisabled("auto_deposit")) {
             if (minecraft != null && minecraft.player != null) {
                 minecraft.player.displayClientMessage(
                         Component.translatable("message.infinitestats.auto_deposit_locked"), true);
@@ -464,9 +475,9 @@ public class StatsScreen extends PanelScreen {
         if (minecraft != null) minecraft.setScreen(new AutoDepositFilterScreen(this));
     }
 
-    /** 打开「存储优先级」界面，逐个上移 / 下移各存储的先后顺序（需已解锁 auto_deposit）。 */
+    /** 打开「存储优先级」界面，逐个上移 / 下移各存储的先后顺序（同样不要求已加点）。 */
     private void openDepositPriority() {
-        if (cachedStats == null || !cachedStats.isToggleActive("auto_deposit")) {
+        if (cachedStats == null || cachedStats.isStatDisabled("auto_deposit")) {
             if (minecraft != null && minecraft.player != null) {
                 minecraft.player.displayClientMessage(
                         Component.translatable("message.infinitestats.auto_deposit_locked"), true);
@@ -1111,7 +1122,7 @@ public class StatsScreen extends PanelScreen {
     /** 浮窗画在控件之上（基类负责缩放）。 */
     @Override
     protected void renderPanelOverlay(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderTooltipOverlay(graphics, mouseX, mouseY, mouseX, mouseY);
+        renderTooltipOverlay(graphics, mouseX, mouseY);
     }
 
     /**
@@ -1503,8 +1514,7 @@ public class StatsScreen extends PanelScreen {
 
     // ======================== 悬停提示 ========================
 
-    private void renderTooltipOverlay(GuiGraphics g, int panelMouseX, int panelMouseY,
-                                      int screenMouseX, int screenMouseY) {
+    private void renderTooltipOverlay(GuiGraphics g, int panelMouseX, int panelMouseY) {
         if (hoveredCardIndex < 0) return;
 
         StatType stat;
@@ -1526,7 +1536,7 @@ public class StatsScreen extends PanelScreen {
                 boolean collapsed = collapsedExternalGroups.contains(groupNamespace);
                 lines.add("§e" + groupNamespace);
                 lines.add("§7" + groupSize + " 个属性 · " + (collapsed ? "点击展开" : "点击折叠"));
-                renderWrappedTooltip(g, lines, screenMouseX, screenMouseY);
+                renderWrappedTooltip(g, lines, panelMouseX, panelMouseY);
                 return;
             }
             stat = entry.stat;
@@ -1589,7 +1599,7 @@ public class StatsScreen extends PanelScreen {
             appendExternalDetail(tooltipLines, stat);
         }
 
-        if (!tooltipLines.isEmpty()) renderWrappedTooltip(g, tooltipLines, screenMouseX, screenMouseY);
+        if (!tooltipLines.isEmpty()) renderWrappedTooltip(g, tooltipLines, panelMouseX, panelMouseY);
     }
 
     /**
@@ -1638,17 +1648,20 @@ public class StatsScreen extends PanelScreen {
     }
 
     /**
-     * 折行后再画浮窗。
+     * 折行后再画原版浮窗。
      *
-     * <h2>为什么不直接用 {@code g.renderTooltip(font, 行列表, x, y)}</h2>
-     * 这条重载收的是 {@link net.minecraft.util.FormattedCharSequence}，原版<b>只按传入的行数排版，
+     * <h2>为什么要自己折行</h2>
+     * 原版 {@code renderTooltip(Font, List&lt;FormattedCharSequence&gt;, …)} <b>只按传入的行数排版，
      * 不做宽度折行</b>：一行有多宽就画多宽。功能描述动辄上百字（例如「无限弹药」那条），
      * 于是整条文本一路画到屏幕外，超出部分被视口裁掉 —— 表现为「描述看不全」。
-     * <p>
-     * 所以这里先按当前可用宽度折行（与 {@code EntityPanelScreen} / {@code DebuffFilterScreen} 一致），
-     * 再把折好的多行交给原版画背景框，浮窗宽度就始终落在屏幕内。
+     * 所以这里先按可用宽度折行（与 {@code EntityPanelScreen} / {@code DebuffFilterScreen} 一致）。
+     *
+     * <h2>为什么交给 {@link #queueRawTooltip}</h2>
+     * 面板内容画在「平移 + 缩放」的姿态里，直接把面板坐标交给 {@code renderTooltip} 会跟着缩小、
+     * 偏向左上角。队列版本用<b>屏幕坐标 + 单位矩阵</b>绘制，并把浮窗排到最后，
+     * 外观仍是原版灰底框，位置与层级都正确。
      */
-    private void renderWrappedTooltip(GuiGraphics g, List<String> lines, int screenX, int screenY) {
+    private void renderWrappedTooltip(GuiGraphics g, List<String> lines, int panelX, int panelY) {
         int maxWidth = tooltipWrapWidth();
         List<net.minecraft.util.FormattedCharSequence> visualLines = new ArrayList<>();
         for (String line : lines) {
@@ -1656,23 +1669,18 @@ public class StatsScreen extends PanelScreen {
                 visualLines.add(Component.literal(wrapped).getVisualOrderText());
             }
         }
-        // GuiGraphics 按批次提交（先所有背景、再所有文字），不先落地的话
-        // 浮窗的背景会排在已有文字下面，表现就是「文字浮在浮窗上」
-        g.flush();
-        g.renderTooltip(font, visualLines, screenX, screenY);
-        g.flush();
+        queueRawTooltip(g, panelX, panelY, visualLines);
     }
 
     /**
-     * 浮窗文本折行宽度（面板坐标）。
+     * 浮窗文本折行宽度。
      * <p>
-     * 浮窗是在面板缩放的姿态里画出来的，面板坐标 1 单位最终只占 {@code 面板缩放} 个屏幕像素，
-     * 所以可用宽度要按缩放换算回去；上限 220 是排版上限，避免宽屏下折出一整行超长短句。
+     * 浮窗在屏幕坐标下绘制（不跟面板缩放），所以这里直接用屏幕宽度算；
+     * 上限 240 是排版上限，避免宽屏下折出一整行超长短句。
      */
     private int tooltipWrapWidth() {
         int guiWidth = minecraft != null ? minecraft.getWindow().getGuiScaledWidth() : 320;
-        int fit = Math.round((guiWidth - 24) / Math.max(0.25f, panelScale()));
-        return Mth.clamp(fit, 90, 220);
+        return Mth.clamp(guiWidth - 40, 120, 240);
     }
 
     // ======================== 鼠标输入 ========================

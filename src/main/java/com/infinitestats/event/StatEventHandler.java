@@ -1769,6 +1769,8 @@ public final class StatEventHandler {
         MULTI_SHOT_TICKS.remove(event.getEntity().getUUID());
         // 自动钓鱼的重抛延迟记录
         AutoFish.forget(event.getEntity().getUUID());
+        // 自动入库的「背包已变更」标记与节流时间戳
+        com.infinitestats.compat.AutoDeposit.forget(event.getEntity());
     }
 
     // ========== 玩家重生 ==========

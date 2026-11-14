@@ -21,6 +21,21 @@ public class MobilityHandler implements StatEffectHandler {
     /** 原版飞行速度基准（{@code Abilities#flyingSpeed} 默认值）。 */
     private static final float VANILLA_FLY_SPEED = 0.05f;
 
+    /**
+     * 能力包兜底补发周期（tick）。
+     * <p>
+     * 客户端 {@code LocalPlayer} 在若干路径上会被重建，{@code Abilities} 回到默认值
+     * （{@code mayfly=false}）：{@code teleportTo} 类跨维度（命令、多数模组传送器）、
+     * 部分模组的重生 / 换角色流程。这些路径<b>不补发</b> {@code ClientboundPlayerAbilitiesPacket}，
+     * 而授权方只在「服务端状态变化」时发包 —— 服务端仍是 {@code mayfly=true}，永远觉得自己不用发，
+     * 客户端却一直是 {@code false}，表现就是「能飞的角色怎么按都不起来」，且所有依赖
+     * {@code mayfly} 的模组飞行一起失效。
+     * <p>
+     * 这里按周期把服务端真实能力补发一次，让客户端自愈。周期取 100 tick（5 秒），
+     * 与同类模组的兜底间隔一致；发包本身不改服务端任何字段，不会和其它模组的授权抢状态。
+     */
+    private static final int FLIGHT_RESYNC_INTERVAL = 100;
+
     /** 原版默认跨越高度（台阶 = 0.5 格能上，整格 1.0 上不去）。 */
     public static final float DEFAULT_STEP_HEIGHT = 0.6f;
 
@@ -55,8 +70,13 @@ public class MobilityHandler implements StatEffectHandler {
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
         // 按配置间隔更新飞行状态和跨越高度（默认 5 tick）
-        if (tickCount % Math.max(1, com.infinitestats.Config.MOBILITY_UPDATE_INTERVAL.get()) == 0) {
-            updateFlight(player, stats, false);
+        int interval = Math.max(1, com.infinitestats.Config.MOBILITY_UPDATE_INTERVAL.get());
+        if (tickCount % interval == 0) {
+            // 兜底补发窗口：一个补发周期内必然命中且只命中一次，
+            // 不要求 interval 能整除 FLIGHT_RESYNC_INTERVAL（interval 可配到 200）
+            long period = Math.max(FLIGHT_RESYNC_INTERVAL, interval);
+            boolean resyncDue = tickCount % period < interval;
+            updateFlight(player, stats, resyncDue);
             updateStepHeight(player, stats);
         }
     }
@@ -92,7 +112,8 @@ public class MobilityHandler implements StatEffectHandler {
      * FLY toggle ON → 始终确保 mayfly=true，flying 状态完全交给原版客户端
      * （双击跳跃切换，落地自动退出），服务端不主动接管；OFF → 仅当由本模组提供时才关闭。
      *
-     * @param forceSync 客户端能力可能已被重置时（登录 / 重生 / 跨维度）传 true，无条件重发能力包。
+     * @param forceSync 无条件重发能力包。两种来源：登录 / 重生 / 跨维度等关键时刻，
+     *                  以及 {@link #FLIGHT_RESYNC_INTERVAL} 周期兜底。
      *                  <p>原因：客户端收到 {@code ClientboundRespawnPacket} 时会丢弃 LocalPlayer、
      *                  新建一个能力全为默认值（mayfly=false、flyingSpeed=0.05）的实例。原版
      *                  {@code ServerPlayer#changeDimension}（传送门）路径在之后补发了
@@ -100,18 +121,25 @@ public class MobilityHandler implements StatEffectHandler {
      *                  路径（命令跨维度、多数模组传送器、本模组 {@code TeleportUtil}）<b>没有</b>补发，
      *                  于是客户端 mayfly 永久丢失、怎么按都飞不起来。
      *                  <p>服务端记的 mayfly 仍是 true，所以只靠"状态变化才发包"无法自愈，必须在这些
-     *                  时机强制重发。
+     *                  时机强制重发；但即便这些时机都覆盖到了，玩家中途换成能飞的状态（例如其它模组
+     *                  授予飞行）时仍可能只发一次就丢，所以还要有周期兜底。
      */
     private void updateFlight(ServerPlayer player, PlayerStats stats, boolean forceSync) {
         updateFlightSpeed(player, stats, forceSync);
-        if (player.isCreative() || player.isSpectator()) return;
+
+        if (player.isCreative() || player.isSpectator()) {
+            // 创造 / 旁观的能力由原版维护，绝不改字段；只在需要时把当前真实能力补发下去，
+            // 覆盖 teleportTo 类跨维度不带能力包的路径
+            if (forceSync) player.onUpdateAbilities();
+            return;
+        }
 
         boolean wantFly = stats.isToggleActive("fly");
         boolean weProvided = stats.isProviding("fly");
 
         if (wantFly) {
             // 平时只在能力状态真正变化时同步，避免周期性发包干扰客户端主导的 flying 状态；
-            // forceSync 用于覆盖客户端 LocalPlayer 被重建后的能力重置
+            // forceSync（关键时刻 + 周期兜底）用于覆盖客户端 LocalPlayer 被重建后的能力重置
             boolean needSync = forceSync || !player.getAbilities().mayfly || !weProvided;
             player.getAbilities().mayfly = true;
             stats.setProviding("fly", true);
@@ -120,6 +148,10 @@ public class MobilityHandler implements StatEffectHandler {
             player.getAbilities().mayfly = false;
             player.getAbilities().flying = false;
             stats.setProviding("fly", false);
+            player.onUpdateAbilities();
+        } else if (forceSync && player.getAbilities().mayfly) {
+            // 飞行能力来自其它模组：它们同样只在「状态变化」时发包，客户端被重建后不会自愈。
+            // 这里按服务端真实状态补发一次 —— 只读不改，不抢任何模组的授权
             player.onUpdateAbilities();
         }
     }

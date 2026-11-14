@@ -72,7 +72,7 @@
 - **原地复活**：可配置冷却时间，复活后短暂无敌
 - **村民交易折扣**（最高 -90%），交易后**立即补货**
 - **铁砧经验减免**（最高 -90%）
-- **自动入库**：每隔 1 秒将背包物品存入存储网络，可调整存储优先级、设置白 / 黑名单
+- **自动入库**：背包一有变化就把物品存入存储网络（不必等定时扫描，可设最短间隔），可调整存储优先级、设置白 / 黑名单
 - 时间加速
 
 ### 枪械模组联动（TACZ / 卓越前线）
@@ -256,7 +256,7 @@
 | `Furnace.furnaceSpeedCost` | `5` | 每级随身熔炉速度消耗的属性点 |
 | `Crafting.craftingMultiplierCost` | `5` | 每级随身工作台倍率消耗的属性点 |
 | `NetworkPriority.networkPriority` | `[RS, AE2, TOMS, BACKPACK, BD]` | 存储网络自动选择的优先级（需重启） |
-| `AutoDeposit.autoDepositInterval` | `20` | 「自动入库」扫描间隔（tick） |
+| `AutoDeposit.autoDepositInterval` | `20` | 「自动入库」两次执行之间的最短间隔（tick，入库本身由背包变更触发） |
 | `AutoDeposit.autoDepositKeepHotbar` | `true` | 是否保留快捷栏物品不被自动入库 |
 | `AutoDeposit.autoDepositBlacklist` | `[]` | 服务端级自动入库黑名单（所有玩家生效） |
 | `WeatherControl.weatherCycleDuration` | `6000` | 天气切换后的持续时间（tick，默认 5 分钟） |

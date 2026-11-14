@@ -223,7 +223,7 @@ public class EmcScreen extends PanelScreen implements MenuAccess<EmcMenu> {
     /** 浮窗与光标层：必须画在控件之上。 */
     @Override
     protected void renderPanelOverlay(GuiGraphics g, int mx, int my, float pt) {
-        // tooltip
+        // 已学物品：原版浮窗（名称 / 价值 / Ctrl+左键遗忘），排队后按屏幕坐标绘制
         ItemStack hoveredLearned = learnedAt((int) mx, (int) my);
         if (!hoveredLearned.isEmpty()) {
             long emc = NetworkHandler.getClientEmc(BuiltInRegistries.ITEM.getKey(hoveredLearned.getItem()));
@@ -233,12 +233,11 @@ public class EmcScreen extends PanelScreen implements MenuAccess<EmcMenu> {
                     .append(Component.literal("\n"))
                     .append(Component.translatable("screen.infinitestats.emc.tooltip_forget")
                             .withStyle(ChatFormatting.DARK_GRAY));
-            g.renderTooltip(this.font, tip, (int) mx, (int) my);
+            queueComponentTooltip(g, mx, my, tip);
         } else {
+            // 槽位里的物品：内容由原版收集，同样排队到最后、按屏幕坐标画
             ItemStack hoveredSlot = hoveredMenuStack((int) mx, (int) my);
-            if (!hoveredSlot.isEmpty()) {
-                g.renderTooltip(this.font, hoveredSlot, (int) mx, (int) my);
-            }
+            if (!hoveredSlot.isEmpty()) queueItemTooltip(g, mx, my, hoveredSlot);
         }
 
         renderCursor(g, mx, my);

@@ -56,8 +56,19 @@ public class ItemEditorScreen extends PanelScreen {
         EnchantEntry(String id, int level) { this(id, level, new CompoundTag()); }
     }
 
-    /** 属性条目：id / 操作 / 数值 / 生效槽位 / 原始 NBT（保留 UUID 与扩展字段）。 */
-    record AttrEntry(String id, int op, double amount, String slot, CompoundTag original) {}
+    /**
+     * 属性条目：id / 操作 / 数值 / 生效槽位 / 原始 NBT（保留 UUID 与扩展字段）/ 是否来自外部。
+     * <p>
+     * {@code external} = 这条属性不在物品 NBT 里，而是词缀等模组在运行时通过
+     * {@code ItemAttributeModifierEvent} 加上去的（见 {@link ItemEditUtil#readInjectedAttributes}）。
+     * 它同样列出来方便查看与编辑，但<b>没被编辑过的不会写回 NBT</b>，
+     * 否则每打开一次编辑器就会把词缀属性固化一份，越叠越多。
+     */
+    record AttrEntry(String id, int op, double amount, String slot, CompoundTag original, boolean external) {
+        AttrEntry(String id, int op, double amount, String slot, CompoundTag original) {
+            this(id, op, amount, slot, original, false);
+        }
+    }
 
     // ======================== 布局常量 ========================
 
@@ -175,6 +186,21 @@ public class ItemEditorScreen extends PanelScreen {
             attrs.add(new AttrEntry(c.getString("AttributeName"),
                     c.getInt("Operation"), c.getDouble("Amount"), c.getString("Slot"), c.copy()));
         }
+
+        // 词缀等运行时附加的属性：NBT 里没有，但工具提示上看得到，一并列出来（未编辑不回写）。
+        // 这里会跑别的模组的 ItemAttributeModifierEvent，任何一家抛错都不该让编辑器打不开
+        ListTag injected;
+        try {
+            injected = ItemEditUtil.readInjectedAttributes(stack, att);
+        } catch (RuntimeException ex) {
+            injected = new ListTag();
+        }
+        for (int i = 0; i < injected.size(); i++) {
+            CompoundTag c = injected.getCompound(i);
+            String slot = c.contains("Slot") ? c.getString("Slot") : "any";
+            attrs.add(new AttrEntry(c.getString("AttributeName"),
+                    c.getInt("Operation"), c.getDouble("Amount"), slot, c.copy(), true));
+        }
     }
 
     /** 当前可用的饰品槽位类型（Curios 未加载时为空表）。 */
@@ -277,7 +303,10 @@ public class ItemEditorScreen extends PanelScreen {
         for (int i = 0; i < attrs.size(); i++) {
             AttrEntry a = attrs.get(i);
             if (a.id().equals(id) && a.op() == op && a.slot().equals(slot)) {
-                attrs.set(i, new AttrEntry(id, op, amount, slot, a.original()));
+                // 外部条目的 UUID 属于词缀那份修饰符，不能沿用，否则会和词缀本身撞 UUID
+                CompoundTag original = a.external()
+                        ? ItemEditUtil.newAttribute(id, op, amount, slot) : a.original();
+                attrs.set(i, new AttrEntry(id, op, amount, slot, original));
                 afterEdit();
                 return;
             }
@@ -289,7 +318,9 @@ public class ItemEditorScreen extends PanelScreen {
     void replaceAttr(AttrEntry old, String id, int op, double amount, String slot) {
         attrsChanged = true;
         int idx = attrs.indexOf(old);
-        CompoundTag original = idx < 0 ? ItemEditUtil.newAttribute(id, op, amount, slot) : old.original();
+        // 编辑外部条目 = 接管它：新建一条独立属性写进 NBT，原来的词缀效果仍然保留（叠加）
+        CompoundTag original = idx < 0 || old.external()
+                ? ItemEditUtil.newAttribute(id, op, amount, slot) : old.original();
         AttrEntry entry = new AttrEntry(id, op, amount, slot, original);
         if (idx < 0) attrs.add(entry);
         else attrs.set(idx, entry);
@@ -468,6 +499,10 @@ public class ItemEditorScreen extends PanelScreen {
                         colX + 5, ry + 3, EditorUi.PRIMARY);
                 String info = OP_LABELS[clampOp(a.op())] + " " + EditorUi.amount(a.amount())
                         + " · " + slotLabel(a.slot());
+                if (a.external()) {
+                    info += " · " + Component.translatable(
+                            "screen.infinitestats.item_editor.attr_external").getString();
+                }
                 g.drawString(font, EditorUi.ellipsize(font, info, LIST_W - 26),
                         colX + 5, ry + 12, EditorUi.SECONDARY);
             } else {
@@ -518,6 +553,12 @@ public class ItemEditorScreen extends PanelScreen {
         lines.add("§7原始 ID: " + a.id());
         lines.add("§7操作: " + OP_LABELS[clampOp(a.op())] + "  §7数值: " + EditorUi.amount(a.amount()));
         lines.add("§7生效槽位: " + slotLabel(a.slot()));
+        if (a.external()) {
+            lines.add("§b" + Component.translatable(
+                    "screen.infinitestats.item_editor.attr_external").getString());
+            lines.add("§8" + Component.translatable(
+                    "screen.infinitestats.item_editor.attr_external_hint").getString());
+        }
         queueTooltip(g, mx, my, lines, EditorUi.INFO);
     }
 
@@ -674,8 +715,14 @@ public class ItemEditorScreen extends PanelScreen {
                     enchants.remove(srcIdx);
                     enchantsChanged = true;
                 } else {
+                    boolean external = attrs.get(srcIdx).external();
                     attrs.remove(srcIdx);
                     attrsChanged = true;
+                    if (external) {
+                        // 词缀本身删不掉，这里只是把它从列表里移开，免得误导成「已经移除了」
+                        setStatus(Component.translatable(
+                                "screen.infinitestats.item_editor.attr_external_removed").getString());
+                    }
                 }
                 rebuildViews();
                 playClick();
@@ -747,7 +794,10 @@ public class ItemEditorScreen extends PanelScreen {
                 for (int i = 0; i < attrs.size(); i++) {
                     AttrEntry cur = attrs.get(i);
                     if (cur.id().equals(a.id()) && cur.op() == a.op() && cur.slot().equals(a.slot())) {
-                        attrs.set(i, new AttrEntry(a.id(), a.op(), a.amount(), a.slot(), cur.original()));
+                        CompoundTag original = cur.external()
+                                ? ItemEditUtil.newAttribute(a.id(), a.op(), a.amount(), a.slot())
+                                : cur.original();
+                        attrs.set(i, new AttrEntry(a.id(), a.op(), a.amount(), a.slot(), original));
                         merged = true;
                         break;
                     }
@@ -808,6 +858,9 @@ public class ItemEditorScreen extends PanelScreen {
             ct = new ListTag();
             Set<String> curioTypes = curioSlotTypes();
             for (AttrEntry a : attrs) {
+                // 外部条目（词缀等）没被编辑过就不写：它们本来就不在 NBT 里，
+                // 每保存一次就固化一份会让属性无限叠加
+                if (a.external()) continue;
                 if (ItemEditUtil.isCurioSlot(a.slot())) {
                     // 饰品属性写 Curios 自己的列表，一条按槽位类型展开成多条
                     ct.addAll(ItemEditUtil.curioSaveEntries(a.original(), a.op(), a.amount(), a.slot(), curioTypes));
