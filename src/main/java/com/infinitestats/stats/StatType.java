@@ -1105,11 +1105,9 @@ public final class StatType {
                 .build(),
 
             create("auto_repair").category(StatCategory.UTILITY)
-                .behavior(StatBehavior.TOGGLE).maxLevel(2).perPointValue(0)
-                .build(),
-
-            create("repair_amount").category(StatCategory.UTILITY)
-                .perPointValue(1.0f)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后背包 / 装备 / 饰品的耐久始终补满，并且不再消耗耐久")
                 .build(),
 
             create("use_speed").category(StatCategory.UTILITY)
@@ -1379,21 +1377,7 @@ public final class StatType {
             create("pe_auto_learn").category(StatCategory.UTILITY)
                 .toggle()
                 .maxLevel(5)
-                .description("投入5点解锁：获得物品时自动学习到ProjectE知识库，无需卖入转化桌即可用EMC转化")
-                .build(),
-
-            create("emc_learn_bonus").category(StatCategory.UTILITY)
-                .percentage()
-                .maxLevel(5)
-                .perPointValue(0.05f)
-                .description("学习 / 卖出物品获得的 EMC +5% / 点（最多 +25%）")
-                .build(),
-
-            create("emc_extract_discount").category(StatCategory.UTILITY)
-                .percentage()
-                .maxLevel(5)
-                .perPointValue(0.06f)
-                .description("从 EMC 中取出 / 以 EMC 合成物品的支付价格 -6% / 点（最多 -30%）")
+                .description("投入5点解锁：获得物品时自动学习到ProjectE知识库，无需手动喂入转化桌")
                 .build(),
 
         };

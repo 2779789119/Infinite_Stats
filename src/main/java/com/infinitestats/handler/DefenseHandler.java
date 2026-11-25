@@ -9,6 +9,7 @@ import com.infinitestats.util.TeleportUtil;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.protocol.game.ClientboundUpdateMobEffectPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -35,6 +36,15 @@ public class DefenseHandler implements StatEffectHandler {
     /** 虚空脱困防抖用的持久化 NBT 键（存在 player 实体上，随实体走）。 */
     private static final String VOID_ESCAPE_TICK = "infinitestats_void_escape_tick";
 
+    /**
+     * 受保护效果的「状态重发」间隔（tick）。
+     * <p>
+     * 用来治「服务端还在、客户端没了」的单边缺失：客户端那张效果表不在我们掌控内
+     * （别的模组在本地删、remove / update 包丢失），只有周期性重发才能自愈。
+     * 20 tick = 1 秒，每个受保护效果一条小包，开销可忽略。
+     */
+    private static final int PROTECTED_RESEND_INTERVAL = 20;
+
     @Override
     public String getId() {
         return "defense";
@@ -47,6 +57,9 @@ public class DefenseHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
+        // 血量为正 = 人活着，这一局死亡流程已经结束（重生后的新实体同样走这里）
+        if (player.getHealth() > 0) stats.clearDeathStarted();
+
         // 血量快照：供「致死格挡」恢复用（伤害完全绕过 hurt() 时血量已经被写成 0，
         // 只能恢复到这一 tick 开始前的数值）。必须放在所有会改血量的逻辑之前。
         if (!player.isDeadOrDying() && player.getHealth() > 0) {
@@ -168,8 +181,11 @@ public class DefenseHandler implements StatEffectHandler {
 
         var effects = player.getActiveEffects();
         if (effects.isEmpty()) return;
-        // 遍历副本，安全移除
-        for (MobEffectInstance inst : new java.util.ArrayList<>(effects)) {
+
+        // 先收集要删的，再统一删：不复制整张效果表（这个方法每 tick 被调用两次，
+        // 名单命中是少数情况，绝大多数 tick 下这里零分配）
+        java.util.List<Holder<MobEffect>> toRemove = null;
+        for (MobEffectInstance inst : effects) {
             if (inst.getEffect() == null) continue;
 
             String effectId = effectId(inst.getEffect());
@@ -178,8 +194,13 @@ public class DefenseHandler implements StatEffectHandler {
             // 否则名单里写 minecraft:* 或 * 会把自己刚加上的效果每 tick 清一次（闪烁）
             if (com.infinitestats.event.StatEventHandler.isOwnUtilityEffect(stats, effectId)) continue;
             if (stats.shouldBlockEffect(effectId)) {
-                hardRemoveEffect(player, inst.getEffect());
+                if (toRemove == null) toRemove = new java.util.ArrayList<>(4);
+                toRemove.add(inst.getEffect());
             }
+        }
+        if (toRemove == null) return;
+        for (Holder<MobEffect> effect : toRemove) {
+            hardRemoveEffect(player, effect);
         }
     }
 
@@ -238,6 +259,19 @@ public class DefenseHandler implements StatEffectHandler {
             String id = effectId(inst.getEffect());
             if (id == null || !stats.isProtectedEffect(id)) continue;
             snapshots.computeIfAbsent(id, k -> new PlayerStats.ProtectedEffect()).capture(inst);
+        }
+
+        // 周期性重发：一次只补一条小包 / 每个受保护效果，1 秒一次的开销可以忽略。
+        // 权威始终在服务端（时长以服务端实例为准），客户端自行写回只负责「不让它消失」。
+        if (player.tickCount % PROTECTED_RESEND_INTERVAL == 0 && player.connection != null) {
+            for (MobEffectInstance inst : player.getActiveEffects()) {
+                if (inst.getEffect() == null) continue;
+                String id = effectId(inst.getEffect());
+                if (id == null || !stats.isProtectedEffect(id)) continue;
+                // 1.21.1 的构造多一个 blend 参数（原版自己发包时传 false）
+                player.connection.send(
+                        new ClientboundUpdateMobEffectPacket(player.getId(), inst, false));
+            }
         }
 
         if (snapshots.isEmpty()) return;
@@ -511,6 +545,9 @@ public class DefenseHandler implements StatEffectHandler {
      * 为无敌玩家补满生命值
      */
     public static void applyInvincibilityTick(ServerPlayer player, PlayerStats stats) {
+        // 不救尸体：血量归零、或这一局已经走过死亡流程时不再补血。
+        // 否则「死亡界面已弹、服务端又被补满」会让玩家永久卡在死亡界面（复活包被原版丢掉）。
+        if (player.getHealth() <= 0 || stats.isDeathStarted()) return;
         if (stats.isToggleActive("invincibility")) {
             if (player.getHealth() < player.getMaxHealth()) {
                 player.setHealth(player.getMaxHealth());
@@ -596,8 +633,11 @@ public class DefenseHandler implements StatEffectHandler {
      */
     public static boolean preventZeroHealth(ServerPlayer player, PlayerStats stats) {
         if (player.isRemoved()) return false;
-        // Pose.DYING 由 die() 设置，是「死亡流程已经真正开始」的可靠标志；
-        // 只看血量会把「被外部清零但还没死」的情况一起排除掉。
+        // 死亡流程已放行（PlayerDieMixin 打的标记）：放手，别把真死的玩家拉回来。
+        // 1.20.1 起 ServerPlayer#die 不调 super.die，所以 Pose.DYING 对玩家永远不成立 ——
+        // 只靠姿态判断会把「真死」当成「被外部清零但还没死」，每 tick 把尸体拉活。
+        if (stats.isDeathStarted()) return false;
+        // 保留姿态判断作为兜底（对非玩家实体 / 其它模组走 super.die 的情况仍然有效）
         if (player.getPose() == net.minecraft.world.entity.Pose.DYING) return false;
         if (player.getHealth() > 0) return false;
 

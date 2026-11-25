@@ -108,7 +108,20 @@ public class OreVisionConfig {
     /** 被关掉的分组（默认空 = 全部显示）。 */
     private final Set<OreGroup> hiddenGroups = new LinkedHashSet<>();
 
+    /** 影响扫描结果的配置版本号，见 {@link #revision()}。 */
+    private int revision;
+
     // ======================== 读写 ========================
+
+    /**
+     * 影响「扫描到哪些矿石」的配置版本号。
+     * <p>
+     * 矿透每帧要判断配置有没有变。原先每帧 {@code Objects.hash(...)} 一遍隐藏分组集合，
+     * 现在改为任何相关 setter 自增计数，判断退化为一次 int 比较。
+     */
+    public int revision() {
+        return revision;
+    }
 
     public int getRange() {
         return range;
@@ -116,6 +129,7 @@ public class OreVisionConfig {
 
     public void setRange(int range) {
         this.range = clampInt(range, MIN_RANGE, MAX_RANGE);
+        revision++;
     }
 
     public int getMaxBlocks() {
@@ -124,6 +138,7 @@ public class OreVisionConfig {
 
     public void setMaxBlocks(int maxBlocks) {
         this.maxBlocks = clampInt(maxBlocks, MIN_BLOCKS, MAX_BLOCKS_LIMIT);
+        revision++;
     }
 
     public boolean isRequireSneak() {
@@ -146,6 +161,7 @@ public class OreVisionConfig {
         } else {
             hiddenGroups.remove(group);
         }
+        revision++;
     }
 
     /** 展示用的「显示中的分组数 / 总分组数」。 */
@@ -168,6 +184,7 @@ public class OreVisionConfig {
         maxBlocks = 1500;
         requireSneak = false;
         hiddenGroups.clear();
+        revision++;
     }
 
     public OreVisionConfig copy() {
@@ -187,12 +204,15 @@ public class OreVisionConfig {
         this.requireSneak = other.requireSneak;
         this.hiddenGroups.clear();
         this.hiddenGroups.addAll(other.hiddenGroups);
+        // 原地复制不换对象，缓存键里的对象身份不会变，必须靠版本号失效
+        revision++;
     }
 
     /** 客户端提交过来的数据一律夹一遍范围（服务端唯一的信任边界）。 */
     public void sanitize() {
         range = clampInt(range, MIN_RANGE, MAX_RANGE);
         maxBlocks = clampInt(maxBlocks, MIN_BLOCKS, MAX_BLOCKS_LIMIT);
+        revision++;
     }
 
     public CompoundTag serialize() {

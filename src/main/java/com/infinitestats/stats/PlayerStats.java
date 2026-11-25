@@ -60,12 +60,17 @@ public class PlayerStats {
     private long avoidDecisionTick = Long.MIN_VALUE;
 
     /**
-     * 已移除的「魔法」分类属性 id。
+     * 已从模组里移除的属性 id。
      * 旧存档里投入这些属性的点数，在加载时全额退还到可用点数（见 {@link #deserializeNBT}），
      * 避免整合包升级后玩家凭空损失点数。
+     * <p>
+     * 目前包含：旧的「魔法」分类，以及随着内置 EMC 转化桌一起删掉的两个 EMC 属性。
      */
-    private static final Set<String> LEGACY_MAGIC_STATS = Set.of(
-            "max_mana", "mana_regen", "magic_damage", "mana_shield", "mana_steal", "mana_on_kill");
+    private static final Set<String> LEGACY_REMOVED_STATS = Set.of(
+            "max_mana", "mana_regen", "magic_damage", "mana_shield", "mana_steal", "mana_on_kill",
+            "emc_learn_bonus", "emc_extract_discount",
+            // 自动修理改成单一开关后退场：耐久改成「补满 + 不消耗」，不再需要修理量
+            "repair_amount");
 
     // 使用 Map 存储属性点数 - 支持动态属性发现
     // statId → points
@@ -568,6 +573,38 @@ public class PlayerStats {
             // 被取消保护的条目立即停止保护（通配 / 标签同样按匹配结果判定），不必等 tick 逻辑回头清理
             protectedSnapshots.keySet().removeIf(id -> !isProtectedEffect(id));
         }
+    }
+
+    // ========== 死亡流程标记 ==========
+
+    /**
+     * 「死亡流程已放行」标记（<b>不参与存档</b>）。
+     * <p>
+     * 为什么需要它：{@code Pose.DYING} 由 {@code LivingEntity#die} 设置，而 1.20.1 起
+     * {@code ServerPlayer} 覆写了 {@code die} 且<b>不调用</b> {@code super.die} —— 服务端玩家的这个姿态
+     * 永远是 {@code STANDING}。于是「零血兜底」用姿态判断「死亡是否已开始」时恒为「没开始」，
+     * 真死的玩家会被每个 tick 用血量快照拉回来：客户端死亡界面挂着、服务端角色却活着，怪物继续围殴。
+     * <p>
+     * 现在改为显式标记：死亡闸门放行时打上（{@code PlayerDieMixin}），闪避 / 格挡 / 自动复活成功时清除，
+     * 血量为正或重生时自动清除。零血兜底见到标记就放手。
+     * <p>
+     * 不持久化：它只描述「这一次死亡流程」，随实体会话存在。
+     */
+    private boolean deathStarted;
+
+    /** 死亡流程是否已经放行（见 {@link #deathStarted}）。 */
+    public boolean isDeathStarted() {
+        return deathStarted;
+    }
+
+    /** 死亡闸门放行时调用。 */
+    public void markDeathStarted() {
+        this.deathStarted = true;
+    }
+
+    /** 玩家被救回（闪避 / 格挡 / 自动复活 / 血量恢复）时调用。 */
+    public void clearDeathStarted() {
+        this.deathStarted = false;
     }
 
     // ========== 白名单「保护」 ==========
@@ -1273,9 +1310,9 @@ public class PlayerStats {
             CompoundTag entryTag = pointsList.getCompound(i);
             String statId = entryTag.getString("id");
             long points = entryTag.getLong("points");
-            if (LEGACY_MAGIC_STATS.contains(statId)) {
-                // 「魔法」分类已移除。必须放在 StatType.fromId 判断之前：
-                // 属性定义删掉后 fromId 会返回 null，条目会被直接丢弃，点数就白丢了。
+            if (LEGACY_REMOVED_STATS.contains(statId)) {
+                // 属性定义已被删掉。必须放在 StatType.fromId 判断之前：
+                // 删掉之后 fromId 会返回 null，条目会被直接丢弃，点数就白丢了。
                 // 按绝对值退还，负值（透支方向）同样返还。
                 availablePoints += Math.abs(points);
                 continue;

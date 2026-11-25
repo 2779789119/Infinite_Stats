@@ -52,15 +52,6 @@ public final class ClientSetup {
     );
 
     /**
-     * 打开 EMC 转化桌按键（默认 V）
-     */
-    public static final KeyMapping OPEN_EMC_KEY = new KeyMapping(
-            "key.infinitestats.emc",
-            GLFW.GLFW_KEY_V,
-            "key.categories.infinitestats"
-    );
-
-    /**
      * 打开成就管理器按键（默认 U）
      */
     public static final KeyMapping OPEN_ACHIEVEMENTS_KEY = new KeyMapping(
@@ -78,14 +69,27 @@ public final class ClientSetup {
             "key.categories.infinitestats"
     );
 
+    /**
+     * 打开随身工作台按键（默认 G）。
+     * <p>
+     * 打开前不弹面板：已解锁就直接发 {@code CraftingOpenPacket}（服务端还会再校验一次），
+     * 未解锁时由按键处理打开「随身工具」页，让玩家在那里花点数解锁 ——
+     * 这样按一下键永远有反馈，不会出现「按了没反应」。
+     */
+    public static final KeyMapping OPEN_PORTABLE_CRAFTING_KEY = new KeyMapping(
+            "key.infinitestats.portable_crafting",
+            GLFW.GLFW_KEY_G,
+            "key.categories.infinitestats"
+    );
+
     @SubscribeEvent
     public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(OPEN_STATS_KEY);
         event.register(QUICK_ADD_KEY);
         event.register(HUD_TOGGLE_KEY);
         event.register(OPEN_ITEM_EDITOR_KEY);
-        event.register(OPEN_EMC_KEY);
         event.register(OPEN_ACHIEVEMENTS_KEY);
         event.register(OPEN_WAYPOINT_KEY);
+        event.register(OPEN_PORTABLE_CRAFTING_KEY);
     }
 }

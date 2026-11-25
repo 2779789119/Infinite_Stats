@@ -230,12 +230,42 @@ public class EditItemMetaScreen extends PanelScreen {
         rebuildWidgets();
     }
 
+    /**
+     * 是否有「还没点应用」的改动：标题带 {@code *} 提示，避免和「取消 / 返回」混淆。
+     * <p>
+     * 只看会被 {@code apply()} 写回的那些字段（名称 / Lore / 耐久 / 数量）。
+     */
+    private boolean isDirty() {
+        if (nameBox != null && !nameBox.getValue().equals(originalName)) return true;
+
+        List<String> lore = new ArrayList<>(loreLines);
+        if (lore.size() == 1 && lore.get(0).isEmpty() && originalLore.isEmpty()) lore.clear();
+        if (!lore.equals(originalLore)) return true;
+
+        if (hasDamage && damageBox != null) {
+            try {
+                if (Integer.parseInt(damageBox.getValue().trim()) != curDamage) return true;
+            } catch (NumberFormatException e) {
+                return true;
+            }
+        }
+        if (countBox != null) {
+            try {
+                if (Integer.parseInt(countBox.getValue().trim()) != curCount) return true;
+            } catch (NumberFormatException e) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ======================== 绘制 ========================
 
     @Override
     protected void renderPanel(GuiGraphics g, int mx, int my, float pt) {
         EditorUi.panel(g, leftPos, topPos, GUI_W, guiH);
-        EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
+        EditorUi.title(g, font, leftPos, topPos, GUI_W,
+                isDirty() ? title.getString() + " *" : title.getString());
         drawItemBar(g);
 
         EditorUi.dividerH(g, leftPos + 4, topPos + ITEM_BAR_Y_END() , GUI_W - 8);

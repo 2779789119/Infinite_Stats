@@ -271,15 +271,31 @@ public final class VeinMinerLogic {
         return cfg.isUseWhitelist() == hit;
     }
 
-    /** 把配置里的标签通配串编译成正则（每次连锁编译一次，开销可忽略）。 */
+    /** 上一次编译用的原始配置列表（引用比较即可判断配置有没有换过）。 */
+    private static volatile List<? extends String> cachedTagSource;
+    /** 与 {@link #cachedTagSource} 对应的编译结果。 */
+    private static volatile List<Pattern> cachedTagPatterns = List.of();
+
+    /**
+     * 把配置里的标签通配串编译成正则。
+     * <p>
+     * 连锁预览在准星移动时每帧都可能重算一次 {@code collectTargets}，
+     * 原来每次都要把配置里所有 glob 重新 {@code Pattern.compile} 一遍。
+     * 配置对象没换就复用上一次的结果（重载配置时会换新实例，自动失效）。
+     */
     private static List<Pattern> compileTagPatterns() {
-        List<Pattern> patterns = new ArrayList<>();
         List<? extends String> raw = Config.VEIN_MINER_MATCH_TAGS.get();
-        if (raw == null) return patterns;
-        for (String glob : raw) {
-            if (glob == null || glob.isBlank()) continue;
-            patterns.add(globToPattern(glob.trim()));
+        if (raw == cachedTagSource) return cachedTagPatterns;
+
+        List<Pattern> patterns = new ArrayList<>();
+        if (raw != null) {
+            for (String glob : raw) {
+                if (glob == null || glob.isBlank()) continue;
+                patterns.add(globToPattern(glob.trim()));
+            }
         }
+        cachedTagSource = raw;
+        cachedTagPatterns = patterns;
         return patterns;
     }
 

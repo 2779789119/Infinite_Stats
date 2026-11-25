@@ -3,10 +3,6 @@ package com.infinitestats.network;
 import com.infinitestats.InfiniteStats;
 import com.infinitestats.crafting.PortableAnvil;
 import com.infinitestats.crafting.PortableCraftingMenu;
-import com.infinitestats.emc.EmcDatabase;
-import com.infinitestats.emc.EmcMenu;
-import com.infinitestats.emc.EmcPlayerData;
-import com.infinitestats.emc.EmcPlayerDataProvider;
 import com.infinitestats.furnace.FurnaceFuelBufferMenu;
 import com.infinitestats.furnace.FurnaceOrePriorityMenu;
 import com.infinitestats.furnace.FurnaceProductBufferMenu;
@@ -37,6 +33,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.component.CustomData;
@@ -63,8 +60,9 @@ import java.util.function.Supplier;
 public final class NetworkHandler {
 
     // 8：新增 ExternalStatsSyncPacket（服务端下发外部属性清单）
-    // 7：新增 EmcForgetPacket（客户端请求遗忘已学物品）、矿透配置包
-    private static final String PROTOCOL_VERSION = "8";
+    // 11：物品编辑器新增特殊标签界面 → 新增 EditItemTagsPacket
+    // 12：移除内置 EMC 转化桌 → 删掉 8 个 EMC 数据包（包 id 全部前移，双端必须一起更新）
+    private static final String PROTOCOL_VERSION = "12";
     public static final SimpleChannel CHANNEL = new SimpleChannel(
             ResourceLocation.fromNamespaceAndPath(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -73,14 +71,14 @@ public final class NetworkHandler {
     );
 
     private static int packetId = 0;
-    private static final Map<ResourceLocation, Long> CLIENT_EMC_PRICES = new HashMap<>();
-
-    public static long getClientEmc(ResourceLocation id) {
-        return CLIENT_EMC_PRICES.getOrDefault(id, 0L);
-    }
 
     /** 待处理的成就同步数据（由 SyncAdvancementsPacket 写入，AchievementManagerScreen 读取） */
     public static List<AchievementInfo> pendingAdvancements = null;
+    /** 服务端下发的「本玩家能否改成就」与「被跳过的技术成就数」。 */
+    public static boolean pendingAdvancementsCanEdit = false;
+    public static int pendingAdvancementsSkipped = 0;
+    /** 每次收到成就列表自增，界面据此判断是否需要重读。 */
+    public static int advancementsVersion = 0;
 
     // ══════════ 存储网络物品缓存（供 JEI 一键转移校验）══════════
     // 缓存必须放在与 JEI 无关的类里：客户端界面在未安装 JEI 时也会访问，
@@ -234,55 +232,17 @@ public final class NetworkHandler {
                 EditItemMetaPacket::decode,
                 EditItemMetaPacket::handle);
 
-        // ========== EMC 数据包 ==========
-
-        // EMC 同步数据包（服务器 → 客户端）
-        CHANNEL.registerMessage(packetId++, EmcSyncPacket.class,
-                EmcSyncPacket::encode,
-                EmcSyncPacket::decode,
-                EmcSyncPacket::handle);
-
-        // 物品学习数据包（客户端 → 服务器）
-        CHANNEL.registerMessage(packetId++, EmcLearnPacket.class,
-                EmcLearnPacket::encode,
-                EmcLearnPacket::decode,
-                EmcLearnPacket::handle);
-
-        // 物品提取数据包（客户端 → 服务器）
-        CHANNEL.registerMessage(packetId++, EmcExtractPacket.class,
-                EmcExtractPacket::encode,
-                EmcExtractPacket::decode,
-                EmcExtractPacket::handle);
-
-        // 一键卖出数据包（客户端 → 服务器）：把背包内所有可转化物品倾销成 EMC
-        CHANNEL.registerMessage(packetId++, EmcSellAllPacket.class,
-                EmcSellAllPacket::encode,
-                EmcSellAllPacket::decode,
-                EmcSellAllPacket::handle);
-
-        // 单个槽位卖出数据包（客户端 → 服务器）：Shift+左键卖出指定槽位物品
-        CHANNEL.registerMessage(packetId++, EmcSellSlotPacket.class,
-                EmcSellSlotPacket::encode,
-                EmcSellSlotPacket::decode,
-                EmcSellSlotPacket::handle);
-
-        // 自定义定价数据包（客户端 → 服务器）：设置物品的 EMC 值
-        CHANNEL.registerMessage(packetId++, EmcSetPricePacket.class,
-                EmcSetPricePacket::encode,
-                EmcSetPricePacket::decode,
-                EmcSetPricePacket::handle);
+        // 物品特殊标签编辑数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EditItemTagsPacket.class,
+                EditItemTagsPacket::encode,
+                EditItemTagsPacket::decode,
+                EditItemTagsPacket::handle);
 
         // 收藏切换数据包（客户端 → 服务器）
         CHANNEL.registerMessage(packetId++, ToggleFavoritePacket.class,
                 ToggleFavoritePacket::encode,
                 ToggleFavoritePacket::decode,
                 ToggleFavoritePacket::handle);
-
-        // EMC 菜单打开数据包（客户端 → 服务器）
-        CHANNEL.registerMessage(packetId++, EmcOpenPacket.class,
-                EmcOpenPacket::encode,
-                EmcOpenPacket::decode,
-                EmcOpenPacket::handle);
 
         // 便携式熔炉菜单打开数据包（客户端 → 服务器）
         CHANNEL.registerMessage(packetId++, FurnaceOpenPacket.class,
@@ -391,6 +351,10 @@ public final class NetworkHandler {
                 ToggleAdvancementPacket::encode,
                 ToggleAdvancementPacket::decode,
                 ToggleAdvancementPacket::handle);
+        CHANNEL.registerMessage(packetId++, BatchAdvancementPacket.class,
+                BatchAdvancementPacket::encode,
+                BatchAdvancementPacket::decode,
+                BatchAdvancementPacket::handle);
 
         // ========== 传送点管理数据包 ==========
 
@@ -469,12 +433,27 @@ public final class NetworkHandler {
                 EntityPanelAttributePacket::encode,
                 EntityPanelAttributePacket::decode,
                 EntityPanelAttributePacket::handle);
-
-        // EMC 遗忘（客户端 → 服务器）
-        CHANNEL.registerMessage(packetId++, EmcForgetPacket.class,
-                EmcForgetPacket::encode,
-                EmcForgetPacket::decode,
-                EmcForgetPacket::handle);
+        // 生物面板：动作 / 移除单个效果 / 附近列表点选 / 属性锁（客户端 → 服务端）
+        CHANNEL.registerMessage(packetId++, EntityPanelCommandPacket.class,
+                EntityPanelCommandPacket::encode,
+                EntityPanelCommandPacket::decode,
+                EntityPanelCommandPacket::handle);
+        CHANNEL.registerMessage(packetId++, EntityPanelEffectPacket.class,
+                EntityPanelEffectPacket::encode,
+                EntityPanelEffectPacket::decode,
+                EntityPanelEffectPacket::handle);
+        CHANNEL.registerMessage(packetId++, EntityPanelRequestPacket.class,
+                EntityPanelRequestPacket::encode,
+                EntityPanelRequestPacket::decode,
+                EntityPanelRequestPacket::handle);
+        CHANNEL.registerMessage(packetId++, EntityPanelLockPacket.class,
+                EntityPanelLockPacket::encode,
+                EntityPanelLockPacket::decode,
+                EntityPanelLockPacket::handle);
+        CHANNEL.registerMessage(packetId++, EntityPanelLockSyncPacket.class,
+                EntityPanelLockSyncPacket::encode,
+                EntityPanelLockSyncPacket::decode,
+                EntityPanelLockSyncPacket::handle);
 
         // 外部属性列表下发（服务器 → 客户端，登录 / 热重扫各一次）
         CHANNEL.registerMessage(packetId++, ExternalStatsSyncPacket.class,
@@ -546,7 +525,8 @@ public final class NetworkHandler {
                 ServerPlayer player = ctx.get().getSender();
                 if (player == null) return;
                 PlayerStatsProvider.of(player).ifPresent(stats -> {
-                    if (!stats.isToggleActive("auto_deposit")) return;
+                    // 只挡「被功能开关整条关掉」的情况：没加点的玩家也能先把名单配好
+                    if (stats.isStatInactive("auto_deposit")) return;
                     stats.setAutoDepositFilterList(normalizeFilterIds(msg.itemIds), msg.useWhitelist);
                     syncToClient(player);
                 });
@@ -605,8 +585,9 @@ public final class NetworkHandler {
                 if (player == null) return;
                 if (!PlayerStats.NETWORK_SCOPES.contains(msg.scope)) return;
                 PlayerStatsProvider.of(player).ifPresent(stats -> {
+                    // 只挡「被功能开关整条关掉」的情况：没加点的玩家也能先把优先级配好
                     if (PlayerStats.SCOPE_AUTO_DEPOSIT.equals(msg.scope)
-                            && !stats.isToggleActive("auto_deposit")) {
+                            && stats.isStatInactive("auto_deposit")) {
                         return;
                     }
                     stats.setNetworkPriority(msg.scope, normalizeNetworkOrder(msg.order));
@@ -659,21 +640,280 @@ public final class NetworkHandler {
                 EntityPanelToggles.applicableMask(target),
                 EntityPanelToggles.enabledMask(target),
                 editable));
+        // 锁表跟着一起下发：客户端行尾的「基 / 终」要始终是服务端权威状态
+        sendEntityPanelLocks(player, target);
     }
+
+    /** 生物面板「改生物」的距离基数兜底值（格）。 */
+    private static final double EDIT_RANGE_BASE = 16.0D;
+
+    /** 诊断开关：{@code -Dinfinitestats.debugEntityPanel=true} 时，每次「改不动」都往日志打一行原因。 */
+    private static final boolean DEBUG_ENTITY_PANEL =
+            Boolean.getBoolean("infinitestats.debugEntityPanel");
 
     /**
      * 「生物面板」能不能改这个生物 —— 开关切换与属性编辑共用这一条链：
-     * 手里拿着观察杖 + 配置允许 + 目标在 8 格内 + 属性已激活。
-     * <p>
-     * 8 格是为了：右键交互距离之外一律当作无效请求，防止远程改别人基地里的生物。
+     * 身上有观察杖 + 配置允许 + 目标在可达范围内 + 属性已激活。
+     *
+     * <h2>距离为什么按碰撞箱算、还要跟着交互距离属性走</h2>
+     * 早先直接拿「生物原点（脚底）到玩家的距离 ≤ 8 格」当闸门，结果两类正常情况被误判成「改不了」：
+     * 巨型 / 飞行生物的本体原点可能在十几格外；而加了「实体交互距离」属性后能右键开出面板，
+     * 却因为这个 8 格限制一次都改不动。现在按「碰撞箱 → 玩家眼睛」的距离算，
+     * 上限取 {@link #EDIT_RANGE_BASE} 与「玩家交互距离 + 4 格」的较大者。
+     * 真正的闸门仍是配置 {@code EntityPanel.allowEntityEditing}。
      */
     public static boolean canEditEntity(ServerPlayer player, Entity target) {
-        return EntityPanelWand.isHeld(player)
-                && Config.ALLOW_ENTITY_EDITING.get()
-                && player.distanceToSqr(target) <= 64.0D
-                && PlayerStatsProvider.of(player)
+        // 只要求「身上有观察杖」，不要求「此刻正拿在手上」：面板本来就是手持它右键打开的，
+        // 界面打开期间玩家换不了手；卡「必须还拿在手里」会在手持物品被别的模组改 NBT 时误判
+        boolean held = EntityPanelWand.hasWand(player);
+        boolean config = Config.ALLOW_ENTITY_EDITING.get();
+        boolean active = PlayerStatsProvider.of(player)
+                .map(stats -> stats.isToggleActive(EntityPanelWand.STAT_ID))
+                .orElse(false);
+
+        double reach = EDIT_RANGE_BASE;
+        var reachAttribute = player.getAttribute(
+                net.minecraft.world.entity.ai.attributes.Attributes.ENTITY_INTERACTION_RANGE);
+        if (reachAttribute != null) reach = Math.max(reach, reachAttribute.getValue() + 4.0D);
+
+        double distanceSqr = target.getBoundingBox().distanceToSqr(player.getEyePosition());
+        boolean near = distanceSqr <= reach * reach;
+
+        boolean allowed = held && config && active && near;
+        if (!allowed && DEBUG_ENTITY_PANEL) {
+            System.out.println("[InfiniteStats][EntityPanel] 拒绝编辑 " + target.getType()
+                    + " —— held=" + held + " config=" + config + " active=" + active
+                    + " 距离=" + String.format(java.util.Locale.ROOT, "%.2f", Math.sqrt(distanceSqr))
+                    + " 上限=" + reach);
+        }
+        return allowed;
+    }
+
+    /** 生物面板：把某个实体身上的属性锁同步给客户端。 */
+    public static void sendEntityPanelLocks(ServerPlayer player, Entity target) {
+        if (player == null || target == null) return;
+        CHANNEL.sendToPlayer(player, new EntityPanelLockSyncPacket(target.getId(),
+                com.infinitestats.handler.AttributeLockHandler.snapshot(target)));
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，执行「动作」页里的某个动作。
+     * <p>
+     * 与开关同一条权限链（{@link #canEditEntity}）。执行后回一发 {@link OpenEntityPanelPacket}：
+     * 动作会改血量 / 效果 / 状态，客户端据此刷新，且顺便把「可编辑」标志校正回权威值。
+     */
+    public static final class EntityPanelCommandPacket {
+        private final int entityId;
+        private final int actionIndex;
+
+        public EntityPanelCommandPacket(int entityId, int actionIndex) {
+            this.entityId = entityId;
+            this.actionIndex = actionIndex;
+        }
+
+        public static void encode(EntityPanelCommandPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeVarInt(msg.actionIndex);
+        }
+
+        public static EntityPanelCommandPacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelCommandPacket(buf.readVarInt(), buf.readVarInt());
+        }
+
+        public static void handle(EntityPanelCommandPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                Entity target = player.level().getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity living)) return;
+                if (!canEditEntity(player, target)) {
+                    sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
+                    return;
+                }
+
+                com.infinitestats.util.EntityPanelActions.Action action =
+                        com.infinitestats.util.EntityPanelActions.byIndex(msg.actionIndex);
+                if (action != null) {
+                    com.infinitestats.util.EntityPanelActions.apply(player, living, action);
+                }
+                // 杀死之后目标已经没了，客户端会自己检测到实体消失并关面板，这里不再回包
+                if (target.isAlive()) {
+                    sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
+                    sendEntityPanelLocks(player, target);
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，移除生物身上的单个药水效果（效果页点某一行）。
+     * <p>
+     * 用注册名而不是下标：药水效果来自所有模组，写注册名更抗「中途加删模组 / 数据包」。
+     */
+    public static final class EntityPanelEffectPacket {
+        private final int entityId;
+        private final String effectId;
+
+        public EntityPanelEffectPacket(int entityId, String effectId) {
+            this.entityId = entityId;
+            this.effectId = effectId == null ? "" : effectId;
+        }
+
+        public static void encode(EntityPanelEffectPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeUtf(msg.effectId, 128);
+        }
+
+        public static EntityPanelEffectPacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelEffectPacket(buf.readVarInt(), buf.readUtf(128));
+        }
+
+        public static void handle(EntityPanelEffectPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                Entity target = player.level().getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity living)) return;
+                if (!canEditEntity(player, target)) return;
+                com.infinitestats.util.EntityPanelActions.removeEffect(living, msg.effectId);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，请求打开「附近生物列表」里点中的那只生物的面板。
+     * <p>
+     * 校验比「改生物」宽松：只要身上有观察杖 + 属性激活 + 距离 64 格内，不要求可编辑 ——
+     * 只读服也该能翻看生物。
+     */
+    public static final class EntityPanelRequestPacket {
+        private final int entityId;
+
+        public EntityPanelRequestPacket(int entityId) {
+            this.entityId = entityId;
+        }
+
+        public static void encode(EntityPanelRequestPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+        }
+
+        public static EntityPanelRequestPacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelRequestPacket(buf.readVarInt());
+        }
+
+        public static void handle(EntityPanelRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                Entity target = player.level().getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity)) return;
+                if (!EntityPanelWand.hasWand(player)) return;
+
+                boolean active = PlayerStatsProvider.of(player)
                         .map(stats -> stats.isToggleActive(EntityPanelWand.STAT_ID))
                         .orElse(false);
+                if (!active) return;
+                if (target.distanceToSqr(player) > 64.0D * 64.0D) return;
+
+                sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
+                sendEntityPanelLocks(player, target);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：客户端 → 服务器，锁定 / 解锁某条属性。
+     * <p>
+     * {@code mode} 为 {@code 0} 表示解锁；{@code 1} 锁基础值；{@code 2} 锁最终值。
+     * 真正的「每 tick 压回去」在 {@link com.infinitestats.handler.AttributeLockHandler} 里。
+     */
+    public static final class EntityPanelLockPacket {
+        private final int entityId;
+        private final String attributeId;
+        private final int mode;
+        private final double value;
+
+        public EntityPanelLockPacket(int entityId, String attributeId, int mode, double value) {
+            this.entityId = entityId;
+            this.attributeId = attributeId == null ? "" : attributeId;
+            this.mode = mode;
+            this.value = value;
+        }
+
+        public static void encode(EntityPanelLockPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeUtf(msg.attributeId, 128);
+            buf.writeVarInt(msg.mode);
+            buf.writeDouble(msg.value);
+        }
+
+        public static EntityPanelLockPacket decode(FriendlyByteBuf buf) {
+            return new EntityPanelLockPacket(buf.readVarInt(), buf.readUtf(128),
+                    buf.readVarInt(), buf.readDouble());
+        }
+
+        public static void handle(EntityPanelLockPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                Entity target = player.level().getEntity(msg.entityId);
+                if (!(target instanceof LivingEntity living)) return;
+                if (!canEditEntity(player, target)) {
+                    sendEntityPanelState(player, target, Config.ALLOW_ENTITY_EDITING.get());
+                    return;
+                }
+
+                ResourceLocation id = ResourceLocation.tryParse(msg.attributeId);
+                if (id == null || !BuiltInRegistries.ATTRIBUTE.containsKey(id)) return;
+                if (msg.mode != com.infinitestats.handler.AttributeLockHandler.MODE_NONE
+                        && msg.mode != com.infinitestats.handler.AttributeLockHandler.MODE_BASE
+                        && msg.mode != com.infinitestats.handler.AttributeLockHandler.MODE_FINAL) return;
+                if (msg.mode != com.infinitestats.handler.AttributeLockHandler.MODE_NONE
+                        && !Double.isFinite(msg.value)) return;
+
+                com.infinitestats.handler.AttributeLockHandler.set(living, msg.attributeId, msg.mode, msg.value);
+                sendEntityPanelLocks(player, target);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 生物面板：服务端 → 客户端，同步某个实体身上的属性锁。
+     * <p>
+     * 内容是 {@code 属性注册名 → {mode, value}} 的 NBT：锁的数量通常只有个位数。
+     */
+    public static final class EntityPanelLockSyncPacket {
+        private final int entityId;
+        private final net.minecraft.nbt.CompoundTag locks;
+
+        public EntityPanelLockSyncPacket(int entityId, net.minecraft.nbt.CompoundTag locks) {
+            this.entityId = entityId;
+            this.locks = locks == null ? new net.minecraft.nbt.CompoundTag() : locks;
+        }
+
+        public static void encode(EntityPanelLockSyncPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeNbt(msg.locks);
+        }
+
+        public static EntityPanelLockSyncPacket decode(FriendlyByteBuf buf) {
+            int entityId = buf.readVarInt();
+            return new EntityPanelLockSyncPacket(entityId, buf.readNbt());
+        }
+
+        public static void handle(EntityPanelLockSyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() ->
+                    com.infinitestats.client.EntityPanelScreen.applyLockSnapshot(msg.entityId, msg.locks));
+            ctx.get().setPacketHandled(true);
+        }
     }
 
     /** 把某个维度的「已强加载区块」列表同步给玩家（每次强加载操作后调用）。 */
@@ -864,13 +1104,46 @@ public final class NetworkHandler {
     // ========== 同步方法 ==========
 
     /**
-     * 同步玩家数据到客户端
+     * 待同步属性数据的玩家。同一个玩家在一个 tick 内被请求多少次，都只发一包。
+     * <p>
+     * 加经验（被动经验每秒一次）、零血兜底这类路径原本每次都 {@link #syncToClient}，
+     * 而它是「全量快照 + 连锁配置」两个包 —— 一个人每秒 2 包、
+     * 10 人在线就是每秒 20 个全量包。改成打标记、tick 末合并。
+     */
+    private static final Set<UUID> PENDING_STATS_SYNC = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** 请求在本次服务端 tick 结束时同步属性数据（合并发送）。 */
+    public static void requestStatsSync(ServerPlayer player) {
+        if (player != null) PENDING_STATS_SYNC.add(player.getUUID());
+    }
+
+    /** 服务端 tick 结束时统一发出合并后的同步包。 */
+    public static void flushStatsSync(MinecraftServer server) {
+        if (server == null || PENDING_STATS_SYNC.isEmpty()) return;
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (PENDING_STATS_SYNC.remove(player.getUUID())) {
+                sendStatsSnapshot(player);
+            }
+        }
+        if (!PENDING_STATS_SYNC.isEmpty()) {
+            // 断线 / 换维度时没能发出去的标记直接丢掉，避免集合长期堆积
+            PENDING_STATS_SYNC.removeIf(id -> server.getPlayerList().getPlayer(id) == null);
+        }
+    }
+
+    /** 只发属性快照（不含连锁 / 矿透这两个配置包）。 */
+    public static void sendStatsSnapshot(ServerPlayer player) {
+        PlayerStatsProvider.of(player).ifPresent(stats ->
+                CHANNEL.sendToPlayer(player, new SyncStatsPacket(stats.createSnapshot())));
+    }
+
+    /**
+     * 同步玩家数据到客户端（全量：属性快照 + 连锁配置）。
+     * <p>
+     * 只用在登录 / 重生 / 改设置这类低频时机；高频路径请用 {@link #requestStatsSync}。
      */
     public static void syncToClient(ServerPlayer player) {
-        PlayerStatsProvider.of(player).ifPresent(stats -> {
-            CHANNEL.sendToPlayer(player,
-                    new SyncStatsPacket(stats.createSnapshot()));
-        });
+        sendStatsSnapshot(player);
         // 连锁设置单独一份（只在改动时变，不必跟着属性同步每 tick 发）
         syncVeinMinerConfig(player);
     }
@@ -897,258 +1170,6 @@ public final class NetworkHandler {
     public static void broadcastToAll(PlayerStats stats) {
         // 通常只在调试时使用
         // CHANNEL.send(PacketDistributor.ALL.noArg(), new SyncStatsPacket(stats.createSnapshot()));
-    }
-
-    // ========== EMC 数据包类 ==========
-
-    /**
-     * EMC 同步数据包（服务器 → 客户端）
-     */
-    public static final class EmcSyncPacket {
-        private final EmcPlayerData.EmcSnapshot snapshot;
-        private final Map<ResourceLocation, Long> prices;
-
-        public EmcSyncPacket(EmcPlayerData.EmcSnapshot snapshot) {
-            this.snapshot = snapshot;
-            this.prices = new HashMap<>();
-            for (ResourceLocation id : snapshot.learnedItems) {
-                ItemStack template = new ItemStack(BuiltInRegistries.ITEM.get(id));
-                CompoundTag tag = snapshot.itemNbt.get(id);
-                if (tag != null) template.set(DataComponents.CUSTOM_DATA, CustomData.of(tag.copy()));
-                prices.put(id, EmcDatabase.getEmc(template));
-            }
-        }
-
-        private EmcSyncPacket(EmcPlayerData.EmcSnapshot snapshot, Map<ResourceLocation, Long> prices) {
-            this.snapshot = snapshot;
-            this.prices = prices;
-        }
-
-        public static void encode(EmcSyncPacket msg, FriendlyByteBuf buf) {
-            buf.writeVarLong(msg.snapshot.emcBalance);
-            buf.writeVarInt(msg.snapshot.learnedItems.size());
-            for (ResourceLocation id : msg.snapshot.learnedItems) {
-                buf.writeUtf(id.toString());
-                CompoundTag nbt = msg.snapshot.itemNbt.get(id);
-                buf.writeBoolean(nbt != null && !nbt.isEmpty());
-                if (nbt != null && !nbt.isEmpty()) {
-                    buf.writeNbt(nbt);
-                }
-                buf.writeVarLong(msg.prices.getOrDefault(id, 0L));
-            }
-        }
-
-        public static EmcSyncPacket decode(FriendlyByteBuf buf) {
-            long balance = buf.readVarLong();
-            int count = buf.readVarInt();
-            List<ResourceLocation> items = new ArrayList<>();
-            Map<ResourceLocation, CompoundTag> nbtMap = new HashMap<>();
-            Map<ResourceLocation, Long> prices = new HashMap<>();
-            for (int i = 0; i < count; i++) {
-                ResourceLocation rl = ResourceLocation.tryParse(buf.readUtf());
-                CompoundTag nbt = buf.readBoolean() ? buf.readNbt() : null;
-                long price = buf.readVarLong();
-                if (rl != null) {
-                    items.add(rl);
-                    if (nbt != null) nbtMap.put(rl, nbt);
-                    prices.put(rl, price);
-                }
-            }
-            return new EmcSyncPacket(new EmcPlayerData.EmcSnapshot(balance, items, nbtMap), prices);
-        }
-
-        public static void handle(EmcSyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                CLIENT_EMC_PRICES.clear();
-                CLIENT_EMC_PRICES.putAll(msg.prices);
-                var player = net.minecraft.client.Minecraft.getInstance().player;
-                if (player != null) {
-                    EmcPlayerDataProvider.of(player).ifPresent(data -> {
-                        data.restoreFromSnapshot(msg.snapshot);
-                    });
-                }
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
-
-    /**
-     * 物品学习数据包（客户端 → 服务器）
-     */
-    public static final class EmcLearnPacket {
-        private final String itemId;
-
-        public EmcLearnPacket(String itemId) {
-            this.itemId = itemId;
-        }
-
-        public static void encode(EmcLearnPacket msg, FriendlyByteBuf buf) {
-            buf.writeUtf(msg.itemId);
-        }
-
-        public static EmcLearnPacket decode(FriendlyByteBuf buf) {
-            return new EmcLearnPacket(buf.readUtf());
-        }
-
-        public static void handle(EmcLearnPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-
-                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
-                if (itemId == null) return;
-
-                Item item = BuiltInRegistries.ITEM.get(itemId);
-
-                EmcPlayerDataProvider.of(player).ifPresent(data -> {
-                    // 只卖出光标上实际持有的那一份（避免误删背包中其它同类物品且不同步其槽位）
-                    int count = 0;
-                    CompoundTag itemNbt = null;
-                    // 手持（光标）中已经拖入学习槽的同类物品（光标在打开的菜单上，而非玩家背包）
-                    var openMenu = player.containerMenu;
-                    ItemStack carried = openMenu.getCarried();
-                    // 仅比较物品类型（不比较 NBT），因为手册等物品有额外标签
-                    if (!carried.isEmpty() && carried.getItem() == item) {
-                        count += carried.getCount();
-                        itemNbt = carried.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
-                        // 用实际手持（含 NBT）计算 EMC，避免附魔书等带 NBT 物品单价误判为 0
-                        if (EmcDatabase.getEmc(carried) <= 0) return;
-                        long sale = EmcDatabase.getSellValue(carried, count);
-                        openMenu.setCarried(ItemStack.EMPTY);
-                        openMenu.broadcastChanges();
-                        // 学习物品并返还 数量×EMC，保留 NBT
-                        data.learnAndConvert(itemId, sale, itemNbt);
-                        syncEmcToClient(player);
-                    }
-                });
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
-
-    /**
-     * 物品提取数据包（客户端 → 服务器）
-     */
-    public static final class EmcExtractPacket {
-        private final String itemId;
-        private final int count;
-
-        public EmcExtractPacket(String itemId, int count) {
-            this.itemId = itemId;
-            this.count = count;
-        }
-
-        public static void encode(EmcExtractPacket msg, FriendlyByteBuf buf) {
-            buf.writeUtf(msg.itemId);
-            buf.writeVarInt(msg.count);
-        }
-
-        public static EmcExtractPacket decode(FriendlyByteBuf buf) {
-            return new EmcExtractPacket(buf.readUtf(), buf.readVarInt());
-        }
-
-        public static void handle(EmcExtractPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-
-                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
-                if (itemId == null) return;
-
-                Item item = BuiltInRegistries.ITEM.get(itemId);
-                if (item == null) return;
-
-                EmcPlayerDataProvider.of(player).ifPresent(data -> {
-                    com.infinitestats.emc.EmcTransactions.extract(player, data, itemId, msg.count);
-
-                    syncEmcToClient(player);
-                    // 提取后刷新当前容器菜单（含背包槽位）使客户端立即显示
-                    if (player.containerMenu != null) {
-                        player.containerMenu.broadcastChanges();
-                    }
-                });
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
-
-    /**
-     * 一键卖出数据包（客户端 → 服务器）
-     * 把玩家背包（主背包 + 快捷栏）中所有「已学且有 EMC 值」的物品倾销成 EMC。
-     */
-    public static final class EmcSellAllPacket {
-        public EmcSellAllPacket() {}
-
-        public static void encode(EmcSellAllPacket msg, FriendlyByteBuf buf) {
-            // 无数据
-        }
-
-        public static EmcSellAllPacket decode(FriendlyByteBuf buf) {
-            return new EmcSellAllPacket();
-        }
-
-        public static void handle(EmcSellAllPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-
-                EmcPlayerDataProvider.of(player).ifPresent(data -> {
-                    long total = 0;
-                    var inv = player.getInventory();
-                    // 仅遍历主背包 + 快捷栏（0~35），不碰盔甲 / 副手，避免误卖穿戴装备
-                    for (int i = 0; i < 36; i++) {
-                        ItemStack s = inv.getItem(i);
-                        if (s.isEmpty()) continue;
-                        ResourceLocation id = BuiltInRegistries.ITEM.getKey(s.getItem());
-                        if (!data.hasLearned(id)) continue;     // 只卖已学物品
-                        long emc = EmcDatabase.getEmc(s);
-                        if (emc <= 0) continue;
-                        long sale = EmcDatabase.getSellValue(s, s.getCount());
-                        total += Math.min(sale, Long.MAX_VALUE - total);
-                        inv.setItem(i, ItemStack.EMPTY);
-                    }
-                    if (total > 0) {
-                        data.addEmc(total);
-                        syncEmcToClient(player);
-                        player.displayClientMessage(
-                                Component.literal("§a已将背包内可转化物品卖出，获得 §f" + total + " EMC"), false);
-                    } else {
-                        player.displayClientMessage(
-                                Component.literal("§e背包中没有可卖出的已学物品"), false);
-                    }
-                });
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
-
-    /**
-     * EMC 菜单打开数据包（客户端 → 服务器）
-     */
-    public static final class EmcOpenPacket {
-        public EmcOpenPacket() {}
-
-        public static void encode(EmcOpenPacket msg, FriendlyByteBuf buf) {
-            // 无数据
-        }
-
-        public static EmcOpenPacket decode(FriendlyByteBuf buf) {
-            return new EmcOpenPacket();
-        }
-
-        public static void handle(EmcOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-                player.openMenu(
-                        new SimpleMenuProvider(
-                                (id, inv, p) -> new EmcMenu(id, inv),
-                                Component.translatable("screen.infinitestats.emc")));
-                // 打开界面时同步一次 EMC/已学数据，保证已学习列表立即有内容
-                syncEmcToClient(player);
-            });
-            ctx.get().setPacketHandled(true);
-        }
     }
 
     /** 客户端请求打开便携式熔炉（需已开启 portable_furnace 开关）。 */
@@ -1828,9 +1849,15 @@ public final class NetworkHandler {
      */
     public static final class SyncAdvancementsPacket {
         private final List<AchievementInfo> achievements;
+        /** 当前玩家是否有权授予 / 撤销（受配置 achievementManagerRequireOp 影响）。 */
+        private final boolean canEdit;
+        /** 被跳过的无 display 技术成就数量（原版 recipes/* 等）。 */
+        private final int skipped;
 
-        public SyncAdvancementsPacket(List<AchievementInfo> achievements) {
+        public SyncAdvancementsPacket(List<AchievementInfo> achievements, boolean canEdit, int skipped) {
             this.achievements = achievements;
+            this.canEdit = canEdit;
+            this.skipped = skipped;
         }
 
         public static void encode(SyncAdvancementsPacket msg, FriendlyByteBuf buf) {
@@ -1838,6 +1865,8 @@ public final class NetworkHandler {
             for (AchievementInfo info : msg.achievements) {
                 AchievementInfo.encode(info, buf);
             }
+            buf.writeBoolean(msg.canEdit);
+            buf.writeVarInt(msg.skipped);
         }
 
         public static SyncAdvancementsPacket decode(FriendlyByteBuf buf) {
@@ -1846,16 +1875,143 @@ public final class NetworkHandler {
             for (int i = 0; i < count; i++) {
                 list.add(AchievementInfo.decode(buf));
             }
-            return new SyncAdvancementsPacket(list);
+            return new SyncAdvancementsPacket(list, buf.readBoolean(), buf.readVarInt());
         }
 
         public static void handle(SyncAdvancementsPacket msg, Supplier<NetworkEvent.Context> ctx) {
             ctx.get().enqueueWork(() -> {
                 // 存储到静态字段，由 AchievementManagerScreen 轮询读取
                 pendingAdvancements = msg.achievements;
+                pendingAdvancementsCanEdit = msg.canEdit;
+                pendingAdvancementsSkipped = msg.skipped;
+                advancementsVersion++;
             });
             ctx.get().setPacketHandled(true);
         }
+    }
+
+    /**
+     * 批量授予 / 撤销数据包（客户端 → 服务器）。
+     * <p>
+     * 一次操作可能涉及几十上百条成就，逐条发包既慢又会把服务端队列打满，
+     * 所以客户端把「选中集合」整体发上来，服务端一次性处理完只回一次列表。
+     */
+    public static final class BatchAdvancementPacket {
+        /** 单次操作最多接受的成就数，防止客户端构造超大包把服务端卡死。 */
+        private static final int MAX_IDS = 4096;
+
+        private final List<String> advancementIds;
+        private final boolean grant;
+
+        public BatchAdvancementPacket(List<String> advancementIds, boolean grant) {
+            this.advancementIds = advancementIds;
+            this.grant = grant;
+        }
+
+        public static void encode(BatchAdvancementPacket msg, FriendlyByteBuf buf) {
+            int size = Math.min(msg.advancementIds.size(), MAX_IDS);
+            buf.writeVarInt(size);
+            for (int i = 0; i < size; i++) {
+                buf.writeUtf(msg.advancementIds.get(i));
+            }
+            buf.writeBoolean(msg.grant);
+        }
+
+        public static BatchAdvancementPacket decode(FriendlyByteBuf buf) {
+            int size = Math.min(buf.readVarInt(), MAX_IDS);
+            List<String> ids = new ArrayList<>(size);
+            for (int i = 0; i < size; i++) {
+                ids.add(buf.readUtf());
+            }
+            return new BatchAdvancementPacket(ids, buf.readBoolean());
+        }
+
+        public static void handle(BatchAdvancementPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+
+                MinecraftServer server = player.getServer();
+                if (server == null) return;
+
+                if (!canEditAdvancements(player)) {
+                    denyEdit(player);
+                    return;
+                }
+
+                for (String rawId : msg.advancementIds) {
+                    ResourceLocation advId = ResourceLocation.tryParse(rawId);
+                    if (advId == null) continue;
+                    AdvancementHolder advancement = server.getAdvancements().get(advId);
+                    if (advancement == null) continue;
+                    applyAdvancementState(player, server, advancement, msg.grant);
+                }
+
+                syncAdvancementsToClient(player);
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /** 配置要求 OP 时，权限等级 2 以下不能改成就。 */
+    private static boolean canEditAdvancements(ServerPlayer player) {
+        return !Config.ACHIEVEMENT_MANAGER_REQUIRE_OP.get() || player.hasPermissions(2);
+    }
+
+    private static void denyEdit(ServerPlayer player) {
+        player.displayClientMessage(
+                Component.translatable("screen.infinitestats.achievements.no_permission"), true);
+    }
+
+    /**
+     * 授予 / 撤销单个成就。
+     * <p>
+     * 撤销会<b>递归撤销所有子成就</b>：原版成就树里子成就的完成状态依赖父成就链，
+     * 只撤销父成就的话子成就仍留着完成标记，界面与奖励会自相矛盾（父成就是「未完成」，
+     * 子成就却是「已完成」且再也拿不到一遍）。
+     */
+    private static void applyAdvancementState(ServerPlayer player, MinecraftServer server,
+                                              AdvancementHolder advancement, boolean grant) {
+        var playerAdvancements = player.getAdvancements();
+        if (grant) {
+            // 授予所有条件 → 完成成就
+            for (String criterion : advancement.value().criteria().keySet()) {
+                playerAdvancements.award(advancement, criterion);
+            }
+        } else {
+            revokeWithChildren(playerAdvancements, server, advancement);
+        }
+    }
+
+    /** 1.21.1 的 {@code Advancement} 不再有 getChildren()，只能按 parent 关系反查后代。 */
+    private static void revokeWithChildren(net.minecraft.server.PlayerAdvancements playerAdvancements,
+                                           MinecraftServer server, AdvancementHolder target) {
+        for (String criterion : target.value().criteria().keySet()) {
+            playerAdvancements.revoke(target, criterion);
+        }
+
+        String targetId = target.id().toString();
+        for (AdvancementHolder holder : server.getAdvancements().getAllAdvancements()) {
+            if (holder == target) continue;
+            if (!isDescendant(server, holder, targetId)) continue;
+            for (String criterion : holder.value().criteria().keySet()) {
+                playerAdvancements.revoke(holder, criterion);
+            }
+        }
+    }
+
+    /** 沿 parent 链向上找，判断 {@code holder} 是否是 {@code ancestorId} 的后代。 */
+    private static boolean isDescendant(MinecraftServer server, AdvancementHolder holder, String ancestorId) {
+        var parent = holder.value().parent();
+        int guard = 0;
+        while (parent.isPresent() && guard++ < 64) {
+            String parentId = parent.get().toString();
+            if (parentId.equals(ancestorId)) return true;
+            AdvancementHolder parentHolder = server.getAdvancements().get(parent.get());
+            if (parentHolder == null) return false;
+            parent = parentHolder.value().parent();
+        }
+        return false;
     }
 
     /**
@@ -1887,43 +2043,24 @@ public final class NetworkHandler {
                 MinecraftServer server = player.getServer();
                 if (server == null) return;
 
+                if (!canEditAdvancements(player)) {
+                    denyEdit(player);
+                    return;
+                }
+
                 ResourceLocation advId = ResourceLocation.tryParse(msg.advancementId);
                 if (advId == null) return;
 
                 AdvancementHolder advancement = server.getAdvancements().get(advId);
                 if (advancement == null) return;
 
-                var playerAdvancements = player.getAdvancements();
-
-                if (msg.grant) {
-                    // 授予所有条件 → 完成成就
-                    for (String criterion : advancement.value().criteria().keySet()) {
-                        playerAdvancements.award(advancement, criterion);
-                    }
-                } else {
-                    // 撤销所有条件 → 取消成就
-                    for (String criterion : advancement.value().criteria().keySet()) {
-                        playerAdvancements.revoke(advancement, criterion);
-                    }
-                }
+                applyAdvancementState(player, server, advancement, msg.grant);
 
                 // 同步更新后的成就列表返回客户端
                 syncAdvancementsToClient(player);
             });
             ctx.get().setPacketHandled(true);
         }
-    }
-
-    // ========== EMC 同步方法 ==========
-
-    /**
-     * 同步 EMC 数据到客户端
-     */
-    public static void syncEmcToClient(ServerPlayer player) {
-        EmcPlayerDataProvider.of(player).ifPresent(data -> {
-            CHANNEL.sendToPlayer(player,
-                    new EmcSyncPacket(data.createSnapshot()));
-        });
     }
 
     // ========== 成就管理同步方法 ==========
@@ -1935,22 +2072,78 @@ public final class NetworkHandler {
         MinecraftServer server = player.getServer();
         if (server == null) return;
 
-        List<AchievementInfo> list = new ArrayList<>();
-        for (AdvancementHolder adv : server.getAdvancements().getAllAdvancements()) {
+        // 顺序由服务端统一排好再下发：模组命名空间 → 父成就先于子成就 → 标题 → id
+        List<AdvancementHolder> all = new ArrayList<>(server.getAdvancements().getAllAdvancements());
+        java.util.Map<String, Integer> depths = new java.util.HashMap<>();
+        for (AdvancementHolder holder : all) {
+            depthOf(holder, server, depths, 0);
+        }
+        all.sort(java.util.Comparator
+                .comparing((AdvancementHolder a) -> a.id().getNamespace())
+                .thenComparingInt(a -> depths.getOrDefault(a.id().toString(), 0))
+                .thenComparing(NetworkHandler::advancementTitle, String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(a -> a.id().toString()));
+
+        var playerAdvancements = player.getAdvancements();
+        List<AchievementInfo> list = new ArrayList<>(all.size());
+        int skipped = 0;
+
+        for (AdvancementHolder adv : all) {
             var display = adv.value().display().orElse(null);
-            if (display == null) continue; // 跳过隐藏成就
+            if (display == null) {
+                // 没有 display 的是纯技术成就（原版 recipes/* 上千条），不进列表
+                skipped++;
+                continue;
+            }
 
             String id = adv.id().toString();
             String name = display.getTitle().getString();
             String desc = display.getDescription().getString();
             String iconId = BuiltInRegistries.ITEM.getKey(display.getIcon().getItem()).toString();
-            boolean completed = player.getAdvancements().getOrStartProgress(adv).isDone();
 
-            list.add(new AchievementInfo(id, name, desc, iconId, completed));
+            var progress = playerAdvancements.getOrStartProgress(adv);
+            boolean completed = progress.isDone();
+            int criteriaTotal = adv.value().criteria().size();
+            int criteriaDone = 0;
+            for (String criterion : adv.value().criteria().keySet()) {
+                var criterionProgress = progress.getCriterion(criterion);
+                if (criterionProgress != null && criterionProgress.isDone()) criteriaDone++;
+            }
+            int percent = completed ? 100 : Math.round(progress.getPercent() * 100f);
+
+            list.add(new AchievementInfo(id, name, desc, iconId,
+                    completed, percent, criteriaDone, criteriaTotal,
+                    display.getType().ordinal(),
+                    id.contains(":") ? id.substring(0, id.indexOf(':')) : "minecraft",
+                    adv.value().parent().map(ResourceLocation::toString).orElse(""),
+                    display.isHidden()));
         }
 
         CHANNEL.sendToPlayer(player,
-                new SyncAdvancementsPacket(list));
+                new SyncAdvancementsPacket(list, canEditAdvancements(player), skipped));
+    }
+
+    /** 成就树深度（根 = 0），用于「父成就排在子成就之前」。 */
+    private static int depthOf(AdvancementHolder holder, MinecraftServer server,
+                               java.util.Map<String, Integer> cache, int guard) {
+        String id = holder.id().toString();
+        Integer cached = cache.get(id);
+        if (cached != null) return cached;
+        if (guard > 64) return 0;
+
+        int depth = 0;
+        var parent = holder.value().parent();
+        if (parent.isPresent()) {
+            AdvancementHolder parentHolder = server.getAdvancements().get(parent.get());
+            depth = parentHolder == null ? 1 : 1 + depthOf(parentHolder, server, cache, guard + 1);
+        }
+        cache.put(id, depth);
+        return depth;
+    }
+
+    private static String advancementTitle(AdvancementHolder advancement) {
+        var display = advancement.value().display().orElse(null);
+        return display == null ? "" : display.getTitle().getString();
     }
 
     // ========== 随身工作台 / 熔炉 联动 Refined Storage ==========
@@ -2171,126 +2364,4 @@ public final class NetworkHandler {
         public java.util.List<String> getItemIds() { return itemIds; }
     }
 
-    /**
-     * 单个槽位卖出数据包（客户端 → 服务器）
-     * Shift+左键点击背包槽位 → 卖出该槽位物品换取 EMC
-     */
-    public static final class EmcSellSlotPacket {
-        private final int slotIndex;
-
-        public EmcSellSlotPacket(int slotIndex) {
-            this.slotIndex = slotIndex;
-        }
-
-        public static void encode(EmcSellSlotPacket msg, FriendlyByteBuf buf) {
-            buf.writeVarInt(msg.slotIndex);
-        }
-
-        public static EmcSellSlotPacket decode(FriendlyByteBuf buf) {
-            return new EmcSellSlotPacket(buf.readVarInt());
-        }
-
-        public static void handle(EmcSellSlotPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-
-                var menu = player.containerMenu;
-                if (!(menu instanceof EmcMenu)) return;
-
-                int slot = msg.slotIndex;
-                if (slot < 0 || slot >= menu.slots.size()) return;
-
-                ItemStack stack = menu.slots.get(slot).getItem();
-                if (stack.isEmpty()) return;
-
-                long emcValue = EmcDatabase.getEmc(stack);
-                if (emcValue <= 0) return;
-
-                ResourceLocation itemId = BuiltInRegistries.ITEM.getKey(stack.getItem());
-                int count = stack.getCount();
-                long totalEmc = EmcDatabase.getSellValue(stack, count);
-
-                EmcPlayerDataProvider.of(player).ifPresent(data -> {
-                    if (!data.hasLearned(itemId)) {
-                        data.learnAndConvert(itemId, totalEmc, stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag());
-                    } else {
-                        // 更新 NBT（可能放入了不同版本的手册）
-                        CompoundTag nbt = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
-                        if (nbt != null && !nbt.isEmpty()) {
-                            data.learnItem(itemId, nbt);
-                        }
-                        data.addEmc(totalEmc);
-                    }
-                    syncEmcToClient(player);
-                    player.displayClientMessage(
-                            Component.translatable("message.infinitestats.emc.converted",
-                                    stack.getHoverName(), totalEmc), false);
-                });
-
-                menu.slots.get(slot).set(ItemStack.EMPTY);
-                menu.broadcastChanges();
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
-
-    /**
-     * 自定义定价数据包（客户端 → 服务器）
-     * 给指定物品设置自定义 EMC 值（0 表示删除自定义值，恢复自动计算）
-     */
-    public static final class EmcSetPricePacket {
-        private final String itemId;
-        private final long emc;
-
-        public EmcSetPricePacket(String itemId, long emc) {
-            this.itemId = itemId;
-            this.emc = emc;
-        }
-
-        public static void encode(EmcSetPricePacket msg, FriendlyByteBuf buf) {
-            buf.writeUtf(msg.itemId);
-            buf.writeVarLong(msg.emc);
-        }
-
-        public static EmcSetPricePacket decode(FriendlyByteBuf buf) {
-            return new EmcSetPricePacket(buf.readUtf(), buf.readVarLong());
-        }
-
-        public static void handle(EmcSetPricePacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-
-                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
-                if (itemId == null) return;
-
-                Item item = BuiltInRegistries.ITEM.get(itemId);
-                if (item == null) return;
-
-                if (!BuiltInRegistries.ITEM.containsKey(itemId) || item == net.minecraft.world.item.Items.AIR) return;
-                if (!EmcDatabase.setCustomEmc(itemId, msg.emc)) {
-                    player.sendSystemMessage(Component.literal("§cEMC 定价保存失败，请查看服务端日志"));
-                    return;
-                }
-                EmcPlayerDataProvider.of(player).ifPresent(data -> {
-                    if (msg.emc > 0) {
-                        data.learnItem(itemId);
-                        syncEmcToClient(player);
-                    }
-                });
-                player.server.getPlayerList().getPlayers().forEach(NetworkHandler::syncEmcToClient);
-                if (msg.emc > 0) {
-                    player.displayClientMessage(
-                            Component.translatable("message.infinitestats.emc.priced",
-                                    new ItemStack(item).getHoverName(), msg.emc), false);
-                } else {
-                    player.displayClientMessage(
-                            Component.translatable("message.infinitestats.emc.price_removed",
-                                    new ItemStack(item).getHoverName()), false);
-                }
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
 }

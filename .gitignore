@@ -9,6 +9,9 @@ logs/
 # ModMind 脚手架数据
 .modmind/
 
+# AI 会话记忆（本地保留，不进仓库）
+.workbuddy/
+
 # 本地工具链与分析用产物（体积大、可重建，不进仓库）
 #   .jdk8  ~292 MB 本地 JDK 21
 #   .refsrc / .neoref  反编译的参考源码（各 30+ MB）

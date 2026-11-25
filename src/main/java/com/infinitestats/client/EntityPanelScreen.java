@@ -70,18 +70,17 @@ import java.util.Map;
 public class EntityPanelScreen extends PanelScreen {
 
     private static final int GUI_W = 336;
-    private static final int GUI_H = 258;
+    private static final int GUI_H = 292;
 
-    /** 页签（属性 / 开关）。 */
+    /** 页签（属性 / 开关 / 效果 / 动作）。 */
     private static final int TAB_Y = 56;
     private static final int TAB_H = 16;
-    private static final int TAB_W = 110;
-    private static final int TAB1_X = 8;
-    private static final int TAB2_X = 124;
+    private static final int TAB_W = 78;
+    private static final int[] TAB_X = {6, 88, 170, 252};
 
     /** 列表区。两页共用，切页时重新算能滚多远。 */
-    private static final int LIST_TOP = 74;
-    private static final int LIST_H = 148;
+    private static final int LIST_TOP = 98;
+    private static final int LIST_H = 146;
     private static final int ROW_H = 18;
     private static final int VISIBLE_ROWS = LIST_H / ROW_H;
 
@@ -89,7 +88,7 @@ public class EntityPanelScreen extends PanelScreen {
     private static final int SCROLL_X = GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
     private static final int VALUE_RIGHT = SCROLL_X - 4;
 
-    private static final int CLOSE_BTN_Y = 232;
+    private static final int CLOSE_BTN_Y = 266;
 
     /** 属性页改数值时，行尾那个输入框的宽度。 */
     private static final int FIELD_W = 78;
@@ -123,14 +122,46 @@ public class EntityPanelScreen extends PanelScreen {
     private int enabledMask;
     private boolean editable;
 
-    /** false = 属性页，true = 开关页。 */
+    /** 0 = 属性页，1 = 开关页，2 = 效果页，3 = 动作页。 */
+    private int page;
+    /** 兼容旧分支判断：只有开关页为 true。 */
     private boolean showToggles;
+
+    /** 效果页的一行。 */
+    private record EffectRow(String id, String name, int level, int duration) {}
+
+    private final List<EffectRow> effects = new ArrayList<>();
+    private int hoveredEffect = -1;
+    /** 效果行「连点两下移除」的待确认目标与时间戳。 */
+    private int pendingEffectIndex = -1;
+    private long pendingEffectAt;
+
+    /** 动作页：等待二次确认的动作下标（只有危险动作会用到）。 */
+    private int pendingAction = -1;
+    private long pendingActionAt;
+
+    /** 属性锁：属性 id → 锁模式（0 无 / 1 基 / 2 终），以及锁的目标值。 */
+    private final Map<String, Integer> lockModes = new HashMap<>();
+    private final Map<String, Double> lockValues = new HashMap<>();
+
+    /**
+     * 「暂停放行」的截止时间（{@link System#currentTimeMillis()}）。
+     * <p>
+     * 面板是暂停界面 —— 单人游戏打开它世界就停了：服务端不 tick，我们发过去的
+     * 「改属性 / 切开关 / 执行动作」的包就一直躺在队列里，表现就是「改完必须关掉面板重开才生效」。
+     * 所以每次发包后临时放行 80ms，让服务端把包处理掉、属性同步回来，再自动暂停。
+     * 用时间而不是帧数：不受帧率影响，服务器 20 tick/s 下至少能跑到一两个 tick。
+     * 时间刻意压得比一个 tick 稍长而不是更长 —— 放行期间世界是真在跑的，怪物会动、会打人。
+     */
+    private long pauseFreeUntil;
+
+    /** 发包后放行世界的时长（毫秒）。一个服务端 tick 是 50ms，80ms 保证至少跑一次。 */
+    private static final long PAUSE_FREE_MS = 80L;
 
     private int scroll;
     private int maxScroll;
     private int hovered = -1;
     private int hoveredToggle = -1;
-    private boolean scrollbarDragging;
     private int rebuildCountdown;
 
     /** 属性页的数值输入框（编辑中才显示，位置每帧跟着所在行走）。 */
@@ -171,6 +202,34 @@ public class EntityPanelScreen extends PanelScreen {
         }
     }
 
+    /**
+     * 由 {@code EntityPanelLockSyncPacket} 调用：把服务端的锁表套到当前面板上。
+     * <p>
+     * 面板没开着（或已切到别的生物）时直接丢弃 —— 行尾的「基 / 终」只服务于正在看的那只。
+     */
+    public static void applyLockSnapshot(int entityId, net.minecraft.nbt.CompoundTag locks) {
+        Minecraft mc = Minecraft.getInstance();
+        if (!(mc.screen instanceof EntityPanelScreen panel)) return;
+        if (panel.entity.getId() != entityId) return;
+
+        panel.lockModes.clear();
+        panel.lockValues.clear();
+        if (locks != null) {
+            for (String key : locks.getAllKeys()) {
+                var one = locks.getCompound(key);
+                int mode = one.getInt("mode");
+                if (mode == 0) continue;
+                panel.lockModes.put(key, mode);
+                panel.lockValues.put(key, one.getDouble("value"));
+            }
+        }
+    }
+
+    /** 服务端下发了新效果 / 动作结果时，重建非属性页的数据。 */
+    public void refreshDynamicContent() {
+        rebuildEffects();
+    }
+
     /** 服务端把权威开关状态推回来（也可能把乐观更新纠正掉）。 */
     private void applyToggleState(int applicableMask, int enabledMask, boolean editable) {
         this.applicableMask = applicableMask;
@@ -178,6 +237,23 @@ public class EntityPanelScreen extends PanelScreen {
         this.editable = editable;
         this.toggles.clear();
         this.toggles.addAll(collectToggles());
+        rebuildEffects();
+        updateMaxScroll();
+    }
+
+    /** 读本地实体的药水效果（效果页）。客户端持有的效果表就是服务端同步下来的，够用。 */
+    private void rebuildEffects() {
+        effects.clear();
+        for (var inst : entity.getActiveEffects()) {
+            if (inst.getEffect() == null) continue;
+            String id = com.infinitestats.util.EntityPanelActions.effectId(inst);
+            if (id.isEmpty()) continue;
+            effects.add(new EffectRow(id,
+                    inst.getEffect().value().getDisplayName().getString(),
+                    inst.getAmplifier() + 1,
+                    inst.getDuration()));
+        }
+        effects.sort(Comparator.comparing(EffectRow::name, String.CASE_INSENSITIVE_ORDER));
         updateMaxScroll();
     }
 
@@ -246,6 +322,10 @@ public class EntityPanelScreen extends PanelScreen {
     @Override
     public void tick() {
         super.tick();
+        // 放行期间每帧重读：服务端写入 + 属性同步包回来的那点延迟里，界面能第一时间显示新值
+        if (System.currentTimeMillis() < pauseFreeUntil) {
+            rebuildCountdown = 1;
+        }
         // 生物没了（被打死 / 区块卸载）就自动关掉，避免留着一个悬空面板
         if (minecraft == null || minecraft.level == null || entity.isRemoved()
                 || minecraft.level.getEntity(entity.getId()) == null) {
@@ -256,9 +336,19 @@ public class EntityPanelScreen extends PanelScreen {
         if (--rebuildCountdown <= 0) {
             rebuildCountdown = 10;
             rebuildRows();
+            rebuildEffects();
         }
         // 重读之后行数可能变了，编辑目标要还在
         if (editingIndex >= rows.size()) cancelEditing();
+    }
+
+    /**
+     * 平时暂停（面板里翻属性、输数值时世界不会偷袭你）；
+     * 刚发过包的那几十毫秒放行，让服务端真的处理这次改动（见 {@link #pauseFreeUntil}）。
+     */
+    @Override
+    public boolean isPauseScreen() {
+        return System.currentTimeMillis() >= pauseFreeUntil;
     }
 
     @Override
@@ -299,12 +389,27 @@ public class EntityPanelScreen extends PanelScreen {
 
         updateMaxScroll();
         // 数值刷新后列表长度几乎不变，但万一变了也别让滚动位置跳到别处
-        if (!showToggles) scroll = Mth.clamp(Math.round(keepScrollRatio * maxScroll), 0, maxScroll);
+        if (page == 0) scroll = Mth.clamp(Math.round(keepScrollRatio * maxScroll), 0, maxScroll);
+    }
+
+    /** 动作页里「对这只生物成立」的动作（顺序 = 枚举顺序）。 */
+    private List<com.infinitestats.util.EntityPanelActions.Action> actionRows() {
+        List<com.infinitestats.util.EntityPanelActions.Action> out = new ArrayList<>();
+        for (com.infinitestats.util.EntityPanelActions.Action action
+                : com.infinitestats.util.EntityPanelActions.Action.values()) {
+            if (action.appliesTo(entity)) out.add(action);
+        }
+        return out;
     }
 
     /** 当前页最多能滚多少行。 */
     private void updateMaxScroll() {
-        int size = showToggles ? toggles.size() : rows.size();
+        int size = switch (page) {
+            case 3 -> actionRows().size();
+            case 2 -> effects.size();
+            case 1 -> toggles.size();
+            default -> rows.size();
+        };
         maxScroll = Math.max(0, size - VISIBLE_ROWS);
         scroll = Mth.clamp(scroll, 0, maxScroll);
     }
@@ -417,8 +522,12 @@ public class EntityPanelScreen extends PanelScreen {
         renderHeader(g);
         renderTabs(g, mx, my);
 
-        if (showToggles) renderToggleRows(g, mx, my);
-        else renderAttributeRows(g, mx, my);
+        switch (page) {
+            case 3 -> renderActionRows(g, mx, my);
+            case 2 -> renderEffectRows(g, mx, my);
+            case 1 -> renderToggleRows(g, mx, my);
+            default -> renderAttributeRows(g, mx, my);
+        }
 
         EditorUi.dividerH(g, leftPos + LIST_X, topPos + LIST_TOP - 2, GUI_W - LIST_X * 2 - EditorUi.SCROLL_W);
         renderScrollbar(g, mx, my);
@@ -444,6 +553,29 @@ public class EntityPanelScreen extends PanelScreen {
         String health = healthText();
         g.drawString(font, health, leftPos + GUI_W - EditorUi.GAP - font.width(health),
                 topPos + 27, healthColor());
+
+        // 页签与列表之间的信息条（与主版本的顶部信息区对齐）：坐标 / 距离 / 当前页条目数
+        double distance = (minecraft == null || minecraft.player == null)
+                ? 0.0 : Math.sqrt(entity.distanceToSqr(minecraft.player));
+        String info = String.format(java.util.Locale.ROOT,
+                "XYZ  %.0f / %.0f / %.0f    ·    %.1f m",
+                entity.getX(), entity.getY(), entity.getZ(), distance);
+        g.drawString(font, EditorUi.ellipsize(font, info, GUI_W - LIST_X * 2 - 100),
+                leftPos + LIST_X + 2, topPos + 78, EditorUi.SECONDARY);
+
+        int count = switch (page) {
+            case 3 -> actionRows().size();
+            case 2 -> effects.size();
+            case 1 -> toggles.size();
+            default -> rows.size();
+        };
+        String total = count + " " + Component.translatable(
+                "gui.infinitestats.entity_panel.entries").getString();
+        g.drawString(font, total, leftPos + GUI_W - EditorUi.GAP - font.width(total),
+                topPos + 78, EditorUi.GOLD);
+        g.drawString(font, healthText()
+                        + "  ·  " + typeName().replaceAll("§.", ""),
+                leftPos + LIST_X + 2, topPos + 89, EditorUi.INFO);
     }
 
     private int healthColor() {
@@ -454,25 +586,33 @@ public class EntityPanelScreen extends PanelScreen {
     }
 
     private String hintText() {
-        if (showToggles) {
-            return editable
-                    ? Component.translatable("gui.infinitestats.entity_panel.hint.toggles").getString()
-                    : Component.translatable("gui.infinitestats.entity_panel.hint.readonly").getString();
+        if (!editable) {
+            return Component.translatable("gui.infinitestats.entity_panel.hint.readonly").getString();
         }
-        return editable
-                ? Component.translatable("gui.infinitestats.entity_panel.hint.attributes").getString()
-                : Component.translatable("gui.infinitestats.entity_panel.hint.readonly").getString();
+        return switch (page) {
+            case 3 -> Component.translatable("gui.infinitestats.entity_panel.hint.actions").getString();
+            case 2 -> Component.translatable("gui.infinitestats.entity_panel.hint.effects").getString();
+            case 1 -> Component.translatable("gui.infinitestats.entity_panel.hint.toggles").getString();
+            default -> Component.translatable("gui.infinitestats.entity_panel.hint.attributes").getString();
+        };
     }
 
     private void renderTabs(GuiGraphics g, int mouseX, int mouseY) {
-        drawTab(g, mouseX, mouseY, TAB1_X, false,
-                Component.translatable("gui.infinitestats.entity_panel.tab.attributes"));
-        drawTab(g, mouseX, mouseY, TAB2_X, true,
-                Component.translatable("gui.infinitestats.entity_panel.tab.toggles"));
+        Component[] labels = {
+                Component.translatable("gui.infinitestats.entity_panel.tab.attributes"),
+                Component.translatable("gui.infinitestats.entity_panel.tab.toggles"),
+                Component.translatable("gui.infinitestats.entity_panel.tab.effects",
+                        String.valueOf(effects.size())),
+                Component.translatable("gui.infinitestats.entity_panel.tab.actions",
+                        String.valueOf(actionRows().size()))
+        };
+        for (int i = 0; i < TAB_X.length; i++) {
+            drawTab(g, mouseX, mouseY, TAB_X[i], i, labels[i]);
+        }
     }
 
-    private void drawTab(GuiGraphics g, int mouseX, int mouseY, int x, boolean page, Component label) {
-        boolean active = showToggles == page;
+    private void drawTab(GuiGraphics g, int mouseX, int mouseY, int x, int tabIndex, Component label) {
+        boolean active = page == tabIndex;
         boolean hover = mouseX >= x && mouseX < x + TAB_W && mouseY >= TAB_Y && mouseY < TAB_Y + TAB_H;
         int color = active ? EditorUi.ACCENT : hover ? EditorUi.PRIMARY : EditorUi.SECONDARY;
         g.fill(leftPos + x, topPos + TAB_Y, leftPos + x + TAB_W, topPos + TAB_Y + TAB_H,
@@ -518,7 +658,15 @@ public class EntityPanelScreen extends PanelScreen {
 
             if (!entry.modifiers().isEmpty()) {
                 String count = "×" + entry.modifiers().size();
-                g.drawString(font, count, leftPos + VALUE_RIGHT - 4 - font.width(count), y + 5, EditorUi.SECONDARY);
+                g.drawString(font, count, leftPos + VALUE_RIGHT - 26 - font.width(count), y + 5, EditorUi.SECONDARY);
+            }
+
+            // 行尾锁标记：不锁（暗）→ 锁基础值（蓝「基」）→ 锁最终值（金「终」）
+            int lockMode = lockModes.getOrDefault(entry.id(), 0);
+            if (lockMode > 0 || (editable && hover && mouseX >= leftPos + VALUE_RIGHT - 16)) {
+                String glyph = lockMode == 2 ? "终" : lockMode == 1 ? "基" : "○";
+                int lockColor = lockMode == 2 ? EditorUi.GOLD : lockMode == 1 ? EditorUi.INFO : EditorUi.SECONDARY;
+                g.drawString(font, glyph, leftPos + VALUE_RIGHT - 14, y + 5, lockColor);
             }
         }
     }
@@ -556,18 +704,105 @@ public class EntityPanelScreen extends PanelScreen {
         }
     }
 
+    /** 效果页：名称 + 等级 + 剩余时间；连点两下移除。 */
+    private void renderEffectRows(GuiGraphics g, int mouseX, int mouseY) {
+        hoveredEffect = -1;
+        if (effects.isEmpty()) {
+            g.drawString(font, Component.translatable("gui.infinitestats.entity_panel.no_effects").getString(),
+                    leftPos + LIST_X + 4, topPos + LIST_TOP + 6, EditorUi.SECONDARY);
+            return;
+        }
+        long now = System.currentTimeMillis();
+        for (int row = 0; row < VISIBLE_ROWS; row++) {
+            int index = scroll + row;
+            if (index >= effects.size()) break;
+            EffectRow effect = effects.get(index);
+            int y = topPos + LIST_TOP + row * ROW_H;
+            boolean hover = mouseX >= leftPos + LIST_X && mouseX < leftPos + VALUE_RIGHT
+                    && mouseY >= y && mouseY < y + ROW_H - 1;
+            if (hover) hoveredEffect = index;
+
+            boolean confirming = pendingEffectIndex == index && now - pendingEffectAt < 2500L;
+            g.fill(leftPos + LIST_X, y, leftPos + VALUE_RIGHT, y + ROW_H - 1,
+                    confirming ? EditorUi.BG_ROW_DRAG : hover && editable ? EditorUi.BG_ROW_HOVER : EditorUi.BG_ROW);
+            g.drawString(font, EditorUi.ellipsize(font, effect.name(), 190),
+                    leftPos + LIST_X + 4, y + 5, EditorUi.PRIMARY);
+
+            String lvl = "Lv." + effect.level();
+            g.drawString(font, lvl, leftPos + LIST_X + 200, y + 5, EditorUi.GOLD);
+
+            String time = confirming
+                    ? Component.translatable("screen.infinitestats.ui.confirm").getString()
+                    : effect.duration() < 0 ? "∞" : formatTicks(effect.duration());
+            g.drawString(font, time, leftPos + VALUE_RIGHT - 4 - font.width(time), y + 5,
+                    confirming ? EditorUi.DANGER : EditorUi.SECONDARY);
+        }
+    }
+
+    /** 动作页：每个动作一行；危险动作需要二次确认。 */
+    private void renderActionRows(GuiGraphics g, int mouseX, int mouseY) {
+        List<com.infinitestats.util.EntityPanelActions.Action> actions = actionRows();
+        long now = System.currentTimeMillis();
+        for (int row = 0; row < VISIBLE_ROWS; row++) {
+            int index = scroll + row;
+            if (index >= actions.size()) break;
+            var action = actions.get(index);
+            int y = topPos + LIST_TOP + row * ROW_H;
+            boolean hover = mouseX >= leftPos + LIST_X && mouseX < leftPos + VALUE_RIGHT
+                    && mouseY >= y && mouseY < y + ROW_H - 1;
+            boolean confirming = pendingAction == index && now - pendingActionAt < 2500L;
+
+            g.fill(leftPos + LIST_X, y, leftPos + VALUE_RIGHT, y + ROW_H - 1,
+                    confirming ? EditorUi.BG_ROW_DRAG : hover && editable ? EditorUi.BG_ROW_HOVER : EditorUi.BG_ROW);
+            if (action.isDestructive()) {
+                g.fill(leftPos + LIST_X, y, leftPos + LIST_X + 2, y + ROW_H - 1, EditorUi.DANGER);
+            }
+            g.drawString(font, Component.translatable(action.getNameKey()).getString(),
+                    leftPos + LIST_X + 6, y + 5,
+                    action.isDestructive() ? EditorUi.DANGER : EditorUi.PRIMARY);
+
+            if (confirming) {
+                String sure = Component.translatable("screen.infinitestats.ui.confirm").getString();
+                g.drawString(font, sure, leftPos + VALUE_RIGHT - 4 - font.width(sure), y + 5, EditorUi.DANGER);
+            }
+        }
+
+        renderEquipment(g, mouseX, mouseY);
+    }
+
+    /** 动作页底部：目标身上的装备（悬停是原版物品提示）。 */
+    private void renderEquipment(GuiGraphics g, int mouseX, int mouseY) {
+        var slots = new net.minecraft.world.entity.EquipmentSlot[]{
+                net.minecraft.world.entity.EquipmentSlot.MAINHAND,
+                net.minecraft.world.entity.EquipmentSlot.OFFHAND,
+                net.minecraft.world.entity.EquipmentSlot.HEAD,
+                net.minecraft.world.entity.EquipmentSlot.CHEST,
+                net.minecraft.world.entity.EquipmentSlot.LEGS,
+                net.minecraft.world.entity.EquipmentSlot.FEET
+        };
+        int y = topPos + LIST_TOP + LIST_H + 2;
+        for (int i = 0; i < slots.length; i++) {
+            int x = leftPos + LIST_X + 2 + i * 20;
+            ItemStack stack = entity.getItemBySlot(slots[i]);
+            g.fill(x, y, x + 18, y + 18, EditorUi.BG_ROW);
+            if (!stack.isEmpty()) {
+                g.renderItem(stack, x + 1, y + 1);
+                boolean hover = mouseX >= x && mouseX < x + 18 && mouseY >= y && mouseY < y + 18;
+                if (hover) queueItemTooltip(g, mouseX, mouseY, stack);
+            }
+        }
+    }
+
+    /** {@code 1234} tick → {@code 1:01}（负数是无限时长，由调用方显示 ∞）。 */
+    private static String formatTicks(int ticks) {
+        int total = Math.max(0, ticks) / 20;
+        return String.format(java.util.Locale.ROOT, "%d:%02d", total / 60, total % 60);
+    }
+
     private void renderScrollbar(GuiGraphics g, int mouseX, int mouseY) {
-        int size = showToggles ? toggles.size() : rows.size();
-        if (size <= VISIBLE_ROWS) return;
-        int x = leftPos + SCROLL_X;
-        int y = topPos + LIST_TOP;
-        g.fill(x, y, x + EditorUi.SCROLL_W, y + LIST_H, EditorUi.BG_ROW);
-        int sliderH = Math.max(12, LIST_H * VISIBLE_ROWS / size);
-        int sliderY = y + (maxScroll == 0 ? 0 : (LIST_H - sliderH) * scroll / maxScroll);
-        boolean hover = mouseX >= x && mouseX < x + EditorUi.SCROLL_W
-                && mouseY >= sliderY && mouseY < sliderY + sliderH;
-        g.fill(x, sliderY, x + EditorUi.SCROLL_W, sliderY + sliderH,
-                hover || scrollbarDragging ? EditorUi.ACCENT : EditorUi.SECONDARY);
+        // 交给 EditorUi：滑块几何与拖动命中用同一套算法，避免「画的位置」和「能拖的位置」错开
+        EditorUi.scrollbar(g, mouseX, mouseY, leftPos + SCROLL_X, topPos + LIST_TOP, LIST_H,
+                scroll, maxScroll, VISIBLE_ROWS);
     }
 
     /** 悬停某一行的浮窗：属性显示修饰符明细与上限，开关显示说明。 */
@@ -581,7 +816,7 @@ public class EntityPanelScreen extends PanelScreen {
                 lines.add(line);
             }
             if (editable) lines.add("§b" + Component.translatable("gui.infinitestats.entity_panel.click_to_toggle").getString());
-            EditorUi.tooltip(g, mouseX, mouseY, lines, EditorUi.ACCENT);
+            queueTooltip(g, mouseX, mouseY, lines, EditorUi.ACCENT);
             return;
         }
 
@@ -600,7 +835,7 @@ public class EntityPanelScreen extends PanelScreen {
         }
         lines.add("§8" + Component.translatable("gui.infinitestats.entity_panel.tooltip.range",
                 rangeText(entry)).getString());
-        EditorUi.tooltip(g, mouseX, mouseY, lines, EditorUi.INFO);
+        queueTooltip(g, mouseX, mouseY, lines, EditorUi.INFO);
     }
 
     /** 属性取值范围（没范围的属性显示「不限」）。 */
@@ -618,15 +853,20 @@ public class EntityPanelScreen extends PanelScreen {
 
     @Override
     protected boolean onPanelClick(int mouseX, int mouseY, int button) {
+        // 滚动条拖动：排在最前，右缘那一列不让行 / 页签的命中区抢走
+        if (button == 0 && beginScrollbarDrag(mouseX, mouseY, leftPos + SCROLL_X,
+                topPos + LIST_TOP, LIST_H, scroll, maxScroll, VISIBLE_ROWS,
+                v -> scroll = Mth.clamp(v, 0, maxScroll))) {
+            return true;
+        }
+
         // 页签
         if (mouseY >= TAB_Y && mouseY < TAB_Y + TAB_H) {
-            if (mouseX >= TAB1_X && mouseX < TAB1_X + TAB_W) {
-                switchPage(false);
-                return true;
-            }
-            if (mouseX >= TAB2_X && mouseX < TAB2_X + TAB_W) {
-                switchPage(true);
-                return true;
+            for (int i = 0; i < TAB_X.length; i++) {
+                if (mouseX >= TAB_X[i] && mouseX < TAB_X[i] + TAB_W) {
+                    switchPage(i);
+                    return true;
+                }
             }
         }
 
@@ -634,8 +874,49 @@ public class EntityPanelScreen extends PanelScreen {
         if (mouseX >= LIST_X && mouseX < VALUE_RIGHT
                 && mouseY >= LIST_TOP && mouseY < LIST_TOP + LIST_H) {
             int index = scroll + (mouseY - LIST_TOP) / ROW_H;
-            if (showToggles) {
-                if (index >= 0 && index < toggles.size() && editable) {
+            if (!editable) return true;
+
+            if (page == 3) {
+                List<com.infinitestats.util.EntityPanelActions.Action> actions = actionRows();
+                if (index >= 0 && index < actions.size()) {
+                    var action = actions.get(index);
+                    long now = System.currentTimeMillis();
+                    // 危险动作（杀死）需要 2.5 秒内再点一次
+                    if (action.isDestructive() && !(pendingAction == index && now - pendingActionAt < 2500L)) {
+                        pendingAction = index;
+                        pendingActionAt = now;
+                        return true;
+                    }
+                    pendingAction = -1;
+                    NetworkHandler.CHANNEL.sendToServer(
+                            new NetworkHandler.EntityPanelCommandPacket(entity.getId(), action.ordinal()));
+                    pauseFreeUntil = System.currentTimeMillis() + PAUSE_FREE_MS;
+                    rebuildCountdown = 1;
+                    return true;
+                }
+                return true;
+            }
+
+            if (page == 2) {
+                if (index >= 0 && index < effects.size()) {
+                    long now = System.currentTimeMillis();
+                    if (!(pendingEffectIndex == index && now - pendingEffectAt < 2500L)) {
+                        pendingEffectIndex = index;
+                        pendingEffectAt = now;
+                        return true;
+                    }
+                    pendingEffectIndex = -1;
+                    NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EntityPanelEffectPacket(
+                            entity.getId(), effects.get(index).id()));
+                    pauseFreeUntil = System.currentTimeMillis() + PAUSE_FREE_MS;
+                    rebuildCountdown = 1;
+                    return true;
+                }
+                return true;
+            }
+
+            if (page == 1) {
+                if (index >= 0 && index < toggles.size()) {
                     EntityPanelToggles.Toggle toggle = toggles.get(index);
                     boolean target = !EntityPanelToggles.isEnabled(enabledMask, toggle);
                     // 乐观更新：服务端回包会把权威状态盖回来（改不动就原地弹回）
@@ -644,20 +925,21 @@ public class EntityPanelScreen extends PanelScreen {
                             : enabledMask & ~toggle.getBit();
                     NetworkHandler.CHANNEL.sendToServer(
                             new EntityPanelActionPacket(entity.getId(), toggle.ordinal(), target));
+                    pauseFreeUntil = System.currentTimeMillis() + PAUSE_FREE_MS;
                     return true;
                 }
-            } else if (index >= 0 && index < rows.size() && editable) {
+                return true;
+            }
+
+            // 属性页：行尾 16px 是锁标记，其余区域点开数值编辑
+            if (index >= 0 && index < rows.size()) {
+                if (mouseX >= LIST_X + VALUE_RIGHT - 16) {
+                    cycleLock(rows.get(index));
+                    return true;
+                }
                 beginEditing(index);
                 return true;
             }
-            return true;
-        }
-
-        // 滚动条拖动
-        if (mouseX >= SCROLL_X && mouseX < SCROLL_X + EditorUi.SCROLL_W
-                && mouseY >= LIST_TOP && mouseY < LIST_TOP + LIST_H && maxScroll > 0) {
-            scrollbarDragging = true;
-            dragScrollbar(mouseY);
             return true;
         }
 
@@ -667,29 +949,12 @@ public class EntityPanelScreen extends PanelScreen {
 
     @Override
     protected boolean onPanelRelease(int mouseX, int mouseY, int button) {
-        if (scrollbarDragging) {
-            scrollbarDragging = false;
-            return true;
-        }
-        return false;
+        return button == 0 && endScrollbarDrag();
     }
 
     @Override
     protected boolean onPanelDrag(int mouseX, int mouseY, int button, int dragX, int dragY) {
-        if (scrollbarDragging) {
-            dragScrollbar(mouseY);
-            return true;
-        }
-        return false;
-    }
-
-    /** 按滚动条位置换算滚动行数（把滑块中心对到鼠标上）。 */
-    private void dragScrollbar(int panelMouseY) {
-        if (maxScroll <= 0) return;
-        int size = showToggles ? toggles.size() : rows.size();
-        int sliderH = Math.max(12, LIST_H * VISIBLE_ROWS / size);
-        float ratio = (panelMouseY - LIST_TOP - sliderH / 2f) / Math.max(1, LIST_H - sliderH);
-        scroll = Mth.clamp(Math.round(ratio * maxScroll), 0, maxScroll);
+        return button == 0 && updateScrollbarDrag(mouseY);
     }
 
     @Override
@@ -702,12 +967,40 @@ public class EntityPanelScreen extends PanelScreen {
         return false;
     }
 
-    private void switchPage(boolean page) {
-        if (showToggles == page) return;
+    private void switchPage(int next) {
+        if (page == next) return;
         cancelEditing();
-        showToggles = page;
+        page = next;
+        showToggles = next == 1;
         scroll = 0;
+        pendingAction = -1;
+        pendingEffectIndex = -1;
+        if (next == 2) rebuildEffects();
         updateMaxScroll();
+    }
+
+    /**
+     * 行尾锁标记：不锁 → 锁基础值 → 锁最终值 → 不锁。
+     * <p>
+     * 锁基础值时目标就是基础值；锁最终值时目标是玩家看到的那个最终值，
+     * 服务端每 tick 按当前修饰符反算基础值来抵消。
+     */
+    private void cycleLock(Row row) {
+        if (!editable) return;
+        int mode = lockModes.getOrDefault(row.id(), 0);
+        int next = mode == 0 ? 1 : mode == 1 ? 2 : 0;
+        double target = next == 1 ? row.base() : row.value();
+        if (next == 0) {
+            lockModes.remove(row.id());
+            lockValues.remove(row.id());
+        } else {
+            lockModes.put(row.id(), next);
+            lockValues.put(row.id(), target);
+        }
+        NetworkHandler.CHANNEL.sendToServer(
+                new NetworkHandler.EntityPanelLockPacket(entity.getId(), row.id(), next, target));
+        pauseFreeUntil = System.currentTimeMillis() + PAUSE_FREE_MS;
+        rebuildCountdown = 1;
     }
 
     // ======================== 改数值 ========================
@@ -750,6 +1043,9 @@ public class EntityPanelScreen extends PanelScreen {
         }
         NetworkHandler.CHANNEL.sendToServer(
                 new EntityPanelAttributePacket(entity.getId(), id, value));
+        // 暂停界面里包会一直躺在队列里：放行 150ms 让服务端处理并同步回来
+        pauseFreeUntil = System.currentTimeMillis() + PAUSE_FREE_MS;
+        rebuildCountdown = 1;
         // 乐观更新：本地先改基础值，权威值由原版属性同步包盖回来
         Holder<Attribute> holder = BuiltInRegistries.ATTRIBUTE.getHolder(id).orElse(null);
         if (holder != null && entity.getAttribute(holder) instanceof AttributeInstance instance) {

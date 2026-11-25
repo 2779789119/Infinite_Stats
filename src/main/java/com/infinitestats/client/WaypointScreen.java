@@ -29,9 +29,9 @@ import java.util.*;
 public class WaypointScreen extends PanelScreen {
 
     private static final int GUI_W = 420;
-    private static final int GUI_H = 300;
+    private static final int GUI_H = 340;
     private static final int ROW_H = 24;
-    private static final int MAX_VISIBLE = 8;
+    private static final int MAX_VISIBLE = 7;
     private static final int SCROLLBAR_W = 6;
 
     private static final int BG_PANEL = 0xE81A1A2E;
@@ -47,6 +47,14 @@ public class WaypointScreen extends PanelScreen {
     private int listTop, listLeft, rowW, listH;
 
     private EditBox nameField;
+    /** 搜索框：名称 / 维度 / 坐标都能匹配（名称支持拼音）。 */
+    private EditBox searchField;
+    private String searchText = "";
+    /** 排序：0 = 名称，1 = 坐标 X，2 = 维度。 */
+    private int sortMode;
+    /** 删除传送点需要二次点击确认（与主版本一致）。 */
+    private final ConfirmAction confirm = new ConfirmAction();
+    private boolean confirmPending;
     private final List<Button> rowButtons = new ArrayList<>();
     private int scrollOffset;
     private int maxScroll;
@@ -82,7 +90,7 @@ public class WaypointScreen extends PanelScreen {
         // 面板坐标从 (0,0) 起：居中、缩放与拖动都由 PanelScreen 负责
         leftPos = 0;
         topPos = 0;
-        listTop = topPos + 92;
+        listTop = topPos + 116;
         listLeft = leftPos + 10;
         rowW = GUI_W - 20 - SCROLLBAR_W - 4;
         listH = MAX_VISIBLE * ROW_H;
@@ -98,6 +106,18 @@ public class WaypointScreen extends PanelScreen {
                 b -> saveCurrent()).bounds(leftPos + 220, topPos + 62, 120, 20).build();
         addRenderableWidget(saveBtn);
 
+        // 搜索框：名称 / 维度 / 坐标都能筛（右侧留 84px 给排序按钮）
+        searchText = "";
+        searchField = new EditBox(font, leftPos + 12, topPos + 88, GUI_W - 24 - 84, 18, Component.empty());
+        searchField.setMaxLength(48);
+        searchField.setHint(Component.translatable("gui.infinitestats.wp_search_hint"));
+        searchField.setResponder(v -> {
+            searchText = v;
+            scrollOffset = 0;
+            rebuildRows();
+        });
+        addRenderableWidget(searchField);
+
         // 传送石碑（Waystones）联动：开面板时请求一次「已激活的石碑」。
         // 没装传送石碑时服务端回的是空表，面板里不会多出任何行
         NetworkHandler.CHANNEL.sendToServer(new WaystoneListRequestPacket());
@@ -110,6 +130,12 @@ public class WaypointScreen extends PanelScreen {
     public void tick() {
         super.tick();
         refreshData();
+        // 删除确认超时后把「确认？」还原成「删除」
+        boolean pending = confirm.isPending();
+        if (pending != confirmPending) {
+            confirmPending = pending;
+            rebuildRows();
+        }
 
         // 传送石碑列表变化（服务端刚回包）→ 取走并重建行
         if (waystoneVersion != NetworkHandler.waystoneListVersion) {
@@ -163,6 +189,11 @@ public class WaypointScreen extends PanelScreen {
         rowButtons.clear();
 
         List<String> names = sortedNames();
+        List<WaystoneEntry> filteredWaystones = sortedWaystones();
+        // 滚动范围按「筛选后」的行数算：搜索把列表缩短时不会留下滚不回去的空档
+        maxScroll = Math.max(0, names.size() + filteredWaystones.size() - MAX_VISIBLE);
+        scrollOffset = Mth.clamp(scrollOffset, 0, maxScroll);
+
         for (int i = 0; i < MAX_VISIBLE; i++) {
             int idx = i + scrollOffset;
             // 必须是 continue 而不是 break：自有点之后还接着传送石碑那些行，不能提前结束整轮
@@ -179,8 +210,12 @@ public class WaypointScreen extends PanelScreen {
                     .bounds(tpX, rowY + 2, 56, ROW_H - 4).build();
             Button renameBtn = Button.builder(Component.translatable("button.infinitestats.wp_rename"),
                     b -> openRename(name)).bounds(renameX, rowY + 2, 48, ROW_H - 4).build();
-            Button delBtn = Button.builder(Component.translatable("button.infinitestats.wp_delete"),
-                    b -> sendAction(WaypointActionPacket.Action.DELETE, name))
+            boolean confirmingDelete = confirm.isConfirming("del:" + name);
+            Button delBtn = Button.builder(
+                    Component.translatable(confirmingDelete
+                            ? "screen.infinitestats.ui.confirm"
+                            : "button.infinitestats.wp_delete"),
+                    b -> requestDelete(name))
                     .bounds(delX, rowY + 2, 48, ROW_H - 4).build();
 
             delBtn.active = toggleActive;
@@ -196,7 +231,7 @@ public class WaypointScreen extends PanelScreen {
         }
 
         // 传送石碑（Waystones）联动：接在自有点之后，只有一个「传送」按钮
-        List<WaystoneEntry> waystones = sortedWaystones();
+        List<WaystoneEntry> waystones = filteredWaystones;
         int ownCount = names.size();
         for (int i = 0; i < MAX_VISIBLE; i++) {
             int idx = i + scrollOffset;
@@ -213,9 +248,24 @@ public class WaypointScreen extends PanelScreen {
         }
     }
 
+    /** 当前搜索词（小写、去空白）；空串表示不筛。 */
+    private String needle() {
+        return searchText == null ? "" : searchText.trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
     /** 已激活的传送石碑，按名称（再按维度、UUID）排序，保证列表顺序稳定。 */
     private List<WaystoneEntry> sortedWaystones() {
-        List<WaystoneEntry> list = new ArrayList<>(currentWaystones);
+        String q = needle();
+        List<WaystoneEntry> list = new ArrayList<>();
+        for (WaystoneEntry e : currentWaystones) {
+            if (q.isEmpty()
+                    || e.name.toLowerCase(java.util.Locale.ROOT).contains(q)
+                    || com.infinitestats.compat.PinyinSearchBridge.matches(
+                            e.name.toLowerCase(java.util.Locale.ROOT), q)
+                    || (e.dimension != null && e.dimension.toLowerCase(java.util.Locale.ROOT).contains(q))) {
+                list.add(e);
+            }
+        }
         list.sort(Comparator.comparing((WaystoneEntry e) -> e.name, String.CASE_INSENSITIVE_ORDER)
                 .thenComparing(e -> e.dimension)
                 .thenComparing(e -> e.uid));
@@ -229,8 +279,43 @@ public class WaypointScreen extends PanelScreen {
     }
 
     private List<String> sortedNames() {
-        List<String> names = new ArrayList<>(currentWaypoints.keySet());
-        names.sort(String::compareToIgnoreCase);
+        String q = needle();
+        List<String> names = new ArrayList<>();
+        for (Map.Entry<String, Waypoint> entry : currentWaypoints.entrySet()) {
+            String name = entry.getKey();
+            if (q.isEmpty()) {
+                names.add(name);
+                continue;
+            }
+            Waypoint wp = entry.getValue();
+            String lower = name.toLowerCase(java.util.Locale.ROOT);
+            boolean hit = lower.contains(q)
+                    || com.infinitestats.compat.PinyinSearchBridge.matches(lower, q)
+                    || (wp != null && wp.dimension != null
+                            && wp.dimension.toLowerCase(java.util.Locale.ROOT).contains(q));
+            if (!hit && wp != null) {
+                // 坐标：允许「123」这种整数部分命中任意一轴
+                String coords = String.format(java.util.Locale.ROOT, "%.0f %.0f %.0f",
+                        wp.x, wp.y, wp.z);
+                hit = coords.contains(q);
+            }
+            if (hit) names.add(name);
+        }
+
+        if (sortMode == 1) {
+            Comparator<String> byX = Comparator.comparingDouble((String name) -> {
+                Waypoint wp = currentWaypoints.get(name);
+                return wp == null ? 0 : wp.x;
+            });
+            names.sort(byX.thenComparing(String::compareToIgnoreCase));
+        } else if (sortMode == 2) {
+            names.sort(Comparator.comparing((String name) -> {
+                Waypoint wp = currentWaypoints.get(name);
+                return wp == null || wp.dimension == null ? "" : wp.dimension;
+            }).thenComparing(String::compareToIgnoreCase));
+        } else {
+            names.sort(String::compareToIgnoreCase);
+        }
         return names;
     }
 
@@ -253,6 +338,16 @@ public class WaypointScreen extends PanelScreen {
                 player.getYRot(), player.getXRot()));
         nameField.setValue("");
         playClickSound();
+    }
+
+    /** 删除：第一次点只把按钮变成「确认？」，2.5 秒内再点才真的删。 */
+    private void requestDelete(String name) {
+        if (!confirm.confirm("del:" + name)) {
+            playClickSound();
+            rebuildRows();
+            return;
+        }
+        sendAction(WaypointActionPacket.Action.DELETE, name);
     }
 
     private void sendAction(WaypointActionPacket.Action action, String name) {
@@ -286,6 +381,19 @@ public class WaypointScreen extends PanelScreen {
         // 标题
         graphics.drawCenteredString(font, Component.translatable("screen.infinitestats.waypoint").getString(),
                 leftPos + GUI_W / 2, topPos + 8, TEXT_GOLD);
+
+        // 排序按钮（搜索框右侧）：名称 → 坐标 X → 维度
+        int sortX = leftPos + GUI_W - 12 - 80;
+        int sortY = topPos + 88;
+        boolean sortHover = mouseX >= sortX && mouseX < sortX + 80 && mouseY >= sortY && mouseY < sortY + 18;
+        graphics.fill(sortX, sortY, sortX + 80, sortY + 18, sortHover ? BG_ROW_HOVER : BG_ROW);
+        graphics.drawCenteredString(font,
+                Component.translatable(switch (sortMode) {
+                    case 1 -> "screen.infinitestats.waypoint.sort_x";
+                    case 2 -> "screen.infinitestats.waypoint.sort_dim";
+                    default -> "screen.infinitestats.waypoint.sort_name";
+                }).getString(),
+                sortX + 40, sortY + 5, sortHover ? TEXT_ACTIVE : TEXT_PRIMARY);
 
         // 当前位置信息
         Player player = Minecraft.getInstance().player;
@@ -364,14 +472,14 @@ public class WaypointScreen extends PanelScreen {
 
     private void renderScrollbar(GuiGraphics g, int mouseX, int mouseY) {
         if (maxScroll <= 0) return;
-        int sx = listLeft + rowW + 2;
-        int sy = listTop;
-        int sh = listH;
-        g.fill(sx, sy, sx + SCROLLBAR_W, sy + sh, 0x30151520);
-        int sliderH = Math.max(20, (int) ((float) MAX_VISIBLE / (maxScroll + MAX_VISIBLE) * sh));
-        int sliderY = sy + (sh - sliderH) * scrollOffset / maxScroll;
-        boolean hovering = mouseX >= sx && mouseX < sx + SCROLLBAR_W && mouseY >= sliderY && mouseY < sliderY + sliderH;
-        g.fill(sx, sliderY, sx + SCROLLBAR_W, sliderY + sliderH, hovering ? 0xB08888A0 : 0x80555570);
+        // 几何交给 EditorUi：绘制 / 命中 / 拖动用同一套算法，滑块画在哪就能拖在哪
+        EditorUi.scrollbar(g, mouseX, mouseY, scrollbarX(), listTop, listH,
+                scrollOffset, maxScroll, MAX_VISIBLE);
+    }
+
+    /** 滚动条轨道左缘（面板坐标）。 */
+    private int scrollbarX() {
+        return listLeft + rowW + 2;
     }
 
     private String truncate(String text, int maxWidth) {
@@ -389,17 +497,51 @@ public class WaypointScreen extends PanelScreen {
         return sb.toString() + "…";
     }
 
-    /** 滚轮：坐标为面板坐标，{@code delta} 是垂直滚轮量（PanelScreen 已取出第 4 个参数）。 */
     @Override
-    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
-        if (maxScroll <= 0) return false;
-        int newOffset = Mth.clamp(scrollOffset + (delta > 0 ? -1 : 1), 0, maxScroll);
-        if (newOffset != scrollOffset) {
-            scrollOffset = newOffset;
+    protected boolean onPanelClick(int mouseX, int mouseY, int button) {
+        if (button != 0) return false;
+        // 滚动条拖动（排在前面：它在列表右缘，不能被别的命中区抢走）
+        if (beginScrollbarDrag(mouseX, mouseY, scrollbarX(), listTop, listH,
+                scrollOffset, maxScroll, MAX_VISIBLE, this::setScrollOffset)) {
+            return true;
+        }
+        // 排序按钮：名称 → 坐标 X → 维度
+        int sortX = leftPos + GUI_W - 12 - 80;
+        int sortY = topPos + 88;
+        if (mouseX >= sortX && mouseX < sortX + 80 && mouseY >= sortY && mouseY < sortY + 18) {
+            sortMode = (sortMode + 1) % 3;
+            scrollOffset = 0;
             rebuildRows();
+            playClickSound();
             return true;
         }
         return false;
+    }
+
+    @Override
+    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
+        if (maxScroll <= 0) return false;
+        int before = scrollOffset;
+        setScrollOffset(scrollOffset + (delta > 0 ? -1 : 1));
+        return before != scrollOffset;
+    }
+
+    @Override
+    protected boolean onPanelDrag(int mouseX, int mouseY, int button, int dragX, int dragY) {
+        return button == 0 && updateScrollbarDrag(mouseY);
+    }
+
+    @Override
+    protected boolean onPanelRelease(int mouseX, int mouseY, int button) {
+        return button == 0 && endScrollbarDrag();
+    }
+
+    /** 滚动位置变化才重建行控件（拖动时每移动一像素都重建会闪）。 */
+    private void setScrollOffset(int value) {
+        int next = Mth.clamp(value, 0, maxScroll);
+        if (next == scrollOffset) return;
+        scrollOffset = next;
+        rebuildRows();
     }
 
     @Override

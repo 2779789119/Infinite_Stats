@@ -56,8 +56,18 @@ public class ItemEditorScreen extends PanelScreen {
         EnchantEntry(String id, int level) { this(id, level, new CompoundTag()); }
     }
 
-    /** 属性条目：id / 操作 / 数值 / 生效槽位 / 原始 NBT（保留 UUID 与扩展字段）。 */
-    record AttrEntry(String id, int op, double amount, String slot, CompoundTag original) {}
+    /**
+     * 属性条目：id / 操作 / 数值 / 生效槽位 / 原始 NBT（保留标识与扩展字段）。
+     * <p>
+     * {@code injected} = 这条属性不来自物品数据组件，而是词缀等模组在运行时通过
+     * {@code ItemAttributeModifierEvent} 附加的（{@code original} 为 {@code null}）。
+     * 它只用于展示：没被编辑过就不会写回物品，删除也只是从列表移开。
+     */
+    record AttrEntry(String id, int op, double amount, String slot, CompoundTag original, boolean injected) {
+        AttrEntry(String id, int op, double amount, String slot, CompoundTag original) {
+            this(id, op, amount, slot, original, false);
+        }
+    }
 
     // ======================== 布局常量 ========================
 
@@ -159,6 +169,16 @@ public class ItemEditorScreen extends PanelScreen {
             attrs.add(new AttrEntry(c.getString("AttributeName"),
                     c.getInt("Operation"), c.getDouble("Amount"), slot, c.copy()));
         }
+
+        // 词缀 / 其它模组在运行时附加的属性：数据组件里没有，但对玩家是真实生效的。
+        // 只展示（injected = true），点开编辑才生成一条新标识写回物品。
+        ListTag injected = ItemEditUtil.readInjectedAttributes(stack, att);
+        for (int i = 0; i < injected.size(); i++) {
+            CompoundTag c = injected.getCompound(i);
+            String slot = c.contains("Slot") ? c.getString("Slot") : "any";
+            attrs.add(new AttrEntry(c.getString("AttributeName"),
+                    c.getInt("Operation"), c.getDouble("Amount"), slot, null, true));
+        }
     }
 
     // ======================== 初始化 ========================
@@ -184,22 +204,36 @@ public class ItemEditorScreen extends PanelScreen {
         addColumnWidgets(0, colX(0));
         addColumnWidgets(1, colX(1));
 
-        addRenderableWidget(button(leftPos + COL_L, topPos + FOOTER_Y, 100, FOOTER_H,
+        // 底部按钮区：等宽居中。拔刀剑入口按需插入（手持拔刀剑时才出现），
+        // 因此按钮数量与布局在「4 键 / 5 键」之间切换。
+        var player = net.minecraft.client.Minecraft.getInstance().player;
+        boolean hasBlade = player != null && SlashBladeCompat.isBlade(player.getMainHandItem());
+
+        int bw = 76, gap = 6;
+        int count = hasBlade ? 5 : 4;
+        int total = count * bw + (count - 1) * gap;
+        int bx = leftPos + (GUI_W - total) / 2;
+        int by = topPos + FOOTER_Y;
+        int slot = 0;
+
+        addRenderableWidget(button(bx + slot++ * (bw + gap), by, bw, FOOTER_H,
                 "screen.infinitestats.item_editor.more",
                 b -> minecraft.setScreen(new EditItemMetaScreen(this))));
-        addRenderableWidget(button(leftPos + (GUI_W - 120) / 2, topPos + FOOTER_Y, 120, FOOTER_H,
-                "screen.infinitestats.item_editor.cancel", b -> onClose()));
-        addRenderableWidget(button(leftPos + GUI_W - COL_L - 100, topPos + FOOTER_Y, 100, FOOTER_H,
-                "screen.infinitestats.item_editor.apply", b -> apply()));
 
-        // 拔刀剑联动：主手拿着拔刀剑时，在「更多」与「取消」之间的空隙里给一个编辑入口。
-        // 空隙只有 40px，所以按钮文字用单字「刀」；不是拔刀剑时不放这个按钮
-        var player = net.minecraft.client.Minecraft.getInstance().player;
-        if (player != null && SlashBladeCompat.isBlade(player.getMainHandItem())) {
-            addRenderableWidget(button(leftPos + COL_L + 104, topPos + FOOTER_Y, 40, FOOTER_H,
+        addRenderableWidget(button(bx + slot++ * (bw + gap), by, bw, FOOTER_H,
+                "screen.infinitestats.item_editor.tags",
+                b -> minecraft.setScreen(new ItemSpecialTagScreen(this))));
+
+        if (hasBlade) {
+            addRenderableWidget(button(bx + slot++ * (bw + gap), by, bw, FOOTER_H,
                     "screen.infinitestats.item_editor.blade",
                     b -> minecraft.setScreen(new SlashBladeEditScreen(this))));
         }
+
+        addRenderableWidget(button(bx + slot++ * (bw + gap), by, bw, FOOTER_H,
+                "screen.infinitestats.item_editor.cancel", b -> onClose()));
+        addRenderableWidget(button(bx + slot * (bw + gap), by, bw, FOOTER_H,
+                "screen.infinitestats.item_editor.apply", b -> apply()));
     }
 
     private void addColumnWidgets(int col, int colX) {
@@ -274,7 +308,10 @@ public class ItemEditorScreen extends PanelScreen {
     void replaceAttr(AttrEntry old, String id, int op, double amount, String slot) {
         attrsChanged = true;
         int idx = attrs.indexOf(old);
-        CompoundTag original = idx < 0 ? ItemEditUtil.newAttribute(id, op, amount, slot) : old.original();
+        // 外部来源的条目（original == null）一旦被编辑就变成一条独立属性（新标识）写进物品，
+        // 与词缀本身叠加 —— 这是显式接管
+        CompoundTag original = idx < 0 || old.original() == null
+                ? ItemEditUtil.newAttribute(id, op, amount, slot) : old.original();
         AttrEntry entry = new AttrEntry(id, op, amount, slot, original);
         if (idx < 0) attrs.add(entry);
         else attrs.set(idx, entry);
@@ -450,9 +487,12 @@ public class ItemEditorScreen extends PanelScreen {
             if (isAttr) {
                 AttrEntry a = attrs.get(srcIdx);
                 if (hover) hoveredAttr = a;
+                int nameColor = a.injected() ? EditorUi.INFO : EditorUi.PRIMARY;
                 g.drawString(font, EditorUi.ellipsize(font, attrDisplayName(a.id()), LIST_W - 26),
-                        colX + 5, ry + 3, EditorUi.PRIMARY);
-                String info = OP_LABELS[clampOp(a.op())] + " " + EditorUi.amount(a.amount())
+                        colX + 5, ry + 3, nameColor);
+                String info = (a.injected() ? "§b" + Component.translatable(
+                        "screen.infinitestats.item_editor.injected").getString() + " §7· " : "")
+                        + OP_LABELS[clampOp(a.op())] + " " + EditorUi.amount(a.amount())
                         + " · " + slotLabel(a.slot());
                 g.drawString(font, EditorUi.ellipsize(font, info, LIST_W - 26),
                         colX + 5, ry + 12, EditorUi.SECONDARY);
@@ -504,7 +544,11 @@ public class ItemEditorScreen extends PanelScreen {
         lines.add("§7原始 ID: " + a.id());
         lines.add("§7操作: " + OP_LABELS[clampOp(a.op())] + "  §7数值: " + EditorUi.amount(a.amount()));
         lines.add("§7生效槽位: " + slotLabel(a.slot()));
-        EditorUi.tooltip(g, mx, my, lines, EditorUi.INFO);
+        if (a.injected()) {
+            lines.add("§b" + Component.translatable(
+                    "screen.infinitestats.item_editor.injected_hint").getString());
+        }
+        queueTooltip(g, mx, my, lines, EditorUi.INFO);
     }
 
     // ======================== 输入 ========================
@@ -512,6 +556,9 @@ public class ItemEditorScreen extends PanelScreen {
     @Override
     protected boolean onPanelClick(int mx, int my, int button) {
         if (button == 0) {
+            // 两列各有独立滚动条：先试拖动，命中就不进「按下行」的逻辑
+            if (beginColumnScrollbarDrag(mx, my)) return true;
+
             if (handleDelClick(mx, my)) return true;
 
             int col = colAt(mx);
@@ -533,6 +580,7 @@ public class ItemEditorScreen extends PanelScreen {
 
     @Override
     protected boolean onPanelDrag(int mx, int my, int button, int dragX, int dragY) {
+        if (button == 0 && updateScrollbarDrag(my)) return true;
         if (button == 0 && pressCol >= 0) {
             if (!dragging && (Math.abs(mx - pressX) > DRAG_THRESHOLD
                     || Math.abs(my - pressY) > DRAG_THRESHOLD)) {
@@ -555,6 +603,7 @@ public class ItemEditorScreen extends PanelScreen {
 
     @Override
     protected boolean onPanelRelease(int mx, int my, int button) {
+        if (button == 0 && endScrollbarDrag()) return true;
         if (button == 0 && pressCol >= 0) {
             if (dragging) {
                 if (dragTo >= 0 && dragTo != dragFrom) moveInList(dragCol, dragFrom, dragTo);
@@ -563,6 +612,24 @@ public class ItemEditorScreen extends PanelScreen {
             }
             resetPress();
             return true;
+        }
+        return false;
+    }
+
+    /**
+     * 尝试接管某一列滚动条上的按下事件。
+     * <p>
+     * 两个滚动条都在列右缘、几何一致，所以直接按列试探：命中哪一列就拖哪一列。
+     */
+    private boolean beginColumnScrollbarDrag(int mx, int my) {
+        for (int col = 0; col < 2; col++) {
+            final int c = col;
+            int max = c == 0 ? enchantMaxScroll : attrMaxScroll;
+            if (beginScrollbarDrag(mx, my, colX(c) + COL_W - EditorUi.SCROLL_W,
+                    topPos + LIST_Y, LIST_H - 2, scrollOf(c), max, VISIBLE_ROWS,
+                    v -> setScrollOf(c, v))) {
+                return true;
+            }
         }
         return false;
     }
@@ -628,8 +695,14 @@ public class ItemEditorScreen extends PanelScreen {
                     enchants.remove(srcIdx);
                     enchantsChanged = true;
                 } else {
-                    attrs.remove(srcIdx);
-                    attrsChanged = true;
+                    AttrEntry removed = attrs.remove(srcIdx);
+                    if (removed != null && removed.injected()) {
+                        // 外部来源只从列表移开，物品上仍然存在（它本来就不在物品数据里）
+                        setStatus(Component.translatable(
+                                "screen.infinitestats.item_editor.injected_kept").getString());
+                    } else {
+                        attrsChanged = true;
+                    }
                 }
                 rebuildViews();
                 playClick();
@@ -701,7 +774,10 @@ public class ItemEditorScreen extends PanelScreen {
                 for (int i = 0; i < attrs.size(); i++) {
                     AttrEntry cur = attrs.get(i);
                     if (cur.id().equals(a.id()) && cur.op() == a.op() && cur.slot().equals(a.slot())) {
-                        attrs.set(i, new AttrEntry(a.id(), a.op(), a.amount(), a.slot(), cur.original()));
+                        // 命中的是外部条目（original == null）时另起一个新标识：粘贴属于显式接管
+                        CompoundTag orig = cur.original() != null ? cur.original()
+                                : ItemEditUtil.newAttribute(a.id(), a.op(), a.amount(), a.slot());
+                        attrs.set(i, new AttrEntry(a.id(), a.op(), a.amount(), a.slot(), orig));
                         merged = true;
                         break;
                     }
@@ -759,6 +835,8 @@ public class ItemEditorScreen extends PanelScreen {
         if (attrsChanged) {
             at = new ListTag();
             for (AttrEntry a : attrs) {
+                // 外部来源的条目没有被显式接管时不写回，避免每开一次编辑器就固化一份词缀
+                if (a.original() == null) continue;
                 CompoundTag entry = a.original().copy();
                 ItemEditUtil.updateAttribute(entry, a.op(), a.amount(), a.slot());
                 at.add(entry);
@@ -864,6 +942,7 @@ public class ItemEditorScreen extends PanelScreen {
             }
             if (cur.length() > 0) lines.add(cur.toString());
         }
+        // 静态工具方法（无屏幕实例）：直接画，调用点都在面板坐标系里
         EditorUi.tooltip(g, mx, my, lines, EditorUi.ACCENT);
     }
 }

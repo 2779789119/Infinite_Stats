@@ -100,7 +100,7 @@
 
 ### 面板与界面
 
-- 属性面板 `P`、HUD `H`、物品编辑器 `O`、EMC 转化桌 `V`、成就 / 统计 `U`、传送点 `Y`，随身工具入口在属性面板内部
+- 属性面板 `P`、HUD `H`、物品编辑器 `O`、随身工作台 `G`、成就 / 统计 `U`、传送点 `Y`，其余随身工具入口在属性面板内部
 - **生物面板**：解锁后获得一根**生物观察杖**（带标记的木棍），手持它右键任意生物即可打开该生物的面板
   - **属性**页：列出它身上的**全部属性**（生命上限 / 护甲 / 攻击力 / 移动速度……连其它模组添加的属性也在内），
     悬停某行能看到注册名、基础值 / 最终值、**默认值**与取值范围；**左键点一行即可改它的基础值**
@@ -128,9 +128,9 @@
 | `=`（等号键） | 快速加点 |
 | `H` | 开关 HUD 显示 |
 | `O` | 打开物品编辑器 |
-| `V` | 打开 EMC 转化桌 |
 | `U` | 打开成就 / 统计面板 |
 | `Y` | 打开传送点面板 |
+| `G` | 打开随身工作台 |
 
 > 以上均可在「设置 → 按键绑定 → 无限加点」中修改。
 > 随身工具面板、天气控制、区块强加载、自动入库、效果过滤等界面从**属性面板内的按钮**进入。
@@ -138,16 +138,6 @@
 ---
 
 ## 💻 命令
-
-### EMC 等价交换（`/emc`）
-
-| 命令 | 说明 | 权限 |
-|---|---|---|
-| `/emc` | 查看自己当前的 EMC 值 | 玩家 |
-| `/emc learn` | 学习手持物品 | 玩家 |
-| `/emc learn all` | 学习背包中所有可学习的物品 | 玩家 |
-| `/emc give <玩家> <数量>` | 给予指定玩家 EMC | 管理员（≥2） |
-| `/emc reload` | 重新加载 EMC 数据库 | 管理员（≥2） |
 
 ### 传送 / 随身工具（`/infstats`）
 
@@ -215,10 +205,7 @@
 | `GUI.featureDisableMode` | `keep` | 功能开关「关掉时」的执行模式（`keep` / `refund` / `hide`） |
 | `GUI.disabledStats` | `[]` | 全局默认关闭的属性列表 |
 | `Compatibility.enableAttributeDiscovery` | `true` | 自动发现其它模组属性（**需重启**） |
-| `EMC.emcEnabled` | `true` | 是否启用 EMC 系统 |
-| `EMC.emcLossRate` | `0.0` | EMC 转换损耗率（0 = 无损耗） |
 | `EMC.autoLearnProjectE` | `true` | ProjectE 自动学习开关 |
-| `EMC.emcFallbackValue` | `0` | 未知物品兜底 EMC（0 = 关闭） |
 | `TimeAccel.timeAccelRadius` | `4` | 「加速」属性的基础影响半径 |
 | `Furnace.furnaceSpeedCost` | `5` | 每级随身熔炉速度消耗的属性点 |
 | `Crafting.craftingMultiplierCost` | `5` | 每级随身工作台倍率消耗的属性点 |
@@ -263,7 +250,7 @@
 
 > 11 个 `portable_*`「随身工具」属性统一在**随身工具面板**里用左键解锁 / 右键关闭，因此不再显示在属性面板。
 
-`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 掉落幸运 · `double_loot` 双倍战利品 · `item_magnet` **[开关]** 物品磁铁 · `xp_magnet` **[开关]** 经验磁铁 · `auto_deposit` **[开关]** 自动入库 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `auto_fish` **[开关]** 自动钓鱼 · `instant_bite` **[开关]** 立即咬钩 · `breed_no_cooldown` **[开关]** 繁殖无冷却 · `instant_grow` **[开关]** 一键长大 · `crafting_bonus` 合成加成 · `auto_repair` **[开关]** 自动修理 · `repair_amount` 修理量 · `use_speed` 使用速度 · `bow_draw_speed` 拉弓加速 · `cooldown_reduction` 冷却缩减 · `projectile_tracking` **[开关]** 弹射物追踪 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `no_thirst` **[开关]** 免口渴 · `no_temperature` **[开关]** 免体温 · `always_eat` **[开关]** 满饱食度进食 · `invisibility` **[开关]** 隐身 · `keep_inventory` 死亡不掉落 · `keep_xp` **[开关]** 死亡不掉经验 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `enchant_limit` **[开关]** 附魔上限突破 · `weather_control` **[开关]** 天气控制 · `chunk_loader` **[开关]** 区块强加载 · `entity_panel` **[开关]** 生物面板 · `trade_discount` 村民交易折扣 · `trade_restock` **[开关]** 交易即刻补货 · `anvil_cost` 铁砧经验减免 · `pe_auto_learn` **[开关]** PE 自动学习 · `emc_learn_bonus` EMC 学习收益 · `emc_extract_discount` EMC 转化折扣 · `infinite_energy` **[开关]** 无限能源（FE/RF） · `sbw_infinite_health` **[开关]** 无限载具血量 · `goety_infinite_soul` **[开关]** 无限灵魂能量 · `create_infinite_stress` **[开关]** 无限应力 · `infinite_mana` **[开关]** 无限魔力
+`luck` 幸运 · `mining_speed` 挖掘速度 · `mining_level` 挖掘等级 · `reach` 方块交互距离 · `entity_reach` 实体交互距离 · `xp_gain` 经验获取 · `loot_luck` 掉落幸运 · `double_loot` 双倍战利品 · `item_magnet` **[开关]** 物品磁铁 · `xp_magnet` **[开关]** 经验磁铁 · `auto_deposit` **[开关]** 自动入库 · `vein_miner` **[开关]** 连锁挖掘 · `auto_smelt` **[开关]** 自动冶炼 · `auto_fish` **[开关]** 自动钓鱼 · `instant_bite` **[开关]** 立即咬钩 · `breed_no_cooldown` **[开关]** 繁殖无冷却 · `instant_grow` **[开关]** 一键长大 · `crafting_bonus` 合成加成 · `auto_repair` **[开关]** 自动修理 · `use_speed` 使用速度 · `bow_draw_speed` 拉弓加速 · `cooldown_reduction` 冷却缩减 · `projectile_tracking` **[开关]** 弹射物追踪 · `no_invincibility_frames` **[开关]** 取消无敌帧 · `night_vision` **[开关]** 夜视 · `water_breathing` **[开关]** 水下呼吸 · `no_hunger` **[开关]** 免饥饿 · `no_thirst` **[开关]** 免口渴 · `no_temperature` **[开关]** 免体温 · `always_eat` **[开关]** 满饱食度进食 · `invisibility` **[开关]** 隐身 · `keep_inventory` 死亡不掉落 · `keep_xp` **[开关]** 死亡不掉经验 · `time_accel` **[开关]** 时间加速 · `time_accel_radius` 加速半径 · `cross_dimension_teleport` **[开关]** 跨维度传送 · `fixed_point_teleport` **[开关]** 定点传送 · `enchant_limit` **[开关]** 附魔上限突破 · `weather_control` **[开关]** 天气控制 · `chunk_loader` **[开关]** 区块强加载 · `entity_panel` **[开关]** 生物面板 · `trade_discount` 村民交易折扣 · `trade_restock` **[开关]** 交易即刻补货 · `anvil_cost` 铁砧经验减免 · `pe_auto_learn` **[开关]** PE 自动学习 · `infinite_energy` **[开关]** 无限能源（FE/RF） · `sbw_infinite_health` **[开关]** 无限载具血量 · `goety_infinite_soul` **[开关]** 无限灵魂能量 · `create_infinite_stress` **[开关]** 无限应力 · `infinite_mana` **[开关]** 无限魔力
 
 ### 🌐 外部属性（动态）
 
@@ -287,7 +274,7 @@
 
 ## 🔍 拼音搜索
 
-属性面板 / 效果过滤器 / 物品编辑器 / 物品选择 / 入库过滤 / EMC 转化桌 / 成就统计面板的搜索框均支持拼音，例如 `zsj` → 钻石剑、`tiezh` → 铁砧。
+属性面板 / 效果过滤器 / 物品编辑器 / 物品选择 / 入库过滤 / 成就统计面板的搜索框均支持拼音，例如 `zsj` → 钻石剑、`tiezh` → 铁砧。
 
 拼音能力来自**外部库**，装下列任意一个即可（本模组**不内置**拼音库）：
 
@@ -320,11 +307,10 @@ NeoForge **ModDevGradle** 工程，Java 21。
 src/main/java/com/infinitestats/
 ├── InfiniteStats.java     # 模组入口
 ├── Config.java            # NeoForge 配置
-├── client/                # GUI 与客户端逻辑（属性面板 / HUD / 物品编辑器 / EMC / 传送点 / 随身工具 / 生物面板 / 成就…）
+├── client/                # GUI 与客户端逻辑（属性面板 / HUD / 物品编辑器 / 传送点 / 随身工具 / 生物面板 / 成就…）
 ├── command/               # 服务端命令（/infstats）
 ├── compat/                # 兼容层（存储网络桥接、机械动力 / 诡厄巫法 / 卓越前线 / 传送石碑 / Curios / 拼音…）
 ├── crafting/              # 随身工作台
-├── emc/                   # EMC 等价交换
 ├── event/                 # 事件总线（属性效果总入口）
 ├── furnace/               # 随身熔炉 / 燃料缓冲
 ├── handler/               # 属性效果处理器（攻击 / 防御 / 机动 / 功能 / 时间加速 / 冷却…）

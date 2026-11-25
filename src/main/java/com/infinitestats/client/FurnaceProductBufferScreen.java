@@ -48,6 +48,17 @@ public class FurnaceProductBufferScreen extends AbstractContainerScreen<FurnaceP
                 .pos(leftPos + 116, topPos + 171).size(52, 18)
                 .tooltip(Tooltip.create(Component.translatable("gui.infinitestats.furnace.product_rs_deposit_tip")))
                 .build());
+        // 网络优先级（成品仓作用域）—— 与主版本一致，从本界面直达
+        this.addRenderableWidget(Button.builder(
+                        Component.translatable("gui.infinitestats.network.priority_short"),
+                        b -> {
+                            if (minecraft != null) {
+                                minecraft.setScreen(new NetworkPriorityScreen(
+                                        this, com.infinitestats.stats.PlayerStats.SCOPE_PRODUCT_BUFFER));
+                            }
+                        })
+                .bounds(leftPos + 116, topPos + 3, 52, 14)
+                .build());
     }
 
     @Override

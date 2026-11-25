@@ -95,21 +95,21 @@ public final class Config {
     public static ModConfigSpec.DoubleValue VILLAGER_DISCOUNT_CAP;
     /** 物品冷却缩减上限。 */
     public static ModConfigSpec.DoubleValue COOLDOWN_REDUCTION_CAP;
-    /** 「自动修复」每级每秒修复的耐久点。 */
-    public static ModConfigSpec.DoubleValue AUTO_REPAIR_PER_LEVEL;
     /** 弹射物追踪的视野锥余弦阈值。 */
     public static ModConfigSpec.DoubleValue PROJECTILE_TRACKING_CONE_COS;
     /** 「经验加成」总倍率上限（0 = 不设上限）。 */
     public static ModConfigSpec.DoubleValue XP_GAIN_CAP;
     /** 「经验加成」是否同时放大原版经验。 */
     public static ModConfigSpec.BooleanValue XP_GAIN_AFFECT_VANILLA;
+    /** 成就管理器是否只允许 OP（权限等级 2）改动。 */
+    public static ModConfigSpec.BooleanValue ACHIEVEMENT_MANAGER_REQUIRE_OP;
 
     // ========== 面板入口隐藏 ==========
 
     /**
      * 要隐藏的面板入口（面板 id 列表）。整合包作者用它把不想给玩家看到的界面藏起来。
      * <p>
-     * 可用 id：{@code stats} / {@code emc} / {@code item_editor} / {@code achievements} /
+     * 可用 id：{@code stats} / {@code item_editor} / {@code achievements} /
      * {@code waypoint} / {@code ore_vision} / {@code portable_tools} / {@code weather} /
      * {@code chunk_loader} / {@code vein_miner} / {@code entity_panel} / {@code debuff_filter}。
      * 隐藏后对应的快捷键不再生效（已经打开的界面不受影响）。
@@ -244,16 +244,8 @@ public final class Config {
 
     public static ModConfigSpec.BooleanValue ENABLE_ATTRIBUTE_DISCOVERY;
 
-    // ========== EMC 等价交换设置 ==========
-
-    public static ModConfigSpec.DoubleValue EMC_LOSS_RATE;
-    public static ModConfigSpec.BooleanValue EMC_ENABLED;
-
     // 等价交换（ProjectE）联动：仅当检测到 projecte 模组时才有实际作用
     public static ModConfigSpec.BooleanValue PE_AUTO_LEARN;
-
-    // 未知物品（无配方 / 锚点 / ProjectE 知识）的兜底 EMC 值；0 = 关闭（保持原行为）
-    public static ModConfigSpec.LongValue EMC_FALLBACK_VALUE;
 
     // ========== 时间加速设置（加速属性） ==========
 
@@ -466,9 +458,6 @@ public final class Config {
         COOLDOWN_REDUCTION_CAP = builder
                 .comment("物品冷却缩减上限（比例）。默认 1.0 = 可以把冷却直接压到 0。")
                 .defineInRange("cooldownReductionCap", 1.0D, 0.0D, 1.0D);
-        AUTO_REPAIR_PER_LEVEL = builder
-                .comment("「自动修复」每一级每秒修复的耐久点（0 级也至少按 1 点计算）。")
-                .defineInRange("autoRepairPerLevel", 1.0D, 0.0D, 1000.0D);
         PROJECTILE_TRACKING_CONE_COS = builder
                 .comment("弹射物追踪的视野锥余弦阈值：1.0 = 只追正前方，0.0 = 180° 全追，默认 0.5（约 ±60°）。")
                 .defineInRange("projectileTrackingConeCos", 0.5D, -1.0D, 1.0D);
@@ -578,7 +567,7 @@ public final class Config {
                 .defineList("disabledStats", List.<String>of(), o -> o instanceof String);
         HIDDEN_PANELS = builder
                 .comment("要隐藏的面板入口（面板 id 列表）。整合包作者用它把不想给玩家看到的界面藏起来。",
-                        "可用 id：stats / emc / item_editor / achievements / waypoint / ore_vision /",
+                        "可用 id：stats / item_editor / achievements / waypoint / ore_vision /",
                         "portable_tools / weather / chunk_loader / vein_miner / entity_panel / debuff_filter。",
                         "隐藏后对应的快捷键不再生效；已经打开的界面不受影响。",
                         "留空（默认）= 全部显示。")
@@ -588,6 +577,11 @@ public final class Config {
                         "隐藏后玩家看不到该页签，数字键也切不过去；已投入的点数仍然保留、效果照常生效。",
                         "留空（默认）= 显示全部分类。")
                 .defineList("hiddenCategories", List.<String>of(), o -> o instanceof String);
+        ACHIEVEMENT_MANAGER_REQUIRE_OP = builder
+                .comment("成就管理器是否只允许管理员（权限等级 2）授予 / 撤销成就。",
+                        "false（默认）= 任何玩家都能给自己发成就；",
+                        "true = 只有 OP 能改，普通玩家打开面板只能查看（按钮置灰、服务端也会拒绝请求）。")
+                .define("achievementManagerRequireOp", false);
         builder.pop();
 
         // 兼容性设置
@@ -600,17 +594,8 @@ public final class Config {
                 .define("enableAttributeDiscovery", true);
         builder.pop();
 
-        // EMC 等价交换设置
+        // 等价交换（ProjectE）联动设置
         builder.push("EMC");
-        EMC_ENABLED = builder
-                .comment("是否启用内置等价交换 (EMC) 系统。",
-                         "关闭后 EMC 转化桌 GUI 和命令将不可用。")
-                .define("emcEnabled", true);
-        EMC_LOSS_RATE = builder
-                .comment("EMC 转换损耗率 (0.0 = 无损耗，1.0 = 100%损耗)。",
-                         "学习物品时实际获得的 EMC = 物品EMC值 × (1 - lossRate)。",
-                         "例如 lossRate=0.2 时学习一个 100 EMC 的物品获得 80 EMC。")
-                .defineInRange("emcLossRate", 0.0, 0.0, 1.0);
         PE_AUTO_LEARN = builder
                 .comment("等价交换（ProjectE）联动：自动学习【全局主开关】。",
                          "仅在检测到 projecte 模组时生效；未安装 ProjectE 时无任何作用。",
@@ -618,12 +603,6 @@ public final class Config {
                          "解锁后拾取 / 合成的物品会自动加入 ProjectE 转化知识库。",
                          "关闭此开关则所有玩家（无论是否加点）的自动学习全部禁用。")
                 .define("autoLearnProjectE", true);
-        EMC_FALLBACK_VALUE = builder
-                .comment("未知物品（无任何配方 / 锚点 / ProjectE 知识）的兜底 EMC 值。",
-                         "设为 0（默认）表示保持原行为：无来源的物品不获得 EMC，无法被学习 / 转化。",
-                         "设为大于 0 的值（如 1）后，所有物品至少拥有该 EMC，从而可在 EMC 屏中统一被学习 / 转化。",
-                         "注意：此值会覆盖原矿等本应 0 EMC 的黑名单物品，可能改变平衡，请谨慎设置。")
-                .defineInRange("emcFallbackValue", 0L, 0L, 1_000_000_000_000L);
         builder.pop();
 
         // 时间加速设置

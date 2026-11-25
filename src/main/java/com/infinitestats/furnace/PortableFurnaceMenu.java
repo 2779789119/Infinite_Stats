@@ -1,6 +1,6 @@
 package com.infinitestats.furnace;
 
-import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.menu.ModMenuTypes;
 import com.infinitestats.Config;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;

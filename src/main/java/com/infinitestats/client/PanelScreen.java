@@ -175,6 +175,95 @@ public abstract class PanelScreen extends Screen {
     protected void renderPanelOverlay(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
     }
 
+    /**
+     * 排队一个提示框（原版外观），等<b>控件与覆盖层全部画完</b>后再绘制。
+     * <p>
+     * 直接在 {@link #renderPanel} 里画的话，随后绘制的按钮（含按钮文字）、状态条会盖在浮窗上 ——
+     * 表现就是「浮窗被文字压住」。传面板坐标，内部会换算成屏幕坐标并按单位矩阵绘制，
+     * 原版的边界避让才和真实屏幕一致（面板缩放 &lt;1 时也不会变小、偏向左上）。
+     *
+     * @param accent 已废弃（原版浮窗没有顶部彩线），保留只为不动各界面调用点
+     */
+    protected final void queueTooltip(GuiGraphics g, int panelX, int panelY,
+                                      java.util.List<String> lines, int accent) {
+        if (lines == null || lines.isEmpty()) return;
+        int screenX = toScreenX(panelX);
+        int screenY = toScreenY(panelY);
+        queuedTooltips.add(() -> {
+            var pose = g.pose();
+            pose.pushPose();
+            pose.last().pose().identity();
+            EditorUi.tooltip(g, screenX, screenY, lines, accent);
+            pose.popPose();
+        });
+    }
+
+    /**
+     * 排队一个<b>原版浮窗</b>（外观仍是原版灰底框，只借这条队列解决层级与坐标）。
+     *
+     * @param lines 已经折好行的文本（原版不会自己折行）
+     */
+    protected final void queueRawTooltip(GuiGraphics g, int panelX, int panelY,
+                                         java.util.List<net.minecraft.util.FormattedCharSequence> lines) {
+        if (lines == null || lines.isEmpty()) return;
+        int screenX = toScreenX(panelX);
+        int screenY = toScreenY(panelY);
+        queuedTooltips.add(() -> {
+            var pose = g.pose();
+            pose.pushPose();
+            pose.last().pose().identity();
+            EditorUi.vanillaTooltip(g, lines, screenX, screenY);
+            pose.popPose();
+        });
+    }
+
+    /** {@link #queueRawTooltip} 的 Component 版本（单段文本，内部换行交给原版）。 */
+    protected final void queueComponentTooltip(GuiGraphics g, int panelX, int panelY,
+                                               net.minecraft.network.chat.Component text) {
+        if (text == null) return;
+        int screenX = toScreenX(panelX);
+        int screenY = toScreenY(panelY);
+        queuedTooltips.add(() -> {
+            var pose = g.pose();
+            pose.pushPose();
+            pose.last().pose().identity();
+            EditorUi.vanillaTooltip(g, text, screenX, screenY);
+            pose.popPose();
+        });
+    }
+
+    /**
+     * 排队一个<b>原版物品提示框</b>（与 {@link #queueTooltip} 同一条队列）。
+     * <p>
+     * 物品提示的内容（名称 / 附魔 / 模组追加的说明）由原版收集，不能改写成纯文本，
+     * 所以仍交给 {@code GuiGraphics#renderTooltip}；但坐标必须换成屏幕坐标、姿态压成单位矩阵，
+     * 否则会跟着面板缩放一起缩小并偏向左上角（面板缩放 &lt;1 时特别明显）。
+     */
+    protected final void queueItemTooltip(GuiGraphics g, int panelX, int panelY,
+                                          net.minecraft.world.item.ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return;
+        int screenX = toScreenX(panelX);
+        int screenY = toScreenY(panelY);
+        queuedTooltips.add(() -> {
+            var pose = g.pose();
+            pose.pushPose();
+            pose.last().pose().identity();
+            EditorUi.itemTooltip(g, stack, screenX, screenY);
+            pose.popPose();
+        });
+    }
+
+    /** 本帧排队的提示框：全部画完之后统一执行，保证永远在最上层。 */
+    private final java.util.List<Runnable> queuedTooltips = new java.util.ArrayList<>();
+
+    private void flushQueuedTooltips() {
+        if (queuedTooltips.isEmpty()) return;
+        for (Runnable painter : queuedTooltips) {
+            painter.run();
+        }
+        queuedTooltips.clear();
+    }
+
     @Override
     public final void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         // 1.21 起 renderBackground 需要鼠标坐标与部分 tick
@@ -185,12 +274,14 @@ public abstract class PanelScreen extends Screen {
     }
 
     /**
-     * 按当前缩放把面板整体画出来（内容 → 控件 → 覆盖层）。
+     * 按当前缩放把面板整体画出来（内容 → 控件 → 覆盖层 → 提示框）。
      * 子类若需要"控件在内容下面"，可以在 {@link #renderPanel} 里调用 {@link #renderWidgets}。
      */
     private void drawPanel(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         int panelMouseX = toPanelX(mouseX);
         int panelMouseY = toPanelY(mouseY);
+
+        queuedTooltips.clear();
 
         var pose = g.pose();
         pose.pushPose();
@@ -199,7 +290,39 @@ public abstract class PanelScreen extends Screen {
         renderPanel(g, panelMouseX, panelMouseY, partialTick);
         if (baseRendersWidgets()) renderWidgets(g, panelMouseX, panelMouseY, partialTick);
         renderPanelOverlay(g, panelMouseX, panelMouseY, partialTick);
+        // 提示框最后画：内容层 / 控件 / 覆盖层都盖不住它
+        flushQueuedTooltips();
         pose.popPose();
+    }
+
+    /**
+     * <b>最顶层</b>绘制：由 {@code ScreenTopLayerMixin} 在 {@code Screen#renderWithTooltip} 的末尾
+     * 调用 —— 也就是原版画完延迟提示框之后，一帧里最后的一道工序。
+     *
+     * <h2>为什么自绘浮层必须画在这里</h2>
+     * 原版浮窗（控件 {@code Tooltip}、物品提示）不是界面自己画的：{@code AbstractWidget} 只是把提示
+     * 攒起来，{@code Screen#renderWithTooltip} 在 {@code render()} <b>返回之后</b>再画一次。
+     * 所以在 {@link #renderPanelOverlay} 里画的自绘浮层，理论上已经是最上面一层了 ——
+     * 但只要还有任何内容在本帧更晚提交（延迟提示、控件循环里的文字、裁剪区切换前的批次），
+     * 就会反过来压在它上面，表现就是「浮层被底下的文字穿透」。
+     * <p>
+     * 想画「绝对压在所有东西之上」的自绘浮层（例如下拉列表），就覆写这个方法：
+     * 它保证在 {@code render()} 与原版延迟提示都画完之后才执行。
+     * 坐标记得用 {@link #beginPanelPose} 换回面板坐标系。
+     */
+    public void renderTopLayer(GuiGraphics g, int screenMouseX, int screenMouseY, float partialTick) {
+    }
+
+    /** 进入面板姿态（平移 + 缩放），在 {@link #renderTopLayer} 里画自绘浮层前调用。 */
+    protected final void beginPanelPose(GuiGraphics g) {
+        g.pose().pushPose();
+        g.pose().translate(originX, originY, 0);
+        g.pose().scale(uiScale, uiScale, 1f);
+    }
+
+    /** 退出 {@link #beginPanelPose} 的姿态。 */
+    protected final void endPanelPose(GuiGraphics g) {
+        g.pose().popPose();
     }
 
     /** 绘制注册的控件（等价于原版 {@code Screen#render} 里的控件遍历）。 */
@@ -264,6 +387,69 @@ public abstract class PanelScreen extends Screen {
     private boolean badgeClicked(double mouseX, double mouseY) {
         int[] r = badgeRect();
         return mouseX >= r[0] && mouseX < r[0] + r[2] && mouseY >= r[1] && mouseY < r[1] + r[3];
+    }
+
+    // ======================== 统一滚动条拖动 ========================
+
+    // 拖动状态：按下时记下「鼠标 Y - 滑块顶端 Y」的抓取偏移，整个拖动过程保持不变，
+    // 之后每次从鼠标位置现算滑块位置（纯函数，无累加状态）——
+    // 这样滑块顶到轨道两端后偏移也不会失真，不会出现「拖到底再拖回来卡住 / 跳回原处」。
+    private boolean scrollbarDragging;
+    private int sbGrabOffset;
+    private int sbTrackY;
+    private int sbTrackH;
+    private int sbMaxScroll;
+    private int sbVisible;
+    private java.util.function.IntConsumer sbSetter;
+
+    /**
+     * 按下滚动条：命中轨道即开始拖动。
+     *
+     * @param trackX       轨道左边缘（面板坐标）
+     * @param trackY       轨道上边缘（面板坐标）
+     * @param trackH       轨道高度（面板坐标）
+     * @param currentScroll 当前滚动值（用来算抓取偏移）
+     * @param maxScroll    最大可滚动量（0 = 没有滚动条）
+     * @param visible      可见行数（决定滑块高度比例）
+     * @param setter       把新的滚动值写回界面
+     */
+    protected final boolean beginScrollbarDrag(int mouseX, int mouseY, int trackX, int trackY,
+                                               int trackH, int currentScroll, int maxScroll,
+                                               int visible, java.util.function.IntConsumer setter) {
+        if (maxScroll <= 0 || trackH <= 0) return false;
+        if (!EditorUi.onScrollbar(mouseX, mouseY, trackX, trackY, trackH)) return false;
+
+        scrollbarDragging = true;
+        sbTrackY = trackY;
+        sbTrackH = trackH;
+        sbMaxScroll = maxScroll;
+        sbVisible = visible;
+        sbSetter = setter;
+
+        // 抓住滑块本体 → 保持抓取偏移；点空白轨道 → 滑块直接跳到鼠标处（以中心对齐）
+        boolean onThumb = EditorUi.onScrollThumb(mouseY, trackY, trackH, currentScroll, maxScroll, visible);
+        sbGrabOffset = onThumb
+                ? mouseY - EditorUi.scrollThumbY(trackY, trackH, currentScroll, maxScroll, visible)
+                : EditorUi.scrollThumbH(trackH, maxScroll, visible) / 2;
+
+        setter.accept(EditorUi.scrollFromThumbTop(mouseY, sbGrabOffset, trackY, trackH, maxScroll, visible));
+        return true;
+    }
+
+    /** 拖动中：按鼠标位置刷新滚动值。 */
+    protected final boolean updateScrollbarDrag(int mouseY) {
+        if (!scrollbarDragging || sbSetter == null) return false;
+        sbSetter.accept(EditorUi.scrollFromThumbTop(
+                mouseY, sbGrabOffset, sbTrackY, sbTrackH, sbMaxScroll, sbVisible));
+        return true;
+    }
+
+    /** 松手：结束拖动。 */
+    protected final boolean endScrollbarDrag() {
+        if (!scrollbarDragging) return false;
+        scrollbarDragging = false;
+        sbSetter = null;
+        return true;
     }
 
     // ======================== 输入：换算 + 钩子 ========================

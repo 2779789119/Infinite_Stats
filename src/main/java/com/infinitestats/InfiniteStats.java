@@ -1,8 +1,7 @@
 package com.infinitestats;
 
 import com.infinitestats.command.ModServerCommands;
-import com.infinitestats.emc.EmcPlayerDataProvider;
-import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.menu.ModMenuTypes;
 import com.infinitestats.handler.HandlerRegistry;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStatsProvider;
@@ -53,9 +52,8 @@ public final class InfiniteStats {
 
         // 注册附加数据（Data Attachment）
         PlayerStatsProvider.ATTACHMENT_TYPES.register(modEventBus);
-        EmcPlayerDataProvider.ATTACHMENT_TYPES.register(modEventBus);
 
-        // 注册 EMC 菜单类型
+        // 注册自建菜单类型（随身工作台 / 熔炉 / 附魔台）
         ModMenuTypes.MENU_TYPES.register(modEventBus);
 
         // 模组信息日志

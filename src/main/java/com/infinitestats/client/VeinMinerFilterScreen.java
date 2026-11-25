@@ -62,6 +62,9 @@ public class VeinMinerFilterScreen extends PanelScreen {
 
     private EditBox searchField;
     private Button sideButton;
+    private Button clearBtn;
+    /** 「清空」会一次抹掉整份名单，需要二次点击确认。 */
+    private final ConfirmAction confirm = new ConfirmAction();
 
     public VeinMinerFilterScreen(VeinMinerConfig draft, Screen parent) {
         super(Component.translatable("screen.infinitestats.vein_filter"));
@@ -103,21 +106,32 @@ public class VeinMinerFilterScreen extends PanelScreen {
         sideButton = addRenderableWidget(Button.builder(sideLabel(), b -> switchSide())
                 .bounds(leftPos + GUI_W - EditorUi.GAP - 92, topPos + SEARCH_Y, 92, SEARCH_H).build());
 
-        addRenderableWidget(Button.builder(
+        clearBtn = addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.vein_filter.clear"),
-                        b -> {
-                            selected.clear();
-                            updateMaxScroll();
-                        })
-                .bounds(leftPos + EditorUi.GAP, topPos + GUI_H - 26, 80, 20).build());
+                        b -> requestClear())
+                .bounds(leftPos + EditorUi.GAP, topPos + GUI_H - 26, 48, 20).build());
+        // 批量：把当前筛选结果整批加入 / 移出（配合搜索框的 @模组 就是「按模组一次加入」）
+        addRenderableWidget(Button.builder(
+                        Component.translatable("screen.infinitestats.deposit_filter.add_all"),
+                        b -> massToggle(true))
+                .bounds(leftPos + 58, topPos + GUI_H - 26, 36, 20).build());
+        addRenderableWidget(Button.builder(
+                        Component.translatable("screen.infinitestats.deposit_filter.remove_all"),
+                        b -> massToggle(false))
+                .bounds(leftPos + 96, topPos + GUI_H - 26, 36, 20).build());
+        // 添加手持方块：手里拿着方块时一键加入 / 移出名单
+        addRenderableWidget(Button.builder(
+                        Component.translatable("screen.infinitestats.deposit_filter.add_held"),
+                        b -> toggleHeldBlock())
+                .bounds(leftPos + 134, topPos + GUI_H - 26, 72, 20).build());
         addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.vein_filter.done"),
                         b -> apply())
-                .bounds(leftPos + GUI_W / 2 - 40, topPos + GUI_H - 26, 80, 20).build());
+                .bounds(leftPos + 208, topPos + GUI_H - 26, 52, 20).build());
         addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.vein_filter.back"),
                         b -> onClose())
-                .bounds(leftPos + GUI_W - EditorUi.GAP - 80, topPos + GUI_H - 26, 80, 20).build());
+                .bounds(leftPos + 262, topPos + GUI_H - 26, 50, 20).build());
 
         rebuildFiltered();
     }
@@ -162,12 +176,23 @@ public class VeinMinerFilterScreen extends PanelScreen {
     /** 按搜索词过滤方块列表（只算一次，避免每帧遍历注册表里的上千个方块）。 */
     private void rebuildFiltered() {
         String needle = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        // @modid：只看某个模组的方块（配合「全加」就是按模组一次性加入白/黑名单）
+        String namespaceFilter = null;
+        if (needle.startsWith("@")) {
+            namespaceFilter = needle.substring(1).trim();
+            needle = "";
+        }
+
         List<String> out = new ArrayList<>();
         for (ResourceLocation id : BuiltInRegistries.BLOCK.keySet()) {
             if (id.getPath().equals("air")) continue;
             Block block = BuiltInRegistries.BLOCK.get(id);
             if (block == null || block == Blocks.AIR) continue;
 
+            if (namespaceFilter != null && !namespaceFilter.isEmpty()
+                    && !id.getNamespace().toLowerCase(Locale.ROOT).startsWith(namespaceFilter)) {
+                continue;
+            }
             String idText = id.toString();
             if (!needle.isEmpty() && !idText.toLowerCase(Locale.ROOT).contains(needle)
                     && !displayName(block).toLowerCase(Locale.ROOT).contains(needle)) {
@@ -193,11 +218,56 @@ public class VeinMinerFilterScreen extends PanelScreen {
         scroll = Math.max(0, Math.min(scroll, maxScroll));
     }
 
+    /**
+     * 批量加入 / 移出当前筛选结果。
+     * <p>
+     * 配上搜索框的 {@code @模组名} 就是「把这个模组的方块一次性全部加进名单」。
+     */
+    private void massToggle(boolean add) {
+        if (filtered.isEmpty()) return;
+
+        int changed = 0;
+        for (String id : filtered) {
+            boolean ok;
+            if (add) {
+                if (selected.size() >= MAX_ENTRIES) break;
+                ok = selected.add(id);
+            } else {
+                ok = selected.remove(id);
+            }
+            if (ok) changed++;
+        }
+        if (changed == 0) return;
+
+        updateMaxScroll();
+    }
+
+    /** 清空名单：第一次点只进入确认态，2.5 秒内再点才真的清空。 */
+    private void requestClear() {
+        if (selected.isEmpty()) return;
+        if (!confirm.confirm("clear")) return;
+        selected.clear();
+        updateMaxScroll();
+    }
+
     private void toggle(String id) {
         if (!selected.remove(id)) {
             if (selected.size() >= MAX_ENTRIES) return;
             selected.add(id);
         }
+    }
+
+    /** 「添加手持」：手里拿着方块时一键加入 / 移出名单（与主版本一致）。 */
+    private void toggleHeldBlock() {
+        var player = net.minecraft.client.Minecraft.getInstance().player;
+        if (player == null) return;
+        net.minecraft.world.item.ItemStack held = player.getMainHandItem();
+        if (held.isEmpty() || !(held.getItem() instanceof net.minecraft.world.item.BlockItem blockItem)) return;
+        net.minecraft.resources.ResourceLocation id =
+                net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(blockItem.getBlock());
+        if (id == null) return;
+        toggle(id.toString());
+        rebuildFiltered();
     }
 
     // ======================== 绘制 ========================
@@ -207,6 +277,13 @@ public class VeinMinerFilterScreen extends PanelScreen {
 
         EditorUi.panel(g, leftPos, topPos, GUI_W, GUI_H);
         EditorUi.title(g, font, leftPos, topPos, GUI_W, title.getString());
+
+        // 底部「清空」的二次确认态：第一次点后按钮直接变成「确认？」
+        if (clearBtn != null) {
+            clearBtn.setMessage(Component.translatable(confirm.isConfirming("clear")
+                    ? "screen.infinitestats.ui.confirm"
+                    : "screen.infinitestats.vein_filter.clear"));
+        }
 
         String count = Component.translatable("screen.infinitestats.vein_filter.count",
                 selected.size(), MAX_ENTRIES).getString();
@@ -257,7 +334,7 @@ public class VeinMinerFilterScreen extends PanelScreen {
             lines.add(selected.contains(id)
                     ? "§b" + Component.translatable("screen.infinitestats.vein_filter.click_remove").getString()
                     : "§b" + Component.translatable("screen.infinitestats.vein_filter.click_add").getString());
-            EditorUi.tooltip(g, mouseX, mouseY, lines, EditorUi.ACCENT);
+            queueTooltip(g, mouseX, mouseY, lines, EditorUi.ACCENT);
         }
 
     }
@@ -268,6 +345,11 @@ public class VeinMinerFilterScreen extends PanelScreen {
 
     @Override
     protected boolean onPanelClick(int mouseX, int mouseY, int button) {
+        if (button == 0 && beginScrollbarDrag(mouseX, mouseY,
+                leftPos + GUI_W - 4 - EditorUi.SCROLL_W, topPos + LIST_Y, LIST_H,
+                scroll, maxScroll, visRows(), v -> scroll = Math.max(0, Math.min(maxScroll, v)))) {
+            return true;
+        }
         int mx = mouseX - leftPos;
         int my = mouseY - topPos;
         int listX = leftPos + 4;
@@ -280,6 +362,16 @@ public class VeinMinerFilterScreen extends PanelScreen {
             }
         }
         return false;   // 未命中时交回基类，继续派发给控件
+    }
+
+    @Override
+    protected boolean onPanelDrag(int mouseX, int mouseY, int button, int dragX, int dragY) {
+        return button == 0 && updateScrollbarDrag(mouseY);
+    }
+
+    @Override
+    protected boolean onPanelRelease(int mouseX, int mouseY, int button) {
+        return button == 0 && endScrollbarDrag();
     }
 
     @Override

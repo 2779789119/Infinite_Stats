@@ -1,6 +1,6 @@
 package com.infinitestats.crafting;
 
-import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.menu.ModMenuTypes;
 import net.minecraft.world.Container;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.player.Inventory;

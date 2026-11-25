@@ -1,4 +1,4 @@
-package com.infinitestats.emc;
+package com.infinitestats.menu;
 
 import com.infinitestats.InfiniteStats;
 import com.infinitestats.crafting.PortableCraftingMenu;
@@ -7,20 +7,22 @@ import com.infinitestats.furnace.FurnaceFuelBufferMenu;
 import com.infinitestats.furnace.FurnaceOrePriorityMenu;
 import com.infinitestats.furnace.FurnaceProductBufferMenu;
 import com.infinitestats.furnace.PortableFurnaceMenu;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.inventory.MenuType;
 import net.neoforged.neoforge.common.extensions.IMenuTypeExtension;
-import net.neoforged.neoforge.registries.DeferredRegister;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.neoforged.neoforge.registries.DeferredHolder;
+import net.neoforged.neoforge.registries.DeferredRegister;
 
+/**
+ * 本模组自建菜单（{@code MenuType}）的注册表。
+ * <p>
+ * 原本挂在 {@code com.infinitestats.emc} 包里，EMC 系统移除后独立出来 ——
+ * 随身工作台 / 熔炉 / 附魔台这几个界面与 EMC 无关，不该跟着一起消失。
+ */
 public final class ModMenuTypes {
 
     public static final DeferredRegister<MenuType<?>> MENU_TYPES =
             DeferredRegister.create(BuiltInRegistries.MENU, InfiniteStats.MODID);
-
-    public static final DeferredHolder<MenuType<?>, MenuType<EmcMenu>> EMC_MENU =
-            MENU_TYPES.register("emc_menu", () -> IMenuTypeExtension.create(
-                    (windowId, inv, data) -> new EmcMenu(windowId, inv)));
 
     public static final DeferredHolder<MenuType<?>, MenuType<PortableFurnaceMenu>> PORTABLE_FURNACE_MENU =
             MENU_TYPES.register("portable_furnace_menu", () -> IMenuTypeExtension.create(

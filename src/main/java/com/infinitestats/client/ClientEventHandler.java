@@ -1,8 +1,7 @@
 package com.infinitestats.client;
 
 import com.infinitestats.InfiniteStats;
-import com.infinitestats.emc.EmcMenu;
-import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.menu.ModMenuTypes;
 import com.infinitestats.crafting.PortableCraftingMenu;
 import com.infinitestats.furnace.PortableFurnaceMenu;
 import com.infinitestats.furnace.FurnaceFuelBufferMenu;
@@ -10,6 +9,7 @@ import com.infinitestats.furnace.FurnaceOrePriorityMenu;
 import com.infinitestats.client.PortableFurnaceScreen;
 import com.infinitestats.client.FurnaceOrePriorityScreen;
 import com.infinitestats.handler.CooldownHandler;
+import com.infinitestats.handler.UtilityHandler;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
@@ -25,6 +25,7 @@ import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
@@ -42,6 +43,32 @@ import net.neoforged.fml.common.EventBusSubscriber;
  */
 @EventBusSubscriber(modid = InfiniteStats.MODID, value = Dist.CLIENT)
 public final class ClientEventHandler {
+
+    // ========== 生物观察杖：右键空气打开「附近生物列表」 ==========
+
+    /**
+     * 手持生物观察杖右键空气 → 打开附近生物列表。
+     * <p>
+     * 右键空气只有客户端能感知（原版不发服务端包），所以界面上直接本地开；
+     * 列表里的实体也是客户端已有的追踪数据。点选之后才由
+     * {@code EntityPanelRequestPacket} 走服务端校验并下发权威的开关状态。
+     */
+    @SubscribeEvent
+    public static void onRightClickEmpty(
+            net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.RightClickEmpty event) {
+        if (event.getHand() != net.minecraft.world.InteractionHand.MAIN_HAND) return;
+        Minecraft mc = Minecraft.getInstance();
+        LocalPlayer player = mc.player;
+        if (player == null || event.getEntity() != player) return;
+        if (mc.screen != null) return;
+        if (!com.infinitestats.util.EntityPanelWand.isWand(event.getItemStack())) return;
+
+        boolean active = PlayerStatsProvider.of(player)
+                .map(stats -> stats.isToggleActive(com.infinitestats.util.EntityPanelWand.STAT_ID))
+                .orElse(false);
+        if (!active) return;
+        mc.setScreen(new EntityPickerScreen());
+    }
 
     // ========== 使用速度加速（客户端动画同步） ==========
 
@@ -105,6 +132,25 @@ public final class ClientEventHandler {
     public static void onClientPlayerTick(net.neoforged.neoforge.event.tick.PlayerTickEvent.Post event) {
         if (!event.getEntity().level().isClientSide) return;
         var player = event.getEntity();
+
+        // 死亡界面兜底：服务端已经把人救回来了（客户端血量已恢复），但死亡包先一步到、
+        // DeathScreen 已经挂在屏幕上 —— 不收掉就是「角色活着、界面卡死、怪物继续围殴」。
+        // 真死时客户端血量恒为 0，这里不会误关；正常重生由原版 Respawn 包收尾。
+        var mc = Minecraft.getInstance();
+        if (mc.screen instanceof net.minecraft.client.gui.screens.DeathScreen && !player.isDeadOrDying()) {
+            mc.setScreen(null);
+            // 顺带把死亡动画的计时清掉，否则尸体会在原地保持倒地姿势直到 20 tick
+            player.deathTime = 0;
+        }
+
+        // 效果过滤的双端清扫：服务端那份（DefenseHandler）只能动服务端的效果表，
+        // 客户端这张表被别的模组写过 / 丢过 remove 包时，只有本地也扫一遍才清得掉。
+        PlayerStatsProvider.of(player).ifPresent(stats -> {
+            sweepBlockedEffects(player, stats);
+            // 白名单（保护）模式的客户端一半：被本地删掉时按快照写回
+            applyClientProtectedEffects(player, stats);
+        });
+
         var effects = player.getActiveEffects();
         if (effects.isEmpty()) return;
         for (MobEffectInstance inst : new java.util.ArrayList<>(effects)) {
@@ -113,6 +159,136 @@ public final class ClientEventHandler {
                 player.removeEffect(inst.getEffect());
             }
         }
+    }
+
+    // ========== 效果过滤：客户端本地清扫 ==========
+
+    /**
+     * 在客户端本地清扫「效果过滤」黑名单效果。
+     * <p>
+     * 服务端的清扫（{@code DefenseHandler#applyDebuffImmunity}）只能动服务端那张效果表。只要效果
+     * 不是由服务端加进来的、或者服务端删掉之后又被补回客户端本地表（别的模组在客户端写效果、
+     * 客户端侧的额外施加、丢掉 remove 包留下的鬼影），服务端清多少次客户端都还挂着 ——
+     * 界面上「当前生效中：∞」读的正是本地这张表，于是表现为「名单里明明勾了，就是清不掉」。
+     * <p>
+     * 这里补上另一半：<b>只删本地效果表，不发包、不动服务端数据</b>，服务端仍由自己的清扫与
+     * {@code hardRemoveEffect} 兜底，两端各管各的，不会互相打架。
+     * <p>
+     * 前置条件与服务端完全一致（开关 + 黑名单非空 + 条目命中），因此白名单（保护）模式下
+     * {@code shouldBlockEffect} 恒为 false，不会误删受保护的效果。
+     */
+    private static void sweepBlockedEffects(Player player, PlayerStats stats) {
+        if (!stats.isToggleActive("debuff_immunity") || !stats.hasBlockingEffects()) return;
+
+        var map = player.getActiveEffectsMap();
+        if (map.isEmpty()) return;
+
+        // 遍历副本再删：直接边遍历边改会踩 ConcurrentModificationException
+        for (var effect : new java.util.ArrayList<>(map.keySet())) {
+            if (effect == null) continue;
+            ResourceLocation key = net.minecraft.core.registries.BuiltInRegistries.MOB_EFFECT
+                    .getKey(effect.value());
+            if (key == null) continue;
+            String id = key.toString();
+
+            // 本模组自己维持的 Utility 效果（夜视 / 隐身 / 幸运）不参与过滤
+            if (com.infinitestats.event.StatEventHandler.isOwnUtilityEffect(stats, id)) continue;
+            if (!stats.shouldBlockEffect(id)) continue;
+
+            if (player.removeEffect(effect)) continue;
+            // 被 MobEffectEvent.Remove 驳回（与服务端 hardRemoveEffect 同理）：直接删本地表。
+            // 客户端不涉及发包，但属性修饰符与两个显示标志要手工补回。
+            MobEffectInstance removed = player.removeEffectNoUpdate(effect);
+            if (removed == null) continue;
+            effect.value().removeAttributeModifiers(player.getAttributes());
+            player.setInvisible(player.hasEffect(MobEffects.INVISIBILITY));
+            player.setGlowingTag(player.hasEffect(MobEffects.GLOWING));
+        }
+    }
+
+    // ========== 效果过滤：白名单（保护）的客户端一半 ==========
+
+    /**
+     * 客户端侧的保护快照：效果 ID → 最后一次观察到的实例状态与剩余时长。
+     * <p>
+     * 与服务端 {@code PlayerStats#protectedSnapshots} 各自独立 —— 服务端那份是权威（时长以服务端实例为准），
+     * 这一份只负责「本地被删掉时不让它消失」。
+     */
+    private static final java.util.Map<String, PlayerStats.ProtectedEffect> CLIENT_PROTECTED =
+            new java.util.HashMap<>();
+
+    /** 上面这份快照属于哪个客户端实体；换维度 / 重生会换实体，此时必须整体作废。 */
+    private static int protectedSnapshotOwner = -1;
+
+    /**
+     * 白名单（保护）模式的客户端清扫：受保护效果在本地被删掉时，按快照写回本地效果表。
+     * <p>
+     * 服务端 {@code DefenseHandler#applyProtectedEffects} 的补回只看服务端那张表：
+     * 服务端还在、客户端没了（别的模组在客户端本地删表、remove / update 包丢失）时
+     * {@code player.hasEffect(...)} 仍为 true，服务端不会补也不会发包，客户端会一直缺着。
+     * <p>
+     * 安全边界：只在白名单模式且名单非空时运行；换实体立即作废快照；死亡时不写回；
+     * 剩余时长递减到 0 视为自然结束；写回用 {@code forceAddEffect} 绕过事件拦截。
+     */
+    private static void applyClientProtectedEffects(Player player, PlayerStats stats) {
+        if (!stats.hasProtectedEffects()) {
+            CLIENT_PROTECTED.clear();
+            protectedSnapshotOwner = -1;
+            return;
+        }
+
+        // 换维度 / 重生 → 本地实体换了，旧快照不能搬过去（服务端会重新下发这些效果）
+        if (player.getId() != protectedSnapshotOwner) {
+            CLIENT_PROTECTED.clear();
+            protectedSnapshotOwner = player.getId();
+        }
+        if (player.isDeadOrDying()) return;
+
+        // 1) 采样：还在身上的刷新快照（等级 / 粒子 / 剩余时长）
+        for (MobEffectInstance inst : player.getActiveEffects()) {
+            if (inst.getEffect() == null) continue;
+            ResourceLocation key = net.minecraft.core.registries.BuiltInRegistries.MOB_EFFECT
+                    .getKey(inst.getEffect().value());
+            if (key == null) continue;
+            String id = key.toString();
+            if (!stats.isProtectedEffect(id)) continue;
+            CLIENT_PROTECTED.computeIfAbsent(id, k -> new PlayerStats.ProtectedEffect()).capture(inst);
+        }
+
+        // 2) 补回：快照里有、本地却没了 = 被外力从客户端表里删掉，按剩余时长写回
+        java.util.Iterator<java.util.Map.Entry<String, PlayerStats.ProtectedEffect>> it =
+                CLIENT_PROTECTED.entrySet().iterator();
+        while (it.hasNext()) {
+            java.util.Map.Entry<String, PlayerStats.ProtectedEffect> entry = it.next();
+            if (!stats.isProtectedEffect(entry.getKey())) {
+                // 玩家已取消保护
+                it.remove();
+                continue;
+            }
+            net.minecraft.core.Holder<net.minecraft.world.effect.MobEffect> effect =
+                    effectById(entry.getKey());
+            if (effect == null) {
+                // 效果随模组卸载消失，补不回来
+                it.remove();
+                continue;
+            }
+            if (player.hasEffect(effect)) continue;
+            if (!entry.getValue().tickDown()) {
+                // 剩余时长耗尽 = 自然结束，放手
+                it.remove();
+                continue;
+            }
+            player.forceAddEffect(entry.getValue().toInstance(effect), player);
+        }
+    }
+
+    /** 由效果 ID 反查效果；ID 非法或未注册时返回 {@code null}。 */
+    private static net.minecraft.core.Holder<net.minecraft.world.effect.MobEffect> effectById(String id) {
+        ResourceLocation rl = ResourceLocation.tryParse(id);
+        if (rl == null) return null;
+        var effect = net.minecraft.core.registries.BuiltInRegistries.MOB_EFFECT.get(rl);
+        return effect == null ? null
+                : net.minecraft.core.registries.BuiltInRegistries.MOB_EFFECT.wrapAsHolder(effect);
     }
 
     // ========== 按键处理 ==========
@@ -154,12 +330,6 @@ public final class ClientEventHandler {
             mc.setScreen(new ItemEditorScreen());
         }
 
-        // 打开 EMC 转化桌
-        while (ClientSetup.OPEN_EMC_KEY.consumeClick()) {
-            if (mc.screen != null) break;
-            if (com.infinitestats.Config.isPanelHidden("emc")) break;
-            NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket());
-        }
 
         // 打开成就管理器
         while (ClientSetup.OPEN_ACHIEVEMENTS_KEY.consumeClick()) {
@@ -173,6 +343,20 @@ public final class ClientEventHandler {
             if (mc.screen != null) break;
             if (com.infinitestats.Config.isPanelHidden("waypoint")) break;
             mc.setScreen(new WaypointScreen());
+        }
+
+        // 打开随身工作台：已解锁直接开面板，未解锁时打开「随身工具」页去解锁
+        while (ClientSetup.OPEN_PORTABLE_CRAFTING_KEY.consumeClick()) {
+            if (mc.screen != null) break;
+            if (com.infinitestats.Config.isPanelHidden("portable_tools")) break;
+            boolean unlocked = PlayerStatsProvider.of(mc.player)
+                    .map(stats -> stats.isToggleActive("portable_crafting"))
+                    .orElse(false);
+            if (unlocked) {
+                NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.CraftingOpenPacket());
+            } else {
+                mc.setScreen(new PortableToolsScreen());
+            }
         }
     }
 
@@ -199,9 +383,12 @@ public final class ClientEventHandler {
         PlayerStatsProvider.of(player).ifPresent(stats -> {
             var map = player.getActiveEffectsMap();
             if (stats.isToggleActive("night_vision")) {
-                map.put(MobEffects.NIGHT_VISION, new MobEffectInstance(
-                        MobEffects.NIGHT_VISION,
-                        MobEffectInstance.INFINITE_DURATION, 0, false, false, true));
+                // 只有「当前那条不是我们放的无限夜视」时才写：稳态下每 tick 不再新建实例
+                if (!UtilityHandler.isOurInfiniteEffect(map.get(MobEffects.NIGHT_VISION))) {
+                    map.put(MobEffects.NIGHT_VISION, new MobEffectInstance(
+                            MobEffects.NIGHT_VISION,
+                            MobEffectInstance.INFINITE_DURATION, 0, false, false, true));
+                }
                 // 移除黑暗效果，防止其压制夜视视觉
                 map.remove(MobEffects.DARKNESS);
             } else {
@@ -320,8 +507,7 @@ public final class ClientEventHandler {
 
         @SubscribeEvent
         public static void onRegisterMenuScreens(RegisterMenuScreensEvent event) {
-            // 注册 EMC 转化桌等屏幕（客户端侧 MenuType → Screen 映射）
-            event.register(ModMenuTypes.EMC_MENU.get(), EmcScreen::new);
+            // 注册自建菜单的屏幕（客户端侧 MenuType → Screen 映射）
             event.register(ModMenuTypes.PORTABLE_FURNACE_MENU.get(), PortableFurnaceScreen::new);
             event.register(ModMenuTypes.FURNACE_FUEL_BUFFER_MENU.get(), FurnaceFuelBufferScreen::new);
             event.register(ModMenuTypes.FURNACE_PRODUCT_BUFFER_MENU.get(), FurnaceProductBufferScreen::new);

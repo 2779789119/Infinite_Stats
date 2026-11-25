@@ -177,9 +177,6 @@ public class DebuffFilterScreen extends PanelScreen {
     private final List<int[]> rowRects = new ArrayList<>();
     private final List<int[]> catBtnRects = new ArrayList<>();
 
-    private boolean scrollbarDragging;
-    private int scrollbarDragStartY;
-    private int scrollbarDragStartOffset;
 
     public DebuffFilterScreen() {
         super(Component.translatable("screen.infinitestats.debuff_filter"));
@@ -681,7 +678,7 @@ public class DebuffFilterScreen extends PanelScreen {
                     x + 6, ly + 6, EditorUi.SECONDARY);
         }
 
-        EditorUi.scrollbar(g, mx, my, leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W,
+        EditorUi.scrollbar(g, mx, my, scrollbarTrackX(),
                 ly, LIST_H - 2, scrollOffset, maxScroll, VISIBLE_ROWS);
     }
 
@@ -716,7 +713,7 @@ public class DebuffFilterScreen extends PanelScreen {
         lines.add("§8" + entry.id());
         lines.add("§8" + Component.translatable("screen.infinitestats.debuff_filter.tooltip_click").getString());
 
-        EditorUi.tooltip(g, mx, my, lines, entry.color());
+        queueTooltip(g, mx, my, lines, entry.color());
     }
 
     /** 把 ARGB 映射到最接近的原版格式码，用于 tooltip 内的彩色片段。 */
@@ -765,11 +762,10 @@ public class DebuffFilterScreen extends PanelScreen {
                 return true;
             }
 
-            // 滚动条
-            if (maxScroll > 0 && isOnScrollbar(mx, my)) {
-                scrollbarDragging = true;
-                scrollbarDragStartY = my;
-                scrollbarDragStartOffset = scrollOffset;
+            // 滚动条拖动（几何与绘制同源，见 EditorUi#scrollbar）
+            if (beginScrollbarDrag(mx, my, scrollbarTrackX(), topPos + LIST_Y, LIST_H - 2,
+                    scrollOffset, maxScroll, VISIBLE_ROWS,
+                    v -> scrollOffset = clamp(v, 0, maxScroll))) {
                 return true;
             }
         }
@@ -778,28 +774,12 @@ public class DebuffFilterScreen extends PanelScreen {
 
     @Override
     protected boolean onPanelDrag(int mx, int my, int button, int dragX, int dragY) {
-        if (scrollbarDragging && maxScroll > 0) {
-            int[] slider = sliderRect();
-            int trackY = topPos + LIST_Y;
-            int trackH = LIST_H - 2;
-            int range = trackH - slider[3];
-            if (range > 0) {
-                int newY = my - (slider[1] - scrollbarDragStartY) - trackY;
-                float progress = (float) newY / range;
-                scrollOffset = clamp((int) (progress * maxScroll + 0.5f), 0, maxScroll);
-            }
-            return true;
-        }
-        return false;
+        return button == 0 && updateScrollbarDrag(my);
     }
 
     @Override
     protected boolean onPanelRelease(int mx, int my, int button) {
-        if (scrollbarDragging) {
-            scrollbarDragging = false;
-            return true;
-        }
-        return false;
+        return button == 0 && endScrollbarDrag();
     }
 
     @Override
@@ -811,22 +791,9 @@ public class DebuffFilterScreen extends PanelScreen {
         return false;
     }
 
-    /** 与 {@link EditorUi#scrollbar} 使用同一套几何计算，保证拖动与绘制一致。 */
-    private int[] sliderRect() {
-        int sx = leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
-        int sy = topPos + LIST_Y;
-        int h = LIST_H - 2;
-        int sliderH = Math.min(h, Math.max(16,
-                (int) ((float) VISIBLE_ROWS / (maxScroll + VISIBLE_ROWS) * h)));
-        int sliderY = maxScroll > 0 ? sy + (h - sliderH) * scrollOffset / maxScroll : sy;
-        return new int[]{sx, sliderY, EditorUi.SCROLL_W, sliderH};
-    }
-
-    private boolean isOnScrollbar(int mx, int my) {
-        int[] slider = sliderRect();
-        int trackX = leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
-        return mx >= trackX - 2 && mx < trackX + EditorUi.SCROLL_W + 2
-                && my >= topPos + LIST_Y && my < topPos + LIST_Y + LIST_H - 2;
+    /** 滚动条轨道左缘（面板坐标）：绘制与命中判定共用一个来源。 */
+    private int scrollbarTrackX() {
+        return leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W;
     }
 
     // ======================== 键盘输入 ========================

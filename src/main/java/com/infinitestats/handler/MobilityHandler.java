@@ -14,6 +14,24 @@ import net.minecraft.world.phys.Vec3;
  */
 public class MobilityHandler implements StatEffectHandler {
 
+    /** 原版飞行速度基准（{@code Abilities#flyingSpeed} 默认值）。 */
+    private static final float VANILLA_FLY_SPEED = 0.05f;
+
+    /**
+     * 能力包兜底补发周期（tick）。
+     * <p>
+     * 客户端 {@code LocalPlayer} 在若干路径上会被重建，{@code Abilities} 回到默认值
+     * （{@code mayfly=false}）：{@code teleportTo} 类跨维度（命令、多数模组传送器）、
+     * 部分模组的重生 / 换角色流程。这些路径<b>不补发</b> {@code ClientboundPlayerAbilitiesPacket}，
+     * 而授权方只在「服务端状态变化」时发包 —— 服务端仍是 {@code mayfly=true}，永远觉得自己不用发，
+     * 客户端却一直是 {@code false}，表现就是「能飞的角色怎么按都不起来」，且所有依赖
+     * {@code mayfly} 的模组飞行一起失效。
+     * <p>
+     * 这里按周期把服务端真实能力补发一次，让客户端自愈。周期取 100 tick（5 秒）；
+     * 发包本身不改服务端任何字段，不会和其它模组的授权抢状态。
+     */
+    private static final int FLIGHT_RESYNC_INTERVAL = 100;
+
     @Override
     public String getId() {
         return "mobility";
@@ -26,9 +44,13 @@ public class MobilityHandler implements StatEffectHandler {
 
     @Override
     public void onTick(ServerPlayer player, PlayerStats stats, long tickCount) {
-        // 每5tick更新飞行状态和跨越高度
-        if (tickCount % 5 == 0) {
-            updateFlight(player, stats, false);
+        // 每 5 tick 更新飞行状态与跨越高度
+        int interval = 5;
+        if (tickCount % interval == 0) {
+            // 兜底补发窗口：一个补发周期内必然命中且只命中一次
+            long period = Math.max(FLIGHT_RESYNC_INTERVAL, interval);
+            boolean resyncDue = tickCount % period < interval;
+            updateFlight(player, stats, resyncDue);
             updateStepHeight(player, stats);
         }
 
@@ -79,14 +101,20 @@ public class MobilityHandler implements StatEffectHandler {
      */
     private void updateFlight(ServerPlayer player, PlayerStats stats, boolean forceSync) {
         updateFlightSpeed(player, stats, forceSync);
-        if (player.isCreative() || player.isSpectator()) return;
+
+        if (player.isCreative() || player.isSpectator()) {
+            // 创造 / 旁观的能力由原版维护，绝不改字段；只在需要时把当前真实能力补发下去，
+            // 覆盖 teleportTo 类跨维度不带能力包的路径
+            if (forceSync) player.onUpdateAbilities();
+            return;
+        }
 
         boolean wantFly = stats.isToggleActive("fly");
         boolean weProvided = stats.isProviding("fly");
 
         if (wantFly) {
             // 平时只在能力状态真正变化时同步，避免周期性发包干扰客户端主导的 flying 状态；
-            // forceSync 用于覆盖客户端 LocalPlayer 被重建后的能力重置
+            // forceSync（关键时刻 + 周期兜底）用于覆盖客户端 LocalPlayer 被重建后的能力重置
             boolean needSync = forceSync || !player.getAbilities().mayfly || !weProvided;
             player.getAbilities().mayfly = true;
             stats.setProviding("fly", true);
@@ -96,16 +124,24 @@ public class MobilityHandler implements StatEffectHandler {
             player.getAbilities().flying = false;
             stats.setProviding("fly", false);
             player.onUpdateAbilities();
+        } else if (forceSync && player.getAbilities().mayfly) {
+            // 飞行能力来自其它模组：它们同样只在「状态变化」时发包，客户端被重建后不会自愈。
+            // 这里按服务端真实状态补发一次 —— 只读不改，不抢任何模组的授权
+            player.onUpdateAbilities();
         }
     }
 
+    /**
+     * 服务端侧同步飞行速度（真正的幅度由客户端 {@code ClientEventHandler#syncFlySpeed} 保证）。
+     * <p>
+     * 基准固定为原版默认值 0.05，<b>不再</b>从当前 abilities 读取后缓存：
+     * {@code Abilities} 的 flySpeed 会被写进玩家 NBT，缓存"当前值"作为基准会导致
+     * 每次重新登录都按倍率复利放大（0.05 → 0.25 → 1.25 …）。
+     */
     private void updateFlightSpeed(ServerPlayer player, PlayerStats stats, boolean forceSync) {
         float bonus = stats.getStatValue("fly_speed");
-        String key = "infinitestats.base_fly_speed";
-        var data = player.getPersistentData();
         if (bonus != 0) {
-            if (!data.contains(key)) data.putFloat(key, player.getAbilities().getFlyingSpeed());
-            float speed = Math.max(0, data.getFloat(key) * (1.0f + bonus));
+            float speed = Math.max(0, VANILLA_FLY_SPEED * (1.0f + bonus));
             // forceSync：客户端飞行速度同样会在 LocalPlayer 重建时被重置回 0.05
             if (forceSync || player.getAbilities().getFlyingSpeed() != speed) {
                 player.getAbilities().setFlyingSpeed(speed);
@@ -113,8 +149,9 @@ public class MobilityHandler implements StatEffectHandler {
             }
             stats.setProviding("fly_speed", true);
         } else if (stats.isProviding("fly_speed")) {
-            player.getAbilities().setFlyingSpeed(data.contains(key) ? data.getFloat(key) : 0.05f);
-            data.remove(key);
+            player.getAbilities().setFlyingSpeed(VANILLA_FLY_SPEED);
+            // 清理旧版本缓存的基准值，避免老存档残留
+            player.getPersistentData().remove("infinitestats.base_fly_speed");
             stats.setProviding("fly_speed", false);
             player.onUpdateAbilities();
         }

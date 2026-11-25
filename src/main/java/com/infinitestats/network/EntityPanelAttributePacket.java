@@ -79,6 +79,12 @@ public final class EntityPanelAttributePacket {
             if (holder.is(Attributes.MAX_HEALTH)) {
                 living.setHealth(Math.min(living.getHealth(), living.getMaxHealth()));
             }
+
+            // 这条属性正被锁着时，把锁的目标一起更新成新值 ——
+            // 否则下一 tick 就被压回旧目标，玩家会以为输入框坏了
+            com.infinitestats.handler.AttributeLockHandler.onAttributeEdited(
+                    living, msg.attributeId.toString(), instance.getValue(), instance.getBaseValue());
+            NetworkHandler.sendEntityPanelLocks(player, target);
         });
         ctx.get().setPacketHandled(true);
     }

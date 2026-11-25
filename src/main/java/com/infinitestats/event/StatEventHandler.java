@@ -157,6 +157,7 @@ public final class StatEventHandler {
                 // 同一 tick 继续往下掉，冷却没走完就真的没救了。脱困不消耗冷却。
                 if (DefenseHandler.handleVoidEscape(player, stats, true)) {
                     event.setCanceled(true);
+                    stats.clearDeathStarted();
                     player.displayClientMessage(
                             net.minecraft.network.chat.Component.translatable("message.infinitestats.auto_revive_void"),
                             true
@@ -171,6 +172,7 @@ public final class StatEventHandler {
                 byte lethalAvoid = DefenseHandler.tryLethalAvoid(player, stats, event.getSource());
                 if (lethalAvoid != DefenseHandler.AVOID_NONE) {
                     event.setCanceled(true);
+                    stats.clearDeathStarted();
                     player.displayClientMessage(
                             net.minecraft.network.chat.Component.translatable(
                                     lethalAvoid == DefenseHandler.AVOID_DODGE
@@ -183,6 +185,7 @@ public final class StatEventHandler {
                 }
                 if (DefenseHandler.handleAutoRevive(player, stats)) {
                     event.setCanceled(true);
+                    stats.clearDeathStarted();
                     player.displayClientMessage(
                             net.minecraft.network.chat.Component.translatable("message.infinitestats.auto_revive"),
                             true
@@ -193,6 +196,9 @@ public final class StatEventHandler {
                     NetworkHandler.syncToClient(player);
                     return;
                 }
+                // 走到这里说明本次死亡没有被本模组救下：打上「死亡流程已放行」标记。
+                // 与 PlayerDieMixin 里的标记互补 —— Mixin 万一注入失效，这里也不会漏标。
+                stats.markDeathStarted();
             }
         }
 
@@ -1467,10 +1473,13 @@ public final class StatEventHandler {
                                 net.minecraft.network.chat.Component.translatable("message.infinitestats.auto_revive"),
                                 true
                         );
-                        NetworkHandler.syncToClient(player);
+                        // 打标记而不是立刻发全量包：本 tick 里可能还有被动经验、属性改动等多次请求，
+                        // 统一在下面 flush 一次（一个玩家最多一包）。
+                        NetworkHandler.requestStatsSync(player);
                     }
                 });
             }
+            NetworkHandler.flushStatsSync(event.getServer());
         }
         // 后续模组取消伤害或提前返回时可能没有 LivingDamage；不将残余记录带入下一 tick。
         AttackHandler.clearPendingTrueDamage();
@@ -1724,6 +1733,8 @@ public final class StatEventHandler {
         AMMO_LESS_SHOTS.remove(event.getEntity().getUUID());
         MULTI_SHOT_TICKS.remove(event.getEntity().getUUID());
         AutoFish.forget(event.getEntity().getUUID());
+        // 自动入库的「背包已变更」标记与节流时间戳
+        com.infinitestats.compat.AutoDeposit.forget(event.getEntity());
     }
 
     // ========== 玩家重生 ==========
@@ -1733,6 +1744,8 @@ public final class StatEventHandler {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
 
         PlayerStatsProvider.of(player).ifPresent(stats -> {
+            // 新的一局：死亡流程标记随重生作废，否则复活包兜底会一直放行
+            stats.clearDeathStarted();
             NetworkHandler.syncToClient(player);
             HandlerRegistry.respawnAll(player, stats);
         });
@@ -1742,13 +1755,15 @@ public final class StatEventHandler {
 
     /**
      * 玩家实体克隆时保留所有数据（死亡重生、末地传送门返回等场景均会触发 Clone 事件）
-     * 不区分死亡/非死亡克隆，与 EMC 系统保持一致的处理方式
+     * 不区分死亡/非死亡克隆，两种场景走同一套复制逻辑
      */
     @SubscribeEvent
     public static void onPlayerClone(PlayerEvent.Clone event) {
         PlayerStatsProvider.of(event.getOriginal()).ifPresent(oldStats -> {
             PlayerStatsProvider.of(event.getEntity()).ifPresent(newStats -> {
                 newStats.copyFrom(oldStats);
+                // 死亡流程标记不过继给新实体：每局死亡最多换一次复活
+                if (event.isWasDeath()) newStats.clearDeathStarted();
                 // 保护快照：换维度（非死亡）必搬；死亡重生看玩家的「重生继承保护」开关
                 newStats.inheritProtection(oldStats, event.isWasDeath());
             });
@@ -1863,7 +1878,9 @@ public final class StatEventHandler {
 
     private static void addXpAndSync(ServerPlayer player, PlayerStats stats, long xp) {
         boolean leveledUp = stats.addExperience(xp);
-        NetworkHandler.syncToClient(player);
+        // 被动经验默认 20 tick 一次，原本每次都是「全量快照 + 连锁配置」；
+        // 这里改成 tick 末合并，经验条最多晚一个 tick（50ms）刷新，肉眼无感。
+        NetworkHandler.requestStatsSync(player);
         if (leveledUp) {
             player.displayClientMessage(
                     net.minecraft.network.chat.Component.translatable("message.infinitestats.level_up",

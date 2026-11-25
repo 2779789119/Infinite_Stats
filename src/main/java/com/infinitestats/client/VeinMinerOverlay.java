@@ -27,7 +27,6 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 
 import java.util.List;
-import java.util.Objects;
 
 /**
  * 「连锁范围显示」—— 用准星对着方块时，把这一下会连锁掉的方块描出边框。
@@ -152,9 +151,14 @@ public final class VeinMinerOverlay {
         cachedTargets = List.of();
     }
 
-    /** 只把「影响会连锁哪些方块」的项算进缓存键。 */
+    /**
+     * 只把「影响会连锁哪些方块」的项算进缓存键。
+     * <p>
+     * 这里原先每帧对名单集合做一次 {@code Objects.hash}（逐条字符串取 hash），
+     * 现在配置自己维护一个版本号，判断退化为一次 int 比较。
+     * 乘上对象身份是为了「换了一份配置对象」时必然重算（新对象的版本号从 0 开始）。
+     */
     private static int configHash(VeinMinerConfig cfg) {
-        return Objects.hash(cfg.getMatchMode(), cfg.isUseWhitelist(), cfg.getFilterList(),
-                cfg.getMaxBlocks(), cfg.getMaxRadius(), cfg.isDiagonal(), cfg.isRequireCorrectTool());
+        return System.identityHashCode(cfg) * 31 + cfg.matchingRevision();
     }
 }

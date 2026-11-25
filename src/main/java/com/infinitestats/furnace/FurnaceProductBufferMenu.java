@@ -2,7 +2,7 @@ package com.infinitestats.furnace;
 
 import com.infinitestats.compat.NetworkHandle;
 import com.infinitestats.compat.NetworkIO;
-import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.menu.ModMenuTypes;
 
 import java.util.List;
 import com.infinitestats.stats.PlayerStats;

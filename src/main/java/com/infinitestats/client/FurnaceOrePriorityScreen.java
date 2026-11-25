@@ -130,6 +130,11 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
     private static final int CLEAR_Y = 44;
     private static final int CLEAR_W = 42;
     private static final int CLEAR_H = 16;
+    /** 「全加」：把右栏当前筛选结果一次加进优先列表（在清空按钮与搜索框之间）。 */
+    private static final int ADD_ALL_X = 156;
+    private static final int ADD_ALL_Y = 44;
+    private static final int ADD_ALL_W = 52;
+    private static final int ADD_ALL_H = 16;
 
     /** 底部分隔线与背包标签。 */
     private static final int SEP_Y = LIST_BOTTOM + 2;  // 164
@@ -165,6 +170,10 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
     /** 物品注册名 → 显示名 缓存（搜索过滤与行渲染复用）。 */
     private final Map<String, String> nameCache = new HashMap<>();
 
+    /** 正在拖动哪一栏的滚动条：0 = 无，1 = 左（优先列表），2 = 右（可用矿石）。 */
+    private int scrollBarDrag = 0;
+    /** 按下瞬间「鼠标 Y - 滑块顶端 Y」，整个拖动过程保持不变。 */
+    private int scrollBarGrab = 0;
     private int scrollL = 0;
     private int scrollR = 0;
 
@@ -310,6 +319,22 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
         sendUpdate();
     }
 
+    /**
+     * 把右栏<b>当前筛选结果</b>一次性加进优先列表。
+     * <p>
+     * 搜索框里输入模组名或矿石关键词后再点「全加」，就是「同类矿石一键全加」；
+     * 已经在列表里的会跳过，不会重复。
+     */
+    private void addAllAvailable() {
+        int added = 0;
+        for (String id : filteredAvailable()) {
+            if (id == null || id.isEmpty() || priorityView.contains(id)) continue;
+            priorityView.add(id);
+            added++;
+        }
+        if (added > 0) sendUpdate();
+    }
+
     private void sendUpdate() {
         // 清掉最近一次同步，避免服务器回包覆盖本地的乐观更新
         FurnaceOrePrioritySyncPacket.latest = null;
@@ -362,6 +387,22 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
         int relY = (int) mouseY - topPos;
 
         if (button == 0) {
+            // 0) 两栏滚动条：先接管，别让它落到行 / 槽位的命中区
+            int bar = scrollBarAt(relX, relY);
+            if (bar != 0 && scrollBarMax(bar) > 0) {
+                scrollBarDrag = bar;
+                int trackH = LIST_BOTTOM - LIST_TOP;
+                int max = scrollBarMax(bar);
+                int thumbH = EditorUi.scrollThumbH(trackH, max, LIST_ROWS);
+                int thumbY = EditorUi.scrollThumbY(LIST_TOP, trackH, scrollBarValue(bar), max, LIST_ROWS);
+                // 压在滑块上就保持抓取点，点在空白轨道才把滑块中心跳过去
+                scrollBarGrab = relY >= thumbY && relY < thumbY + thumbH
+                        ? relY - thumbY : thumbH / 2;
+                setScrollBarValue(bar, EditorUi.scrollFromThumbTop(relY, scrollBarGrab,
+                        LIST_TOP, trackH, max, LIST_ROWS));
+                return true;
+            }
+
             // 1) 顶部待炼仓矿石：点击直接加入优先列表
             if (relY >= RESERVE_ICON_Y && relY < RESERVE_ICON_Y + 16) {
                 int i = (relX - RESERVE_ICON_X) / RESERVE_STEP;
@@ -373,7 +414,12 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
             }
 
             // 2) 清空按钮
-            if (isOver(relX, relY, CLEAR_X, CLEAR_Y, CLEAR_W, CLEAR_H)) {
+            if (isOver(relX, relY, ADD_ALL_X, ADD_ALL_Y, ADD_ALL_W, ADD_ALL_H)) {
+            addAllAvailable();
+            return true;
+        }
+
+        if (isOver(relX, relY, CLEAR_X, CLEAR_Y, CLEAR_W, CLEAR_H)) {
                 if (!priorityView.isEmpty()) {
                     priorityView.clear();
                     sendUpdate();
@@ -439,6 +485,12 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (scrollBarDrag != 0) {
+            int relY = (int) mouseY - topPos;
+            setScrollBarValue(scrollBarDrag, EditorUi.scrollFromThumbTop(relY, scrollBarGrab,
+                    LIST_TOP, LIST_BOTTOM - LIST_TOP, scrollBarMax(scrollBarDrag), LIST_ROWS));
+            return true;
+        }
         if (dragIndex >= 0) {
             dragging = true;
             dragMouseX = mouseX;
@@ -450,6 +502,10 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (scrollBarDrag != 0) {
+            scrollBarDrag = 0;
+            return true;
+        }
         if (dragIndex >= 0) {
             if (dragging) {
                 int target = dropTargetAt(mouseY);
@@ -614,6 +670,9 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
 
         drawButton(g, CLEAR_X, CLEAR_Y, CLEAR_W, CLEAR_H, clearLabel.getString(),
                 relX, relY, !priorityView.isEmpty());
+        drawButton(g, ADD_ALL_X, ADD_ALL_Y, ADD_ALL_W, ADD_ALL_H,
+                Component.translatable("gui.infinitestats.furnace.ore_priority.add_all").getString(),
+                relX, relY, !filteredAvailable().isEmpty());
     }
 
     private void drawPriorityRows(GuiGraphics g, int relX, int relY) {
@@ -670,6 +729,31 @@ public class FurnaceOrePriorityScreen extends AbstractContainerScreen<FurnaceOre
 
         int color = enabled ? (hover ? 0xFFFFFFFF : 0xFFCFCFDA) : C_TEXT_OFF;
         g.drawString(font, label, x + (w - font.width(label)) / 2, y + (h - 8) / 2, color, false);
+    }
+
+    /** 命中哪一栏的滚动条：0 = 没命中，1 = 左栏，2 = 右栏（左右各放宽 3px 方便点中）。 */
+    private int scrollBarAt(int relX, int relY) {
+        if (relY < LIST_TOP || relY >= LIST_BOTTOM) return 0;
+        // 命中判定与 EditorUi 的绘制共用一套（含左右各 3px 的容差）：窄判定会让「拖不动」
+        if (EditorUi.onScrollbar(relX, relY, LEFT_SCROLL_X, LIST_TOP, LIST_BOTTOM - LIST_TOP)) return 1;
+        if (EditorUi.onScrollbar(relX, relY, RIGHT_SCROLL_X, LIST_TOP, LIST_BOTTOM - LIST_TOP)) return 2;
+        return 0;
+    }
+
+    private int scrollBarMax(int bar) {
+        int total = bar == 1 ? priorityView.size() : filteredAvailable().size();
+        return Math.max(0, total - LIST_ROWS);
+    }
+
+    private int scrollBarValue(int bar) {
+        return bar == 1 ? scrollL : scrollR;
+    }
+
+    private void setScrollBarValue(int bar, int value) {
+        int max = scrollBarMax(bar);
+        int v = Math.max(0, Math.min(max, value));
+        if (bar == 1) scrollL = v;
+        else scrollR = v;
     }
 
     private void drawScrollbar(GuiGraphics g, int x, int value, int total) {

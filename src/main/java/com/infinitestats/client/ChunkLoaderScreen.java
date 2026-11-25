@@ -47,11 +47,17 @@ public final class ChunkLoaderScreen extends PanelScreen {
     private EditBox zField;
     private Button prevPageBtn;
     private Button nextPageBtn;
+    private Button topUnloadBtn;
 
     private int listTop;
     private int page;
     private long lastVersion = -1;
     private final List<Button> rowButtons = new ArrayList<>();
+
+    /** 卸载强加载区块需要二次点击确认。 */
+    private final ConfirmAction confirm = new ConfirmAction();
+    /** 上一帧是否处于确认态：变了就重建行按钮，让「确认？」及时回退。 */
+    private boolean confirmPending;
 
     public ChunkLoaderScreen() {
         super(Component.translatable("gui.infinitestats.chunk.title"));
@@ -90,7 +96,7 @@ public final class ChunkLoaderScreen extends PanelScreen {
                         Component.translatable("gui.infinitestats.chunk.load"),
                         b -> submit(true))
                 .bounds(leftPos + 118, actionY, 52, 16).build());
-        addRenderableWidget(Button.builder(
+        topUnloadBtn = addRenderableWidget(Button.builder(
                         Component.translatable("gui.infinitestats.chunk.unload"),
                         b -> submit(false))
                 .bounds(leftPos + 176, actionY, 52, 16).build());
@@ -127,6 +133,13 @@ public final class ChunkLoaderScreen extends PanelScreen {
         if (lastVersion != ChunkLoaderSyncPacket.version) {
             lastVersion = ChunkLoaderSyncPacket.version;
             rebuildList();
+            return;
+        }
+        // 确认态超时 / 切换目标后要刷新行按钮文字
+        boolean pending = confirm.isPending();
+        if (pending != confirmPending) {
+            confirmPending = pending;
+            rebuildList();
         }
     }
 
@@ -148,9 +161,23 @@ public final class ChunkLoaderScreen extends PanelScreen {
             }
             return;
         }
+        if (!add && !confirm.confirm("chunk:top")) {
+            // 第一次点「卸载」只进入确认态，按钮文字在 renderPanel 里变成「确认？」
+            return;
+        }
         NetworkHandler.CHANNEL.sendToServer(new ChunkLoaderActionPacket(
                 add ? ChunkLoaderActionPacket.ACTION_ADD : ChunkLoaderActionPacket.ACTION_REMOVE,
                 blockX >> 4, blockZ >> 4));
+    }
+
+    /** 行内卸载：第一次点只进入确认态，2.5 秒内再点才真的卸载。 */
+    private void requestUnload(int cx, int cz, long packed) {
+        if (!confirm.confirm("chunk:" + packed)) {
+            rebuildList();
+            return;
+        }
+        NetworkHandler.CHANNEL.sendToServer(new ChunkLoaderActionPacket(
+                ChunkLoaderActionPacket.ACTION_REMOVE, cx, cz));
     }
 
     private static int parseCoord(EditBox field) {
@@ -199,10 +226,12 @@ public final class ChunkLoaderScreen extends PanelScreen {
             long packed = list.get(idx);
             final int cx = ChunkPos.getX(packed);
             final int cz = ChunkPos.getZ(packed);
+            boolean confirming = confirm.isConfirming("chunk:" + packed);
             Button unload = Button.builder(
-                            Component.translatable("gui.infinitestats.chunk.unload"),
-                            b -> NetworkHandler.CHANNEL.sendToServer(new ChunkLoaderActionPacket(
-                                    ChunkLoaderActionPacket.ACTION_REMOVE, cx, cz)))
+                            Component.translatable(confirming
+                                    ? "screen.infinitestats.ui.confirm"
+                                    : "gui.infinitestats.chunk.unload"),
+                            b -> requestUnload(cx, cz, packed))
                     .bounds(leftPos + GUI_WIDTH - 68, listTop + i * ROW_H, 52, 14)
                     .build();
             addRenderableWidget(unload);
@@ -262,6 +291,13 @@ public final class ChunkLoaderScreen extends PanelScreen {
 
         g.drawString(font, Component.translatable("gui.infinitestats.chunk.hint").getString(),
                 leftPos + 16, topPos + GUI_HEIGHT - 40, EditorUi.SECONDARY);
+
+        // 顶部「卸载」的二次确认态：第一次点后按钮直接变成「确认？」
+        if (topUnloadBtn != null) {
+            topUnloadBtn.setMessage(Component.translatable(confirm.isConfirming("chunk:top")
+                    ? "screen.infinitestats.ui.confirm"
+                    : "gui.infinitestats.chunk.unload"));
+        }
     }
 
     @Override

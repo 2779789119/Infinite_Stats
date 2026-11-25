@@ -108,6 +108,9 @@ public class PortableInfuserScreen extends AbstractContainerScreen<PortableInfus
     /** 上次见到的物品：靠它发现「物品换了 / 附魔生效回传了」并整表重算。 */
     private ItemStack cachedItem = ItemStack.EMPTY;
     private int scroll;
+    /** 是否正在拖滚动条；{@code scrollBarGrab} = 按下时鼠标与滑块顶端的偏移。 */
+    private boolean scrollBarDragging;
+    private int scrollBarGrab;
     private PortableInfuser.Payment payment = PortableInfuser.Payment.LEVELS;
 
     private Button applyButton;
@@ -305,8 +308,28 @@ public class PortableInfuserScreen extends AbstractContainerScreen<PortableInfus
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        // 滚动条在列表右缘、压在行命中区之内，必须先接管
+        if (startScrollBarDrag(mouseX, mouseY, button)) return true;
         if (handleListClick(mouseX, mouseY, button)) return true;
         return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (scrollBarDragging) {
+            updateScrollBarDrag(mouseY);
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (scrollBarDragging) {
+            scrollBarDragging = false;
+            return true;
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
     }
 
     private boolean handleListClick(double mouseX, double mouseY, int button) {
@@ -418,15 +441,48 @@ public class PortableInfuserScreen extends AbstractContainerScreen<PortableInfus
     }
 
     private void drawScrollbar(GuiGraphics gfx, int x0, int y0) {
-        int total = enchantments.size();
-        if (total <= VISIBLE_ROWS) return;
-        int trackX = x0 + LIST_X + LIST_W - 4;
-        gfx.fill(trackX, y0 + LIST_Y + 1, trackX + 3, y0 + LIST_Y + LIST_H - 1, 0x40FFFFFF);
-        int thumbH = Math.max(12, (LIST_H - 2) * VISIBLE_ROWS / total);
-        int maxScroll = total - VISIBLE_ROWS;
-        int thumbY = y0 + LIST_Y + 1
-                + (maxScroll == 0 ? 0 : (LIST_H - 2 - thumbH) * scroll / maxScroll);
+        if (scrollBarMax() <= 0) return;
+        int trackX = x0 + scrollBarTrackX();
+        int trackY = y0 + scrollBarTrackY();
+        int trackH = scrollBarTrackH();
+        gfx.fill(trackX, trackY, trackX + 3, trackY + trackH, 0x40FFFFFF);
+        // 滑块几何与拖动命中同源（EditorUi），避免「画在这里、拖在那里」
+        int thumbH = EditorUi.scrollThumbH(trackH, scrollBarMax(), VISIBLE_ROWS);
+        int thumbY = EditorUi.scrollThumbY(trackY, trackH, scroll, scrollBarMax(), VISIBLE_ROWS);
         gfx.fill(trackX, thumbY, trackX + 3, thumbY + thumbH, 0xA0FFFFFF);
+    }
+
+    // ===== 滚动条拖动 =====
+
+    /** 滚动条轨道（相对界面左上角）。 */
+    private int scrollBarTrackX() { return LIST_X + LIST_W - 4; }
+    private int scrollBarTrackY() { return LIST_Y + 1; }
+    private int scrollBarTrackH() { return LIST_H - 2; }
+    private int scrollBarMax() { return Math.max(0, enchantments.size() - VISIBLE_ROWS); }
+
+    /** 按下：命中轨道就接管，压在滑块上时保持抓取点。 */
+    private boolean startScrollBarDrag(double mouseX, double mouseY, int button) {
+        if (button != 0 || scrollBarMax() <= 0) return false;
+        int relX = (int) mouseX - leftPos;
+        int relY = (int) mouseY - topPos;
+        int tx = scrollBarTrackX();
+        int ty = scrollBarTrackY();
+        int th = scrollBarTrackH();
+        // 命中判定与 EditorUi 的绘制共用一套（含左右各 3px 的容差）：窄判定会让「拖不动」
+        if (!EditorUi.onScrollbar(relX, relY, tx, ty, th)) return false;
+        int thumbH = EditorUi.scrollThumbH(th, scrollBarMax(), VISIBLE_ROWS);
+        int thumbY = EditorUi.scrollThumbY(ty, th, scroll, scrollBarMax(), VISIBLE_ROWS);
+        scrollBarGrab = relY >= thumbY && relY < thumbY + thumbH ? relY - thumbY : thumbH / 2;
+        scrollBarDragging = true;
+        updateScrollBarDrag(mouseY);
+        return true;
+    }
+
+    private void updateScrollBarDrag(double mouseY) {
+        int max = scrollBarMax();
+        int v = EditorUi.scrollFromThumbTop((int) mouseY - topPos, scrollBarGrab,
+                scrollBarTrackY(), scrollBarTrackH(), max, VISIBLE_ROWS);
+        scroll = Math.max(0, Math.min(max, v));
     }
 
     private static void drawSlotFrame(GuiGraphics gfx, int x, int y) {

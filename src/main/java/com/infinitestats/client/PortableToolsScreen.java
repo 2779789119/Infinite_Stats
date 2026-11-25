@@ -33,13 +33,14 @@ public class PortableToolsScreen extends PanelScreen {
     // ======================== 布局 ========================
 
     private static final int GUI_W = 380;
-    private static final int GUI_H = 292;
+    private static final int GUI_H = 272;
     private static final int HINT_Y = EditorUi.HEADER_H + 4;    // 28
     private static final int LIST_Y = HINT_Y + 22;              // 50
     private static final int ROW_H = 20;
-    /** 站点行数（新增站点时记得同步它）。 */
-    private static final int ROWS = 11;
-    private static final int FOOTER_Y = LIST_Y + ROWS * ROW_H + 8;
+    /** 可见行数：站点再多也只在列表里滚动，不会顶出面板。 */
+    private static final int VISIBLE_ROWS = 9;
+    private static final int LIST_H = VISIBLE_ROWS * ROW_H;
+    private static final int FOOTER_Y = LIST_Y + LIST_H + 8;
     private static final int FOOTER_H = 20;
 
     /** 一个随身站点：属性 id + 图标 + 打开方式。 */
@@ -71,6 +72,10 @@ public class PortableToolsScreen extends PanelScreen {
     private String statusMsg = "";
     private long statusUntil;
 
+    /** 当前滚到第几行（站点多于可见行数时用）。 */
+    private int scrollRow;
+    private int maxScrollRow;
+
     public PortableToolsScreen() {
         super(Component.translatable("screen.infinitestats.portable_tools"));
     }
@@ -92,10 +97,73 @@ public class PortableToolsScreen extends PanelScreen {
         leftPos = 0;
         topPos = 0;
 
+        // 底栏：全部解锁 / 全部关闭 / 完成
+        addRenderableWidget(Button.builder(
+                        Component.translatable("gui.infinitestats.tools.unlock_all"),
+                        b -> unlockAll())
+                .bounds(leftPos + EditorUi.GAP, topPos + FOOTER_Y, 100, FOOTER_H).build());
+        addRenderableWidget(Button.builder(
+                        Component.translatable("gui.infinitestats.tools.lock_all"),
+                        b -> lockAll())
+                .bounds(leftPos + EditorUi.GAP + 104, topPos + FOOTER_Y, 100, FOOTER_H).build());
         addRenderableWidget(Button.builder(
                         Component.translatable("screen.infinitestats.portable_tools.done"),
                         b -> onClose())
-                .bounds(leftPos + GUI_W / 2 - 40, topPos + FOOTER_Y, 80, FOOTER_H).build());
+                .bounds(leftPos + GUI_W - EditorUi.GAP - 80, topPos + FOOTER_Y, 80, FOOTER_H).build());
+
+        maxScrollRow = Math.max(0, STATIONS.size() - VISIBLE_ROWS);
+        scrollRow = net.minecraft.util.Mth.clamp(scrollRow, 0, maxScrollRow);
+    }
+
+    /**
+     * 一键解锁全部随身工具：点数够就一直开到底，不够就停在买不起的那一个，
+     * 已经解锁的跳过（不重复扣点）。
+     */
+    private void unlockAll() {
+        PlayerStats stats = statsOrNull();
+        if (stats == null) return;
+        playClick();
+        int unlocked = 0;
+        for (Station station : STATIONS) {
+            if (isActive(stats, station.statId())) continue;
+            StatType stat = StatType.fromId(station.statId());
+            if (stat == null) continue;
+            // 点数投满了却仍不可用 → 是「功能开关」把整条关掉了，跳过
+            if (stats.getStatLevel(stat) >= stat.getMaxLevel()) continue;
+
+            long needed = Math.max(1, stat.getMaxLevel() - stats.getStatLevel(stat));
+            if (stats.getAvailablePoints() < needed) continue;
+            if (!stats.addPoints(stat, needed)) continue;
+
+            NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.ModifyStatPacket(station.statId(), needed));
+            unlocked++;
+        }
+        setStatus(unlocked > 0
+                ? Component.translatable("gui.infinitestats.tools.unlocked_n", unlocked).getString()
+                : Component.translatable("message.infinitestats.not_enough_points").getString());
+        rebuildWidgets();
+    }
+
+    /** 一键关闭全部随身工具：把每条已经投进去的点数原样退回来。 */
+    private void lockAll() {
+        PlayerStats stats = statsOrNull();
+        if (stats == null) return;
+        playClick();
+        int locked = 0;
+        for (Station station : STATIONS) {
+            StatType stat = StatType.fromId(station.statId());
+            if (stat == null) continue;
+            long level = stats.getStatLevel(stat);
+            if (level <= 0) continue;
+            if (!stats.removePoints(stat, level)) continue;
+
+            NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.ModifyStatPacket(station.statId(), -level));
+            locked++;
+        }
+        if (locked > 0) {
+            setStatus(Component.translatable("gui.infinitestats.tools.locked_n", locked).getString());
+        }
+        rebuildWidgets();
     }
 
     @Override
@@ -195,14 +263,15 @@ public class PortableToolsScreen extends PanelScreen {
                 topPos + HINT_Y, EditorUi.GOLD);
 
         int listX = leftPos + EditorUi.GAP;
-        int listW = GUI_W - EditorUi.GAP * 2;
+        // 右侧让出滚动条那一列：否则「点行」的命中区会把滚动条一起吃掉
+        int listW = GUI_W - EditorUi.GAP * 2 - EditorUi.SCROLL_W;
         int ly = topPos + LIST_Y;
         EditorUi.dividerH(g, leftPos + 4, ly - 3, GUI_W - 8);
 
         hoveredRow = -1;
-        for (int i = 0; i < STATIONS.size(); i++) {
+        for (int i = scrollRow; i < Math.min(STATIONS.size(), scrollRow + VISIBLE_ROWS); i++) {
             Station station = STATIONS.get(i);
-            int y = ly + i * ROW_H;
+            int y = ly + (i - scrollRow) * ROW_H;
             boolean hover = mx >= listX && mx < listX + listW && my >= y && my < y + ROW_H - 2;
             if (hover) hoveredRow = i;
 
@@ -223,13 +292,18 @@ public class PortableToolsScreen extends PanelScreen {
                     active ? EditorUi.ACCENT : EditorUi.DANGER);
         }
 
-        EditorUi.dividerH(g, leftPos + 4, ly + ROWS * ROW_H - 2, GUI_W - 8);
+        if (maxScrollRow > 0) {
+            EditorUi.scrollbar(g, mx, my, leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W,
+                    ly, LIST_H - 2, scrollRow, maxScrollRow, VISIBLE_ROWS);
+        }
+
+        EditorUi.dividerH(g, leftPos + 4, ly + LIST_H - 2, GUI_W - 8);
 
         if (hoveredRow >= 0) {
             List<String> lines = new ArrayList<>();
             lines.add(Component.translatable(
                     "screen.infinitestats.portable_tools.row_tip").getString());
-            EditorUi.tooltip(g, mx, my, lines, EditorUi.INFO);
+            queueTooltip(g, mx, my, lines, EditorUi.INFO);
         }
 
         if (System.currentTimeMillis() < statusUntil) {
@@ -244,10 +318,26 @@ public class PortableToolsScreen extends PanelScreen {
     @Override
     protected boolean onPanelClick(int mouseX, int mouseY, int button) {
         if (button != 0) return false;
+        if (beginScrollbarDrag(mouseX, mouseY,
+                leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W, topPos + LIST_Y, LIST_H - 2,
+                scrollRow, maxScrollRow, VISIBLE_ROWS,
+                v -> scrollRow = net.minecraft.util.Mth.clamp(v, 0, maxScrollRow))) {
+            return true;
+        }
         int index = rowAt(mouseX, mouseY);
         if (index < 0) return false;
         openOrUnlock(STATIONS.get(index));
         return true;
+    }
+
+    @Override
+    protected boolean onPanelDrag(int mouseX, int mouseY, int button, int dragX, int dragY) {
+        return button == 0 && updateScrollbarDrag(mouseY);
+    }
+
+    @Override
+    protected boolean onPanelRelease(int mouseX, int mouseY, int button) {
+        return button == 0 && endScrollbarDrag();
     }
 
     /**
@@ -272,12 +362,21 @@ public class PortableToolsScreen extends PanelScreen {
      */
     private int rowAt(int mouseX, int mouseY) {
         int listX = leftPos + EditorUi.GAP;
-        int listW = GUI_W - EditorUi.GAP * 2;
+        // 与绘制同一口径：右侧让出滚动条那一列
+        int listW = GUI_W - EditorUi.GAP * 2 - EditorUi.SCROLL_W;
         int ly = topPos + LIST_Y;
         if (mouseX < listX || mouseX >= listX + listW) return -1;
-        if (mouseY < ly || mouseY >= ly + ROWS * ROW_H) return -1;
-        int index = (mouseY - ly) / ROW_H;
+        if (mouseY < ly || mouseY >= ly + LIST_H) return -1;
+        int index = scrollRow + (mouseY - ly) / ROW_H;
         return index >= 0 && index < STATIONS.size() ? index : -1;
+    }
+
+    @Override
+    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
+        if (maxScrollRow <= 0 || delta == 0) return false;
+        scrollRow = net.minecraft.util.Mth.clamp(scrollRow - (int) Math.signum(delta),
+                0, maxScrollRow);
+        return true;
     }
 
     @Override

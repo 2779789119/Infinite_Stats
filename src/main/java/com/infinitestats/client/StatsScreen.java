@@ -69,9 +69,6 @@ public class StatsScreen extends PanelScreen {
     private static final int BG_TAB_SELECTED = 0x80252540;
     private static final int BG_XP_BAR = 0x50252535;
     private static final int BG_XP_FILL = 0xFF4ADE80;
-    private static final int BG_SCROLLBAR_TRACK = 0x30151520;
-    private static final int BG_SCROLLBAR = 0x80555570;
-    private static final int BG_SCROLLBAR_HOVER = 0xB08888A0;
 
     private static final int TEXT_PRIMARY = 0xFFE2E8F0;
     private static final int TEXT_SECONDARY = 0xFF94A3B8;
@@ -97,9 +94,7 @@ public class StatsScreen extends PanelScreen {
     private int maxScroll;
     private int addAmountIndex; // 0..4 → x1,x10,x100,x1000,x10000
     private boolean maxMode; // true=一次加满
-    private boolean scrollbarDragging;
-    private int scrollbarDragStartY;
-    private int scrollbarDragStartOffset;
+
 
     /** 上次播放 click 音效的 tick 数（避免重复） */
     private long lastSoundTick;
@@ -141,6 +136,10 @@ public class StatsScreen extends PanelScreen {
     // ═══════ 搜索与收藏 ═══════
     private EditBox searchBox;
     private Button favoritesBtn;
+    /** 自动入库：顶部「存储优先级」与「入库过滤」两个入口（与主线同一行、同一位置）。 */
+    private Button depositBtn;
+    private Button depositFilterBtn;
+    private String depositLabelCache;
     private boolean favoritesOnly;
 
     private static final String[] ADD_LABELS = {"x1", "x10", "x100", "x1000", "x10000"};
@@ -223,7 +222,6 @@ public class StatsScreen extends PanelScreen {
         icon("bow_draw_speed", Items.CROSSBOW);
         icon("use_speed", Items.CLOCK);
         icon("auto_repair", Items.ANVIL);
-        icon("repair_amount", Items.IRON_INGOT);
         icon("time_accel", Items.CLOCK);
         icon("time_accel_radius", Items.COMPASS);
         icon("cooldown_reduction", Items.ENDER_EYE);
@@ -255,8 +253,6 @@ public class StatsScreen extends PanelScreen {
         icon("trade_discount", Items.EMERALD);
         icon("trade_restock", Items.EMERALD);
         icon("instant_grow", Items.WHEAT);
-        icon("emc_learn_bonus", Items.KNOWLEDGE_BOOK);
-        icon("emc_extract_discount", Items.KNOWLEDGE_BOOK);
         icon("auto_fish", Items.FISHING_ROD);
         icon("instant_bite", Items.COD);
         icon("breed_no_cooldown", Items.WHEAT);
@@ -272,6 +268,8 @@ public class StatsScreen extends PanelScreen {
         icon("sbw_infinite_health", Items.SHIELD);
         icon("enchant_limit", Items.ENCHANTED_BOOK);
         icon("anvil_cost", Items.ANVIL);
+        icon("entity_panel", Items.SPYGLASS);
+        icon("ore_vision", Items.DIAMOND_ORE);
     }
 
     private static void icon(String statId, net.minecraft.world.item.Item item) {
@@ -340,6 +338,16 @@ public class StatsScreen extends PanelScreen {
                 })
                 .pos(0, 0).size(14, 14).build());
 
+        // 自动入库：存储优先级 + 白 / 黑名单过滤（与搜索框同一行，右侧那一段）
+        depositBtn = addRenderableWidget(new PixelButton(0, 0, 10, 14,
+                Component.empty(), 0x503B5E8A, 0x805080B0, 0xFF94A3B8,
+                b -> openDepositPriority()));
+        depositFilterBtn = addRenderableWidget(new PixelButton(0, 0, 10, 14,
+                Component.translatable("gui.infinitestats.deposit.filter"),
+                0x503B5E8A, 0x805080B0, 0xFF94A3B8,
+                b -> openDepositFilter()));
+        updateDepositLabel();
+
         // 把搜索框和按钮放到正确位置（必须在 addRenderableWidget 之后）
         repositionSearch();
     }
@@ -368,12 +376,86 @@ public class StatsScreen extends PanelScreen {
             favoritesBtn.setX(132);
             favoritesBtn.setY(HEADER_H + TAB_H + 1);
         }
+        if (depositBtn != null) {
+            depositBtn.setX(150);
+            depositBtn.setY(HEADER_H + TAB_H + 1);
+            depositBtn.setWidth(176);
+        }
+        if (depositFilterBtn != null) {
+            depositFilterBtn.setX(330);
+            depositFilterBtn.setY(HEADER_H + TAB_H + 1);
+            depositFilterBtn.setWidth(GUI_WIDTH - SCROLLBAR_W - 8 - 330);
+        }
     }
 
     @Override
     public void tick() {
         super.tick();
         cachedStats = getPlayerStats();
+        updateDepositLabel();
+    }
+
+    /** 刷新顶部两个入库入口的文案与提示（数据没同步时显示占位）。 */
+    private void updateDepositLabel() {
+        if (depositBtn == null) return;
+        boolean available = cachedStats != null;
+        java.util.List<String> order = available
+                ? cachedStats.getEffectiveAutoDepositPriority() : java.util.List.of();
+        int filterSize = available ? cachedStats.getAutoDepositFilterList().size() : 0;
+        boolean whitelist = available && cachedStats.isAutoDepositUseWhitelist();
+
+        String signature = available + "|" + String.join(",", order) + "|" + filterSize + "|" + whitelist;
+        if (signature.equals(depositLabelCache)) return;
+        depositLabelCache = signature;
+
+        if (depositFilterBtn != null) {
+            depositFilterBtn.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
+                    Component.translatable(available
+                            ? "gui.infinitestats.deposit.filter_tooltip"
+                            : "gui.infinitestats.deposit.locked_tip",
+                            Component.translatable(whitelist
+                                    ? "gui.infinitestats.deposit.mode_whitelist"
+                                    : "gui.infinitestats.deposit.mode_blacklist").getString(),
+                            String.valueOf(filterSize))));
+        }
+        if (!available) {
+            depositBtn.setMessage(Component.translatable("gui.infinitestats.deposit.locked"));
+            depositBtn.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
+                    Component.translatable("gui.infinitestats.deposit.locked_tip")));
+            return;
+        }
+
+        StringBuilder orderText = new StringBuilder();
+        StringBuilder orderTip = new StringBuilder();
+        for (int i = 0; i < order.size(); i++) {
+            String name = storageShortName(order.get(i));
+            if (i > 0) {
+                orderText.append(" › ");
+                orderTip.append(" → ");
+            }
+            orderText.append(name);
+            orderTip.append(name);
+        }
+        depositBtn.setMessage(Component.translatable("gui.infinitestats.deposit.priority", orderText.toString()));
+        depositBtn.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
+                Component.translatable("gui.infinitestats.deposit.tooltip", orderTip.toString())));
+    }
+
+    private static String storageShortName(String key) {
+        return Component.translatable("gui.infinitestats.storage." + key).getString();
+    }
+
+    /** 打开存储优先级（自动入库作用域）。没加点也能先把顺序配好。 */
+    private void openDepositPriority() {
+        if (minecraft != null) {
+            minecraft.setScreen(new NetworkPriorityScreen(
+                    this, com.infinitestats.stats.PlayerStats.SCOPE_AUTO_DEPOSIT));
+        }
+    }
+
+    /** 打开自动入库白 / 黑名单。 */
+    private void openDepositFilter() {
+        if (minecraft != null) minecraft.setScreen(new AutoDepositFilterScreen());
     }
 
     private PlayerStats getPlayerStats() {
@@ -534,6 +616,9 @@ public class StatsScreen extends PanelScreen {
         // 恢复常驻组件（clearWidgets 会清掉）
         if (searchBox != null) addRenderableWidget(searchBox);
         if (favoritesBtn != null) addRenderableWidget(favoritesBtn);
+        if (depositBtn != null) addRenderableWidget(depositBtn);
+        if (depositFilterBtn != null) addRenderableWidget(depositFilterBtn);
+        repositionSearch();
     }
 
     /**
@@ -731,8 +816,6 @@ public class StatsScreen extends PanelScreen {
                         () -> { if (minecraft != null) minecraft.setScreen(new CrossDimScreen()); }),
                 new Nav("debuff_filter", Component.translatable("gui.infinitestats.nav.filter"),
                         this::openDebuffFilter),
-                new Nav("emc", Component.translatable("gui.infinitestats.nav.emc"),
-                        () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket())),
                 new Nav("achievements", Component.translatable("gui.infinitestats.nav.achievement"),
                         () -> { if (minecraft != null) minecraft.setScreen(new AchievementManagerScreen()); }),
                 new Nav("item_editor", Component.translatable("gui.infinitestats.nav.item_editor"),
@@ -745,8 +828,6 @@ public class StatsScreen extends PanelScreen {
                         () -> { if (minecraft != null) minecraft.setScreen(new WeatherScreen()); }),
                 new Nav("chunk_loader", Component.translatable("gui.infinitestats.nav.chunk_loader"),
                         () -> { if (minecraft != null) minecraft.setScreen(new ChunkLoaderScreen()); }),
-                new Nav("auto_deposit", Component.translatable("gui.infinitestats.nav.auto_deposit"),
-                        () -> { if (minecraft != null) minecraft.setScreen(new AutoDepositFilterScreen()); }),
                 new Nav("vein_miner", Component.translatable("gui.infinitestats.nav.vein"),
                         () -> { if (minecraft != null) minecraft.setScreen(new VeinMinerSettingsScreen()); }),
                 new Nav("ore_vision", Component.translatable("gui.infinitestats.nav.ore_vision"),
@@ -1346,21 +1427,10 @@ public class StatsScreen extends PanelScreen {
 
     private void renderScrollbar(GuiGraphics g, int l, int t, int mouseX, int mouseY) {
         if (maxScroll <= 0) return;
-
-        int sx = l + GUI_WIDTH - SCROLLBAR_W - 4;
-        int sy = contentTop;
-        int sh = contentHeight;
-
-        g.fill(sx, sy, sx + SCROLLBAR_W, sy + sh, BG_SCROLLBAR_TRACK);
-
-        int sliderH = Math.max(20, (int) ((float) MAX_VISIBLE / (maxScroll + MAX_VISIBLE) * sh));
-        int sliderY = sy + (sh - sliderH) * scrollOffset / maxScroll;
-
-        boolean hovering = mouseX >= sx && mouseX < sx + SCROLLBAR_W &&
-                mouseY >= sliderY && mouseY < sliderY + sliderH;
-        int sliderColor = hovering || scrollbarDragging ? BG_SCROLLBAR_HOVER : BG_SCROLLBAR;
-
-        g.fill(sx, sliderY, sx + SCROLLBAR_W, sliderY + sliderH, sliderColor);
+        // 交给 EditorUi：滑块几何与拖动命中用同一套算法（SCROLLBAR_W 与 SCROLL_W 都是 6/5，
+        // 这里统一按 EditorUi 的宽度画，免得「看着有、拖不到」）
+        EditorUi.scrollbar(g, mouseX, mouseY, scrollbarTrackX(), contentTop, contentHeight,
+                scrollOffset, maxScroll, MAX_VISIBLE);
     }
 
     // ======================== 底栏绘制 ========================
@@ -1471,8 +1541,12 @@ public class StatsScreen extends PanelScreen {
             tooltipLines.add(Component.translatable("screen.infinitestats.tooltip_toggle").getString());
         } else {
             // 悬停在卡片本体上 — 显示详细描述
-            String desc = getStatDescription(stat);
-            tooltipLines.add(desc);
+            // 描述可能是一整句（「无后坐力」这类），必须自己折行：
+            // 原版浮窗不折行，只会被屏幕边缘裁掉，玩家看到的就是「后面几个字没了」。
+            // 颜色统一提到白色：浮窗默认色偏灰，长句压在暗底上很难读。
+            for (String line : EditorUi.wrap(font, brightenDescription(getStatDescription(stat)), 230)) {
+                tooltipLines.add(line);
+            }
             if (!stat.isToggle()) {
                 tooltipLines.add(Component.translatable("screen.infinitestats.tooltip_current",
                         level, stat.formatValue(value)).getString());
@@ -1484,7 +1558,8 @@ public class StatsScreen extends PanelScreen {
         if (!tooltipLines.isEmpty()) {
             List<net.minecraft.util.FormattedCharSequence> visualLines = new ArrayList<>();
             for (String line : tooltipLines) {
-                visualLines.add(Component.literal(line).getVisualOrderText());
+                // 原版浮窗默认色偏灰（0xAAAAAA 一档），整块提亮成白色更好读
+                visualLines.add(Component.literal(brightenDescription(line)).getVisualOrderText());
             }
             g.renderTooltip(font, visualLines, panelMouseX, panelMouseY);
         }
@@ -1494,9 +1569,6 @@ public class StatsScreen extends PanelScreen {
 
     @Override
     protected boolean onPanelClick(int mouseX, int mouseY, int button) {
-        boolean onPanel = mouseX >= leftPos && mouseX < leftPos + GUI_WIDTH * ClientSettings.guiScale
-                && mouseY >= topPos && mouseY < topPos + GUI_HEIGHT * ClientSettings.guiScale;
-
         // 中键 — 重置缩放和位置
         if (button == 2) {
             ClientSettings.guiScale = 0.5f;
@@ -1509,72 +1581,51 @@ public class StatsScreen extends PanelScreen {
             return true;
         }
 
-        // 右键 — 拖动面板
-        if (onPanel) {
-            // 基类传入的已是面板坐标
-            int px = mouseX;
-            int py = mouseY;
+        // 面板坐标：原点恒为 (0,0)，与缩放无关。
+        // 这里曾经拿 GUI_WIDTH * guiScale 当右边界，缩放小于 1 时面板右半被判定成「面板外」，
+        // 而滚动条正好在右缘 —— 结果就是整条滚动条既拖不动也点不中。
+        boolean onPanel = mouseX >= 0 && mouseX < GUI_WIDTH && mouseY >= 0 && mouseY < GUI_HEIGHT;
+        if (!onPanel) return false;
 
-            // 滚动条拖拽
-            if (button == 0 && maxScroll > 0 && isMouseOnScrollbar(px, py)) {
-                scrollbarDragging = true;
-                scrollbarDragStartY = py;
-                // 点击轨道时先把滚动位置对齐到点击处（居中到滑块）
-                int sh = contentHeight;
-                int sliderH = Math.max(20, (int) ((float) MAX_VISIBLE / (maxScroll + MAX_VISIBLE) * sh));
-                int dragRange = sh - sliderH;
-                if (dragRange > 0) {
-                    int sliderY0 = py - sliderH / 2;
-                    float progress = (float) (sliderY0 - contentTop) / dragRange;
-                    scrollOffset = Mth.clamp((int) (progress * maxScroll + 0.5f), 0, maxScroll);
-                    scrollbarDragStartOffset = scrollOffset;
-                } else {
-                    scrollbarDragStartOffset = 0;
-                }
-                rebuildAllWidgets();
-                return true;
-            }
-
-            // 检测外部属性分组头点击（在 Widget 按钮之前拦截）
-            if (button == 0 && selectedCategory == StatCategory.EXTERNAL) {
-                if (handleExternalHeaderClick(px, py)) return true;
-            }
-
-            // 检测收藏星标点击
-            if (button == 0 && handleStarClick(px, py)) return true;
-
-            return false;   // 未命中时交回基类，继续派发给控件
+        // 滚动条拖拽（几何与绘制同源，见 EditorUi#scrollbar）
+        if (button == 0 && beginScrollbarDrag(mouseX, mouseY, scrollbarTrackX(), contentTop,
+                contentHeight, scrollOffset, maxScroll, MAX_VISIBLE, this::setScrollOffset)) {
+            return true;
         }
 
-        return false;
+        // 检测外部属性分组头点击（在 Widget 按钮之前拦截）
+        if (button == 0 && selectedCategory == StatCategory.EXTERNAL) {
+            if (handleExternalHeaderClick(mouseX, mouseY)) return true;
+        }
+
+        // 检测收藏星标点击
+        if (button == 0 && handleStarClick(mouseX, mouseY)) return true;
+
+        return false;   // 未命中时交回基类，继续派发给控件
     }
 
     @Override
     protected boolean onPanelDrag(int mouseX, int mouseY, int button, int dragX, int dragY) {
-        if (scrollbarDragging && maxScroll > 0) {
-            int sh = contentHeight;
-            int sliderH = Math.max(20, (int) ((float) MAX_VISIBLE / (maxScroll + MAX_VISIBLE) * sh));
-            int dragRange = sh - sliderH;
-            if (dragRange > 0) {
-                // 鼠标位移量（像素）→ 滚动位移量，再加上点击时的基准偏移
-                float delta = (float)(mouseY - scrollbarDragStartY) / dragRange;
-                float progress = delta + (float) scrollbarDragStartOffset / maxScroll;
-                scrollOffset = Mth.clamp((int) (progress * maxScroll + 0.5), 0, maxScroll);
-                rebuildAllWidgets();
-            }
-            return true;
-        }
-        // 右键拖动面板由 PanelScreen 统一处理
-        return false;
+        // 右键拖动面板由 PanelScreen 统一处理；左键只拖滚动条
+        return button == 0 && updateScrollbarDrag(mouseY);
     }
 
     @Override
     protected boolean onPanelRelease(int mouseX, int mouseY, int button) {
-        if (scrollbarDragging) {
-            scrollbarDragging = false;
-            return true;
-        }
-        return false;
+        return button == 0 && endScrollbarDrag();
+    }
+
+    /** 滚动条轨道左缘（面板坐标）：绘制与命中判定共用一个来源。 */
+    private int scrollbarTrackX() {
+        return GUI_WIDTH - SCROLLBAR_W - 4;
+    }
+
+    /** 滚动位置真的变了才重建控件，避免拖动时每移动一像素重建一次。 */
+    private void setScrollOffset(int value) {
+        int next = Mth.clamp(value, 0, maxScroll);
+        if (next == scrollOffset) return;
+        scrollOffset = next;
+        rebuildAllWidgets();
     }
 
     @Override
@@ -1725,15 +1776,17 @@ public class StatsScreen extends PanelScreen {
         return translated;
     }
 
+    /** 描述统一用白色（把前缀的 {@code §7} 提亮），缺失时不显示空行。 */
+    private static String brightenDescription(String text) {
+        if (text == null || text.isBlank()) return "";
+        if (text.startsWith("§7")) return "§f" + text.substring(2);
+        if (text.startsWith("§")) return text;
+        return "§f" + text;
+    }
+
     private boolean isMouseInCard(int mouseX, int mouseY, int cardX, int cardY, int cardWidth) {
         return mouseX >= cardX && mouseX < cardX + cardWidth &&
                 mouseY >= cardY && mouseY < cardY + CARD_H;
-    }
-
-    private boolean isMouseOnScrollbar(int mouseX, int mouseY) {
-        int sx = GUI_WIDTH - SCROLLBAR_W - 4;
-        return mouseX >= sx && mouseX < sx + SCROLLBAR_W + 4 &&
-                mouseY >= contentTop && mouseY < contentTop + contentHeight;
     }
 
     /**

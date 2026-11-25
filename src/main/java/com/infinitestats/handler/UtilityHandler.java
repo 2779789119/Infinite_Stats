@@ -2,6 +2,7 @@ package com.infinitestats.handler;
 
 import com.infinitestats.Config;
 import com.infinitestats.compat.ColdSweatCompat;
+import com.infinitestats.compat.CuriosBridge;
 import com.infinitestats.compat.EnergyCompat;
 import com.infinitestats.compat.GoetyCompat;
 import com.infinitestats.compat.ManaCompat;
@@ -92,14 +93,12 @@ public class UtilityHandler implements StatEffectHandler {
             applyAutoRepair(player, stats);
         }
 
-        // 自动入库：按配置间隔扫描背包，把物品写入存储网络（隔离异常，避免影响其它功能）
-        int depositInterval = Math.max(1, Config.AUTO_DEPOSIT_INTERVAL.get());
-        if (tickCount % depositInterval == 0 && stats.isToggleActive("auto_deposit")) {
-            try {
-                com.infinitestats.compat.AutoDeposit.deposit(player, stats);
-            } catch (Throwable t) {
-                t.printStackTrace();
-            }
+        // 自动入库：变更驱动 —— 背包这一 tick 内变过（InventoryChangeMixin 打的标记）才查存储网络，
+        // 内部再按配置的最短间隔节流。没变化时只有一次 Set 查询，不再每秒无条件扫背包。
+        try {
+            com.infinitestats.compat.AutoDeposit.tick(player, stats, tickCount);
+        } catch (Throwable t) {
+            t.printStackTrace();
         }
 
         // 交易即刻补货：正在与村民交易时把已消耗的条目立刻补满
@@ -241,14 +240,33 @@ public class UtilityHandler implements StatEffectHandler {
         if (nightVision) {
             // 使用 forceAddEffect 直接写入效果，不触发 MobEffectEvent.Applicable，
             // 从而绕过其他模组（如免疫类/夜视管理类）对该事件的 DENY 拦截。
-            // 每 tick 调用一次，保证效果被中途清除时立即补回、无闪烁。
-            player.forceAddEffect(new MobEffectInstance(MobEffects.NIGHT_VISION,
-                    MobEffectInstance.INFINITE_DURATION, 0, false, false, true), player);
+            // 仍然每 tick 检查一次（保证被中途清除时立即补回、无闪烁），
+            // 但只有「当前那条不是我们放的无限夜视」时才真正写入 ——
+            // 稳态下每 tick 只多一次效果表查询，不再每次新建 MobEffectInstance。
+            if (!isOurInfiniteEffect(player.getEffect(MobEffects.NIGHT_VISION))) {
+                player.forceAddEffect(new MobEffectInstance(MobEffects.NIGHT_VISION,
+                        MobEffectInstance.INFINITE_DURATION, 0, false, false, true), player);
+            }
             stats.setProviding("night_vision", true);
         } else if (weProvided) {
             player.removeEffect(MobEffects.NIGHT_VISION);
             stats.setProviding("night_vision", false);
         }
+    }
+
+    /**
+     * 判断这条效果是不是「本模组放的那一条无限、0 级、隐藏粒子」的效果。
+     * <p>
+     * 稳态下 {@code forceAddEffect} 本来就因为「数值没变」不会发同步包，
+     * 但每 tick 新建一个 {@link MobEffectInstance} 依然是纯浪费 —— 这里先比对一次就跳过写入。
+     */
+    public static boolean isOurInfiniteEffect(MobEffectInstance effect) {
+        return effect != null
+                && effect.getDuration() == MobEffectInstance.INFINITE_DURATION
+                && effect.getAmplifier() == 0
+                && !effect.isAmbient()
+                && !effect.isVisible()
+                && effect.showIcon();
     }
 
     /**
@@ -457,16 +475,15 @@ public class UtilityHandler implements StatEffectHandler {
     }
 
     /**
-     * 自动修理装备（auto_repair 开关 + repair_amount 控制修理量）
-     * 每秒修理玩家背包和装备栏中所有可损坏物品
+     * 自动修理（{@code auto_repair} 开关）—— 直接把耐久补满。
+     * <p>
+     * 「开启后不再消耗耐久」由 {@code AutoRepairDurabilityMixin} 在
+     * {@link ItemStack#hurtAndBreak} 的入口拦下，这里只负责把已经磨损的物品一次性补满
+     * （每秒扫一次，涵盖主物品栏 / 盔甲 / 副手 / Curios 饰品）。
      */
     private void applyAutoRepair(ServerPlayer player, PlayerStats stats) {
         if (!stats.isToggleActive("auto_repair")) return;
 
-        long repairAmount = stats.getStatLevel(StatType.fromId("repair_amount"));
-        if (repairAmount <= 0) repairAmount = 1;
-
-        // 修理所有物品栏（主物品栏 + 盔甲 + 副手 + Curios饰品）
         List<ItemStack> allItems = new ArrayList<>();
         allItems.addAll(player.getInventory().items);
         allItems.addAll(player.getInventory().armor);
@@ -474,8 +491,14 @@ public class UtilityHandler implements StatEffectHandler {
 
         for (ItemStack stack : allItems) {
             if (!stack.isEmpty() && stack.isDamaged()) {
-                stack.setDamageValue(Math.max(0, stack.getDamageValue() - (int) repairAmount));
+                stack.setDamageValue(0);
             }
+        }
+        // 饰品栏是 Curios 自己挂的容器，不在原版 Inventory 里
+        if (CuriosBridge.isLoaded()) {
+            CuriosBridge.forEachStack(player, stack -> {
+                if (stack.isDamaged()) stack.setDamageValue(0);
+            });
         }
     }
 

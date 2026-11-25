@@ -3,6 +3,7 @@ package com.infinitestats.client;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.network.chat.Component;
 
 import java.util.List;
 
@@ -43,7 +44,6 @@ final class EditorUi {
     static final int BG_SB_TRACK = 0x30151520;
     static final int BG_SB = 0x80555570;
     static final int BG_SB_HOVER = 0xB08888A0;
-    static final int BG_TOOLTIP = 0xF01A1A2E;
     static final int BG_BAR_TRACK = 0xFF2A2A3A;
 
     // ======================== 尺寸 ========================
@@ -95,11 +95,66 @@ final class EditorUi {
                           int scroll, int maxScroll, int visible) {
         if (maxScroll <= 0 || h <= 0) return;
         g.fill(x, y, x + SCROLL_W, y + h, BG_SB_TRACK);
-        int sliderH = Math.max(16, (int) ((float) visible / (maxScroll + visible) * h));
-        sliderH = Math.min(sliderH, h);
-        int sliderY = y + (h - sliderH) * scroll / maxScroll;
+        int sliderH = scrollThumbH(h, maxScroll, visible);
+        int sliderY = scrollThumbY(y, h, scroll, maxScroll, visible);
         boolean hover = mx >= x && mx < x + SCROLL_W && my >= sliderY && my < sliderY + sliderH;
         g.fill(x, sliderY, x + SCROLL_W, sliderY + sliderH, hover ? BG_SB_HOVER : BG_SB);
+    }
+
+    /** 滑块高度：绘制 / 命中判定 / 拖拽共用同一套算法，保证三者一致。 */
+    static int scrollThumbH(int trackH, int maxScroll, int visible) {
+        return Math.min(trackH, Math.max(16, (int) ((float) visible / (maxScroll + visible) * trackH)));
+    }
+
+    /**
+     * 滑块顶端 Y：绘制 / 命中判定 / 拖拽共用同一套算法。
+     * <p>
+     * 之前各界面各自用 {@code Math.max(20, ...)} 算滑块高度、自己写整除，
+     * 结果「画出来的滑块」和「拖拽用的滑块」不是同一个矩形：点在滑块上没反应、
+     * 或者一拖就跳一截。这里统一收口。
+     */
+    static int scrollThumbY(int trackY, int trackH, int scroll, int maxScroll, int visible) {
+        if (maxScroll <= 0 || trackH <= 0) return trackY;
+        int thumbH = scrollThumbH(trackH, maxScroll, visible);
+        int range = trackH - thumbH;
+        if (range <= 0) return trackY;
+        int s = Math.max(0, Math.min(maxScroll, scroll));
+        return trackY + range * s / maxScroll;
+    }
+
+    /** 鼠标是否压在滑块本体上（区分「抓住滑块」与「点击空白轨道」）。 */
+    static boolean onScrollThumb(int mouseY, int trackY, int trackH,
+                                 int scroll, int maxScroll, int visible) {
+        if (maxScroll <= 0 || trackH <= 0) return false;
+        int thumbH = scrollThumbH(trackH, maxScroll, visible);
+        int thumbY = scrollThumbY(trackY, trackH, scroll, maxScroll, visible);
+        return mouseY >= thumbY && mouseY < thumbY + thumbH;
+    }
+
+    /**
+     * 按 {@code 滑块顶端} 换算滚动位置 —— 抓住滑块本体拖动时用，滑块不会跳一下再跟手。
+     *
+     * <h2>为什么不用「增量累加」</h2>
+     * 老实现记录按下位置、每次拖动累加位移量。滑块被夹到两端后位移量继续累积，
+     * 回到中间时偏移量已经失真 —— 拖到底再拖回来会卡住甚至跳回原处（玩家说的「回弹」）。
+     * 这里改成纯函数：滑块顶 = 鼠标 Y - 固定抓取偏移，每次从鼠标位置现算，不带任何累加状态。
+     *
+     * @param grabOffset 按下瞬间「鼠标 Y - 滑块顶端 Y」，整个拖动过程保持不变
+     */
+    static int scrollFromThumbTop(int mouseY, int grabOffset, int trackY, int trackH,
+                                  int maxScroll, int visible) {
+        if (maxScroll <= 0 || trackH <= 0) return 0;
+        int thumbH = scrollThumbH(trackH, maxScroll, visible);
+        int range = trackH - thumbH;
+        if (range <= 0) return 0;
+        float progress = (mouseY - grabOffset - trackY) / (float) range;
+        return Math.max(0, Math.min(maxScroll, Math.round(progress * maxScroll)));
+    }
+
+    /** 鼠标是否落在滚动条轨道上（左右各放宽 3px，方便点中）。 */
+    static boolean onScrollbar(int mouseX, int mouseY, int trackX, int trackY, int trackH) {
+        return mouseX >= trackX - 3 && mouseX < trackX + SCROLL_W + 3
+                && mouseY >= trackY - 2 && mouseY < trackY + trackH + 2;
     }
 
     /** 分段进度条（耐久 / 权重等），返回填充色。 */
@@ -111,46 +166,124 @@ final class EditorUi {
         return color;
     }
 
-    /** 鼠标附近的浮窗，自动避让屏幕边界。 */
+    /**
+     * 全模组统一的浮窗入口 —— <b>直接画原版浮窗</b>（灰底 + 渐变边框，位置由原版自动避让屏幕边缘）。
+     *
+     * <h2>为什么不再自绘</h2>
+     * 曾经这里是自己画的「深色底 + 顶部彩线」框，和原版浮窗并存，导致同一个模组里有两种观感；
+     * 现在统一交给原版 {@code renderTooltip}，界面上所有浮窗的外观与其它模组一致。
+     *
+     * <h2>为什么还要 flush</h2>
+     * {@link GuiGraphics} 不是「调用一次画一次」：顶点按 {@code RenderType} 分批，
+     * <b>所有 {@code fill} 一批、所有文字一批</b>。浮窗背景会跟着「所有背景」那批走在前面，
+     * 界面上已有的列表 / 按钮文字在「所有文字」那批里排在后面 —— 表现为「文字浮在浮窗上」。
+     * 画之前先把已有内容落地，浮窗的背景才不会被压住。
+     * （原版全流程还有 {@code GuiGraphicsTooltipMixin} 兜底，这里再明确一次。）
+     *
+     * @param accent 已废弃：自绘时代的顶部彩线颜色，原版浮窗没有这回事，保留参数只为不动几十处调用点
+     */
     static void tooltip(GuiGraphics g, int mx, int my, List<String> lines, int accent) {
         if (lines == null || lines.isEmpty()) return;
-        Font font = Minecraft.getInstance().font;
-        int lineH = font.lineHeight + 1;
-        int boxW = 12;
-        for (String l : lines) boxW = Math.max(boxW, font.width(l) + 12);
-        int boxH = lines.size() * lineH + 8;
-        int bx = mx + 14, by = my + 14;
-        int sw = Minecraft.getInstance().getWindow().getGuiScaledWidth();
-        int sh = Minecraft.getInstance().getWindow().getGuiScaledHeight();
-        if (bx + boxW > sw) bx = mx - 14 - boxW;
-        if (by + boxH > sh) by = my - 14 - boxH;
-        bx = Math.max(0, bx);
-        by = Math.max(0, by);
-        g.fill(bx, by, bx + boxW, by + boxH, BG_TOOLTIP);
-        g.fill(bx, by, bx + boxW, by + 1, accent);
-        int ty = by + 4;
-        for (String l : lines) {
-            g.drawString(font, l, bx + 6, ty, PRIMARY);
-            ty += lineH;
+        List<net.minecraft.util.FormattedCharSequence> visual =
+                new java.util.ArrayList<>(lines.size());
+        for (String line : lines) {
+            // language 代码（§）由字体渲染器解析，与之前的自绘版本口径一致
+            visual.add(Component.literal(line == null ? "" : line).getVisualOrderText());
         }
+        vanillaTooltip(g, visual, mx, my);
     }
 
-    /** 按像素宽度折行（保留原文换行），中英文通用的逐字符折行，用于浮窗里的长文本。 */
+    /** 原版物品浮窗（内容由原版收集：名称 / 附魔 / 词条 / 模组追加说明）。 */
+    static void itemTooltip(GuiGraphics g, net.minecraft.world.item.ItemStack stack, int mx, int my) {
+        g.flush();
+        g.renderTooltip(Minecraft.getInstance().font, stack, mx, my);
+        g.flush();
+    }
+
+    /** 原版 Component 浮窗（单段文本，内部换行由原版处理）。 */
+    static void vanillaTooltip(GuiGraphics g, Component text, int mx, int my) {
+        g.flush();
+        g.renderTooltip(Minecraft.getInstance().font, text, mx, my);
+        g.flush();
+    }
+
+    /** 原版行列表浮窗（已折好行的 {@code FormattedCharSequence}）。 */
+    static void vanillaTooltip(GuiGraphics g, List<net.minecraft.util.FormattedCharSequence> lines,
+                               int mx, int my) {
+        if (lines == null || lines.isEmpty()) return;
+        g.flush();
+        // 1.21.1 存的是 List<? extends FormattedCharSequence>，直接传会命中不了的擦除歧义，先包一层
+        g.renderTooltip(Minecraft.getInstance().font,
+                new java.util.ArrayList<net.minecraft.util.FormattedCharSequence>(lines), mx, my);
+        g.flush();
+    }
+
+    /**
+     * 原版浮窗底框（暗底 + 紫渐变边框），给「不是浮窗但需要压在内容之上」的浮层用，
+     * 例如成就管理器的模组下拉列表 —— 让自绘浮层和浮窗观感统一。
+     * <p>
+     * 底色调成<b>完全不透明</b>：原版浮窗是 94% 不透明，垫在下拉列表上会透出底下的
+     * 列表文字（看起来像「菜单没盖住」），浮层必须实心。
+     */
+    static void vanillaBackdrop(GuiGraphics g, int x, int y, int w, int h) {
+        g.fill(x, y, x + w, y + h, 0xFF101010);
+        // 原版浮窗边框：上蓝紫 → 下深紫，上下各 1px 渐变
+        g.fillGradient(x, y, x + w, y + 1, 0xFF5000FF, 0xFF28007F);
+        g.fillGradient(x, y + h - 1, x + w, y + h, 0xFF28007F, 0xFF5000FF);
+        g.fill(x, y + 1, x + 1, y + h - 1, 0xFF28007F);
+        g.fill(x + w - 1, y + 1, x + w, y + h - 1, 0xFF28007F);
+    }
+
+    /**
+     * 按像素宽度折行（保留原文换行），中英文通用的逐字符折行，用于浮窗里的长文本。
+     *
+     * <h2>折行时必须把 {@code §} 格式码带到下一行</h2>
+     * 调用点普遍是「前缀一个颜色码 + 一整段文字」（例如 {@code "§7" + 说明}）。
+     * 如果只按字符切，颜色码留在第一行末尾，后面几行就没有任何格式码了 ——
+     * 渲染出来是<b>默认白色</b>，在深色浮窗上看起来像「第二行颜色变了」。
+     * 所以这里跟踪当前生效的颜色与样式，每开一行都重新写一遍。
+     */
     static List<String> wrap(Font font, String text, int maxWidth) {
         List<String> out = new java.util.ArrayList<>();
         if (text == null || text.isEmpty()) return out;
         for (String para : text.split("\n", -1)) {
             if (para.isEmpty()) { out.add(""); continue; }
+
+            StringBuilder color = new StringBuilder();
+            StringBuilder styles = new StringBuilder();
             StringBuilder line = new StringBuilder();
+            // 本行已有的可见字符数：只有它 > 0 才允许折行，否则「前缀 + 一个超宽字符」会反复空折
+            int visible = 0;
+
             for (int i = 0; i < para.length(); i++) {
                 char c = para.charAt(i);
-                if (line.length() > 0 && font.width(line.toString() + c) > maxWidth) {
+
+                if (c == '§' && i + 1 < para.length()) {
+                    char code = Character.toLowerCase(para.charAt(i + 1));
+                    if ((code >= '0' && code <= '9') || (code >= 'a' && code <= 'f')) {
+                        color.setLength(0);
+                        color.append('§').append(para.charAt(i + 1));
+                    } else if (code == 'r') {
+                        color.setLength(0);
+                        styles.setLength(0);
+                    } else if (code == 'l' || code == 'o' || code == 'n' || code == 'm' || code == 'k') {
+                        if (styles.indexOf("§" + code) < 0) styles.append('§').append(code);
+                    }
+                    line.append(c).append(para.charAt(i + 1));
+                    i++;
+                    continue;
+                }
+
+                if (visible > 0 && font.width(line.toString() + c) > maxWidth) {
                     out.add(line.toString());
                     line.setLength(0);
+                    line.append(color).append(styles);
+                    visible = 0;
                 }
                 line.append(c);
+                visible++;
             }
-            if (line.length() > 0) out.add(line.toString());
+            if (visible > 0) out.add(line.toString());
         }
         return out;
     }

@@ -2,7 +2,7 @@ package com.infinitestats.crafting;
 
 import com.infinitestats.Config;
 import com.infinitestats.compat.PolymorphCompat;
-import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.menu.ModMenuTypes;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
 import net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket;

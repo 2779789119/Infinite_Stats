@@ -9,6 +9,15 @@ import java.util.*;
 public final class HandlerRegistry {
 
     private static final Map<String, StatEffectHandler> HANDLERS = new LinkedHashMap<>();
+    /**
+     * 启用列表的缓存。
+     * <p>
+     * 原来每次 {@link #getEnabledHandlers()} 都是 {@code stream().filter().toList()}，
+     * 而它被每玩家每 tick 调用一次 —— 等于每秒给每个玩家新建若干个 List 与 Stream 对象。
+     * 处理器只在 {@link #initialize()} 时注册一次、{@link StatEffectHandler#isEnabled()} 全部返回常量 true，
+     * 所以在注册时重建一次就够了。
+     */
+    private static volatile List<StatEffectHandler> enabledCache = List.of();
     private static boolean initialized = false;
 
     /**
@@ -33,6 +42,10 @@ public final class HandlerRegistry {
      */
     public static void register(StatEffectHandler handler) {
         HANDLERS.put(handler.getId(), handler);
+        // 注册即重建（注册只发生在启动阶段，成本可以忽略）
+        enabledCache = HANDLERS.values().stream()
+                .filter(StatEffectHandler::isEnabled)
+                .toList();
     }
 
     /**
@@ -53,9 +66,7 @@ public final class HandlerRegistry {
      * 获取所有启用的处理器
      */
     public static List<StatEffectHandler> getEnabledHandlers() {
-        return HANDLERS.values().stream()
-                .filter(StatEffectHandler::isEnabled)
-                .toList();
+        return enabledCache;
     }
 
     /**

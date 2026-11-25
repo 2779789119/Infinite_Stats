@@ -30,27 +30,29 @@ import java.util.function.Supplier;
  */
 public class VeinMinerSettingsScreen extends PanelScreen {
 
-    private static final int GUI_W = 360;
-    /** 14 行 × 17 = 238（48..286）+ 底部提示 + 按钮 20 + 边距。 */
-    private static final int GUI_H = 328;
+    private static final int GUI_W = 340;
+    /** 固定 10 行可见（170px）+ 提示行 + 底部按钮，再加设置项就只在列表里滚动。 */
+    private static final int GUI_H = 302;
+
+    /** 列表可见行数（设置项再多也不撑破面板）。 */
+    private static final int VISIBLE_ROWS = 10;
 
     private static final int HEADER_H = 24;
     private static final int HINT_Y = HEADER_H + 4;
     private static final int LIST_Y = HINT_Y + 20;
-    private static final int ROW_H = 17;
+    private static final int ROW_H = 22;
+    private static final int LIST_H = VISIBLE_ROWS * ROW_H;
 
     private static final int FOOTER_Y = GUI_H - 28;
     private static final int BTN_W = 96;
     private static final int BTN_H = 20;
 
-    /** 三段列：名称 / 左箭头 / 值区 / 右箭头。 */
+    /** 两段列：名称 / 值区（值居中显示，点一下切换下一档）。 */
     private static final int NAME_X = 10;
     private static final int NAME_W = 120;
-    private static final int ARROW_L_X = NAME_X + NAME_W + 6;
-    private static final int ARROW_W = 14;
-    private static final int VALUE_X = ARROW_L_X + ARROW_W + 6;
-    private static final int ARROW_R_X = GUI_W - ARROW_W - 10;
-    private static final int VALUE_W = ARROW_R_X - VALUE_X - 6;
+    private static final int VALUE_LEFT = NAME_X + NAME_W + 6;
+    private static final int VALUE_RIGHT = GUI_W - 14;
+    private static final int VALUE_W = VALUE_RIGHT - VALUE_LEFT;
 
     private static final int MAX_BLOCKS_STEP = 8;
     private static final int RADIUS_STEP = 1;
@@ -62,6 +64,11 @@ public class VeinMinerSettingsScreen extends PanelScreen {
     private VeinMinerConfig draft = new VeinMinerConfig();
     private final List<Option> options = new ArrayList<>();
     private int hovered = -1;
+    /** 列表滚动：当前顶行 / 最大可滚行数（设置项多于可见行数时才有值）。 */
+    private int scrollRow;
+    private int maxScrollRow;
+    /** 「恢复默认」会覆盖全部设置，需要二次点击确认。 */
+    private final ConfirmAction confirm = new ConfirmAction();
     /** 悬停的底部按钮：0 恢复默认 / 1 保存 / 2 关闭；-1 无。 */
     private int hoveredButton = -1;
 
@@ -91,6 +98,8 @@ public class VeinMinerSettingsScreen extends PanelScreen {
         VeinMinerConfig current = statsOrNull() == null ? null : statsOrNull().getVeinMinerConfig();
         draft.copyFrom(current == null ? new VeinMinerConfig() : current);
         buildOptions();
+        maxScrollRow = Math.max(0, options.size() - VISIBLE_ROWS);
+        scrollRow = net.minecraft.util.Mth.clamp(scrollRow, 0, maxScrollRow);
     }
 
     /** 设置项（每次「恢复默认」后重建；值本身是 supplier，重建只是为了保持一致）。 */
@@ -231,10 +240,11 @@ public class VeinMinerSettingsScreen extends PanelScreen {
         EditorUi.dividerH(g, 4, LIST_Y - 4, GUI_W - 8);
 
         hovered = -1;
-        for (int i = 0; i < options.size(); i++) {
+        for (int i = scrollRow; i < Math.min(options.size(), scrollRow + VISIBLE_ROWS); i++) {
             Option option = options.get(i);
-            int rowTop = LIST_Y + i * ROW_H;
-            boolean rowHover = mouseX >= 4 && mouseX < GUI_W - 4 && mouseY >= rowTop && mouseY < rowTop + ROW_H - 1;
+            int rowTop = LIST_Y + (i - scrollRow) * ROW_H;
+            boolean rowHover = mouseX >= 4 && mouseX < GUI_W - 10
+                    && mouseY >= rowTop && mouseY < rowTop + ROW_H - 1;
             if (rowHover) hovered = i;
 
             g.fill(4, rowTop, GUI_W - 4, rowTop + ROW_H - 1,
@@ -245,19 +255,16 @@ public class VeinMinerSettingsScreen extends PanelScreen {
                     "screen.infinitestats.vein_settings." + option.label()).getString();
             g.drawString(font, EditorUi.ellipsize(font, label, NAME_W), NAME_X, rowTop + 4, EditorUi.PRIMARY);
 
-            // 值区（居中）：长文本先截断，绝不压到箭头
+            // 值区（居中）：长文本先截断；整行点一下切下一档，右键退回上一档
             String value = option.value().get();
             String shown = EditorUi.ellipsize(font, value, VALUE_W);
             int valueColor = optionalDim(option) ? EditorUi.SECONDARY : EditorUi.ACCENT;
-            g.drawCenteredString(font, shown, VALUE_X + VALUE_W / 2, rowTop + 4, valueColor);
+            g.drawCenteredString(font, shown, VALUE_LEFT + VALUE_W / 2, rowTop + 4, valueColor);
+        }
 
-            // 左右箭头（纯动作行只有右侧）
-            if (option.prev() != null) {
-                drawArrow(g, ARROW_L_X, rowTop + 1, "<", mouseX, mouseY);
-            }
-            if (option.next() != null) {
-                drawArrow(g, ARROW_R_X, rowTop + 1, ">", mouseX, mouseY);
-            }
+        if (maxScrollRow > 0) {
+            EditorUi.scrollbar(g, mouseX, mouseY, GUI_W - 8, LIST_Y, LIST_H,
+                    scrollRow, maxScrollRow, VISIBLE_ROWS);
         }
 
         drawFooter(g, mouseX, mouseY);
@@ -272,7 +279,7 @@ public class VeinMinerSettingsScreen extends PanelScreen {
                     + Component.translatable(option.help()).getString(), 200)) {
                 lines.add(line);
             }
-            EditorUi.tooltip(g, mouseX, mouseY, lines, EditorUi.ACCENT);
+            queueTooltip(g, mouseX, mouseY, lines, EditorUi.ACCENT);
         }
     }
 
@@ -284,7 +291,9 @@ public class VeinMinerSettingsScreen extends PanelScreen {
         int x1 = x0 + BTN_W + gap;
         int x2 = x1 + BTN_W + gap;
 
-        if (drawFooterButton(g, x0, FOOTER_Y, "screen.infinitestats.vein_settings.reset",
+        if (drawFooterButton(g, x0, FOOTER_Y, confirm.isConfirming("reset")
+                        ? "screen.infinitestats.ui.confirm"
+                        : "screen.infinitestats.vein_settings.reset",
                 EditorUi.SECONDARY, mouseX, mouseY)) hoveredButton = 0;
         if (drawFooterButton(g, x1, FOOTER_Y, "screen.infinitestats.vein_settings.save",
                 EditorUi.ACCENT, mouseX, mouseY)) hoveredButton = 1;
@@ -318,22 +327,46 @@ public class VeinMinerSettingsScreen extends PanelScreen {
         return false;
     }
 
-    private void drawArrow(GuiGraphics g, int x, int y, String glyph, int mouseX, int mouseY) {
-        boolean hover = mouseX >= x && mouseX < x + ARROW_W && mouseY >= y && mouseY < y + ROW_H - 3;
-        g.fill(x, y, x + ARROW_W, y + ROW_H - 3, hover ? 0x60FFFFFF : 0x30FFFFFF);
-        g.drawCenteredString(font, glyph, x + ARROW_W / 2, y + (ROW_H - 3 - font.lineHeight) / 2 + 1,
-                EditorUi.PRIMARY);
+    @Override
+    protected boolean onPanelScroll(int mouseX, int mouseY, double delta) {
+        if (maxScrollRow <= 0 || delta == 0) return false;
+        scrollRow = net.minecraft.util.Mth.clamp(scrollRow - (int) Math.signum(delta),
+                0, maxScrollRow);
+        return true;
+    }
+
+    /** 右键一行 = 退回上一档（左键是下一档，两边对称，不用再去瞄箭头）。 */
+    @Override
+    protected boolean onPanelRightClick(int mouseX, int mouseY) {
+        if (mouseY < LIST_Y || mouseY >= LIST_Y + LIST_H) return false;
+        // 滚动条那一列不参与「整行切换」，留给拖动
+        if (mouseX >= GUI_W - 10) return false;
+        int index = scrollRow + (mouseY - LIST_Y) / ROW_H;
+        if (index < 0 || index >= options.size()) return false;
+        Option option = options.get(index);
+        if (option.prev() == null) return false;
+        option.prev().run();
+        return true;
     }
 
     @Override
     protected boolean onPanelClick(int mouseX, int mouseY, int button) {
+        // 滚动条拖动优先：它压在列表右侧，不能让下面「整行切换」抢走
+        if (button == 0 && beginScrollbarDrag(mouseX, mouseY, GUI_W - 8, LIST_Y, LIST_H,
+                scrollRow, maxScrollRow, VISIBLE_ROWS, this::setScrollRow)) {
+            return true;
+        }
         // 底部按钮优先
         int gap = (GUI_W - BTN_W * 3 - 20) / 2;
         int x0 = 10, x1 = x0 + BTN_W + gap, x2 = x1 + BTN_W + gap;
         if (mouseY >= FOOTER_Y && mouseY < FOOTER_Y + BTN_H) {
             if (mouseX >= x0 && mouseX < x0 + BTN_W) {
+                // 会覆盖全部设置：第一次点只进入确认态，2.5 秒内再点才真的恢复
+                if (!confirm.confirm("reset")) return true;
                 draft.resetToDefault();   // 值都是 supplier，重建不是必须的，但保持一致
                 buildOptions();
+                maxScrollRow = Math.max(0, options.size() - VISIBLE_ROWS);
+                scrollRow = net.minecraft.util.Mth.clamp(scrollRow, 0, maxScrollRow);
                 return true;
             }
             if (mouseX >= x1 && mouseX < x1 + BTN_W) {
@@ -346,26 +379,29 @@ public class VeinMinerSettingsScreen extends PanelScreen {
             }
         }
 
-        if (mouseX >= 0 && mouseX < GUI_W && mouseY >= LIST_Y && mouseY < LIST_Y + options.size() * ROW_H) {
-            int index = (mouseY - LIST_Y) / ROW_H;
+        if (mouseX >= 0 && mouseX < GUI_W - 10 && mouseY >= LIST_Y && mouseY < LIST_Y + LIST_H) {
+            int index = scrollRow + (mouseY - LIST_Y) / ROW_H;
             if (index >= 0 && index < options.size()) {
                 Option option = options.get(index);
-                boolean onLeftArrow = option.prev() != null
-                        && mouseX >= ARROW_L_X && mouseX < ARROW_L_X + ARROW_W;
-                boolean onRightArrow = option.next() != null
-                        && mouseX >= ARROW_R_X && mouseX < ARROW_R_X + ARROW_W;
-                if (onLeftArrow) {
-                    option.prev().run();
-                } else if (onRightArrow) {
-                    option.next().run();
-                } else if (option.prev() == null && option.next() != null) {
-                    option.next().run();    // 纯动作行（编辑名单）
-                } else if (option.next() != null) {
-                    option.next().run();    // 点值区 = 下一档
-                }
+                // 整行点一下 = 下一档；纯动作行（编辑名单…）= 执行
+                if (option.next() != null) option.next().run();
                 return true;
             }
         }
         return false;
+    }
+
+    @Override
+    protected boolean onPanelDrag(int mouseX, int mouseY, int button, int dragX, int dragY) {
+        return button == 0 && updateScrollbarDrag(mouseY);
+    }
+
+    @Override
+    protected boolean onPanelRelease(int mouseX, int mouseY, int button) {
+        return button == 0 && endScrollbarDrag();
+    }
+
+    private void setScrollRow(int value) {
+        scrollRow = net.minecraft.util.Mth.clamp(value, 0, maxScrollRow);
     }
 }

@@ -6,7 +6,10 @@
   "plugin": "com.infinitestats.mixin.InfiniteStatsMixinPlugin",
   "mixins": [
     "LivingEntityAccessor",
+    "AutoRepairDurabilityMixin",
+    "InventoryChangeMixin",
     "PlayerDieMixin",
+    "RespawnGuardMixin",
     "ItemCombinerMenuAccessor",
     "AnvilMenuMixin",
     "AnimalMixin",
@@ -21,7 +24,10 @@
   ],
   "client": [
     "AnvilScreenMixin",
-    "SbwClientEventHandlerMixin"
+    "SbwClientEventHandlerMixin",
+    "CombatKillPacketMixin",
+    "GuiGraphicsTooltipMixin",
+    "ScreenTopLayerMixin"
   ],
   "injectors": {
     "defaultRequire": 0

@@ -13,7 +13,12 @@ import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.util.Unit;
+import net.minecraft.world.item.alchemy.PotionContents;
+import net.minecraft.world.item.component.CustomModelData;
+import net.minecraft.world.item.component.DyedItemColor;
 import net.minecraft.world.item.component.ItemAttributeModifiers;
+import net.minecraft.world.item.component.Unbreakable;
 import net.minecraft.world.item.enchantment.ItemEnchantments;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
 
@@ -74,6 +79,75 @@ public final class ItemEditUtil {
         return list;
     }
 
+    /**
+     * 读取「运行时才有、但不在 {@code ATTRIBUTE_MODIFIERS} 组件里」的属性修饰符。
+     * <p>
+     * 词缀（重铸台生成的 affix）和其它模组的属性事件都是通过 {@code ItemAttributeModifierEvent}
+     * 在 {@code ItemStack#getAttributeModifiers()} 里临时塞进去的，数据组件里查不到 ——
+     * 所以只读组件的编辑器会漏掉它们（典型表现：工具提示上明明有「+125 最大法力值」，
+     * 编辑器属性栏却只列出物品自带的几条）。
+     * <p>
+     * 这里把整份运行时结果读出来，再减去已经由 {@code base} 覆盖的部分，剩下的就是外部来源。
+     *
+     * @param base {@link #readAttributes} 的结果，用于去重（组件条目或物品内置属性）
+     * @return 与 {@code AttributeModifiers} 同格式的条目（AttributeName / id / Operation / Amount / [Slot]）；
+     *         全部槽位都生效的条目不写 {@code Slot}
+     */
+    public static ListTag readInjectedAttributes(ItemStack stack, ListTag base) {
+        java.util.Set<String> baseIds = new java.util.HashSet<>();
+        java.util.Set<String> baseKeys = new java.util.HashSet<>();
+        for (int i = 0; i < base.size(); i++) {
+            CompoundTag c = base.getCompound(i);
+            if (c.contains("id")) baseIds.add(c.getString("id"));
+            String slot = c.contains("Slot") && !c.getString("Slot").isEmpty() ? c.getString("Slot") : "any";
+            baseKeys.add(attributeKey(c.getString("AttributeName"), c.getInt("Operation"),
+                    c.getDouble("Amount"), slot));
+        }
+
+        // 同一个修饰符会在多个槽位组上重复出现，按标识合并；同时记下它出现在哪些槽位组
+        java.util.Map<String, CompoundTag> found = new java.util.LinkedHashMap<>();
+        java.util.Map<String, java.util.Set<String>> slots = new java.util.LinkedHashMap<>();
+        int groupCount = EquipmentSlotGroup.values().length;
+        for (ItemAttributeModifiers.Entry entry : stack.getAttributeModifiers().modifiers()) {
+            ResourceLocation attrId = entry.attribute().unwrapKey().map(key -> key.location()).orElse(null);
+            if (attrId == null) continue;
+            String ident = entry.modifier().id().toString();
+            if (baseIds.contains(ident)) continue;
+            int operation = entry.modifier().operation().id();
+            double amount = entry.modifier().amount();
+            String slot = entry.slot().getSerializedName();
+            // 值完全相同、只是标识被重建成另一个的条目也算已覆盖，避免同一行显示两遍
+            if (baseKeys.contains(attributeKey(attrId.toString(), operation, amount, "any"))
+                    || baseKeys.contains(attributeKey(attrId.toString(), operation, amount, slot))) {
+                continue;
+            }
+            if (found.get(ident) == null) {
+                CompoundTag c = new CompoundTag();
+                c.putString("AttributeName", attrId.toString());
+                c.putString("id", ident);
+                c.putInt("Operation", operation);
+                c.putDouble("Amount", amount);
+                found.put(ident, c);
+            }
+            slots.computeIfAbsent(ident, k -> new java.util.HashSet<>()).add(slot);
+        }
+
+        ListTag result = new ListTag();
+        for (var e : found.entrySet()) {
+            CompoundTag entry = e.getValue();
+            java.util.Set<String> used = slots.get(e.getKey());
+            if (used == null || used.isEmpty()) continue;
+            if (used.size() >= groupCount) entry.remove("Slot");   // 所有槽位都生效 → 「任意」
+            else entry.putString("Slot", used.iterator().next());
+            result.add(entry);
+        }
+        return result;
+    }
+
+    private static String attributeKey(String id, int operation, double amount, String slot) {
+        return id + '|' + operation + '|' + amount + '|' + slot;
+    }
+
     public static CompoundTag newAttribute(String id, int operation, double amount, String slot) {
         CompoundTag entry = new CompoundTag();
         entry.putString("AttributeName", id);
@@ -89,6 +163,137 @@ public final class ItemEditUtil {
         entry.putDouble("Amount", amount);
         if ("any".equals(slot) || slot.isEmpty()) entry.remove("Slot");
         else entry.putString("Slot", slot);
+    }
+
+    // ======================== 特殊标签（无法破坏 / 隐藏提示 / 模型数据 / 颜色 / 铁砧惩罚） ========================
+    // 1.21.1 的「隐藏提示」只剩两个整体开关：
+    //   HIDE_TOOLTIP           → 整条提示都不显示
+    //   HIDE_ADDITIONAL_TOOLTIP→ 只隐藏药水效果 / 地图编号 / 书本信息这类附加信息
+    // 1.20.1 的 HideFlags 位掩码（逐项隐藏附魔 / 属性 / 染料 / 升级）在 1.21.1 没有对应组件，
+    // 要到 1.21.2 的 TooltipDisplay 才支持，所以界面只给这两个开关。
+
+    /** 快照 / 网络包里的键名（与 1.20.1 的同名键保持一致，便于两条线对照）。 */
+    public static final String KEY_UNBREAKABLE = "Unbreakable";
+    public static final String KEY_HIDE_TOOLTIP = "HideTooltip";
+    public static final String KEY_HIDE_ADDITIONAL = "HideAdditional";
+    public static final String KEY_CUSTOM_MODEL_DATA = "CustomModelData";
+    public static final String KEY_POTION_COLOR = "PotionColor";
+    public static final String KEY_REPAIR_COST = "RepairCost";
+    /** 快照里的染料颜色键（实际存在 {@code DYED_COLOR} 组件上）。 */
+    public static final String SNAP_DYE_COLOR = "display.color";
+
+    public static boolean isUnbreakable(ItemStack stack) {
+        return stack.has(DataComponents.UNBREAKABLE);
+    }
+
+    public static boolean isHideTooltip(ItemStack stack) {
+        return stack.has(DataComponents.HIDE_TOOLTIP);
+    }
+
+    public static boolean isHideAdditional(ItemStack stack) {
+        return stack.has(DataComponents.HIDE_ADDITIONAL_TOOLTIP);
+    }
+
+    /** 自定义模型数据；没有该组件时返回 null。 */
+    public static Integer customModelData(ItemStack stack) {
+        CustomModelData data = stack.get(DataComponents.CUSTOM_MODEL_DATA);
+        return data == null ? null : data.value();
+    }
+
+    /** 染料颜色（RGB）；没有染色时返回 null。 */
+    public static Integer dyeColor(ItemStack stack) {
+        DyedItemColor color = stack.get(DataComponents.DYED_COLOR);
+        return color == null ? null : color.rgb();
+    }
+
+    /** 药水的自定义颜色（RGB）；没有自定义颜色时返回 null。 */
+    public static Integer potionColor(ItemStack stack) {
+        PotionContents contents = stack.get(DataComponents.POTION_CONTENTS);
+        return contents == null ? null : contents.customColor().orElse(null);
+    }
+
+    /** 铁砧累计惩罚；没有该组件时返回 null。 */
+    public static Integer repairCost(ItemStack stack) {
+        return stack.get(DataComponents.REPAIR_COST);
+    }
+
+    /**
+     * 特殊标签的原值快照：用于服务端并发检查。
+     * <p>
+     * 只记「编辑器会写的那几项」，其中染料颜色统一压成一个平铺键，省得为一个 int 建两层 compound。
+     */
+    public static CompoundTag specialSnapshot(ItemStack stack) {
+        CompoundTag snapshot = new CompoundTag();
+        if (isUnbreakable(stack)) snapshot.putBoolean(KEY_UNBREAKABLE, true);
+        if (isHideTooltip(stack)) snapshot.putBoolean(KEY_HIDE_TOOLTIP, true);
+        if (isHideAdditional(stack)) snapshot.putBoolean(KEY_HIDE_ADDITIONAL, true);
+        Integer cmm = customModelData(stack);
+        if (cmm != null) snapshot.putInt(KEY_CUSTOM_MODEL_DATA, cmm);
+        Integer dye = dyeColor(stack);
+        if (dye != null) snapshot.putInt(SNAP_DYE_COLOR, dye);
+        Integer potion = potionColor(stack);
+        if (potion != null) snapshot.putInt(KEY_POTION_COLOR, potion);
+        Integer repair = repairCost(stack);
+        if (repair != null) snapshot.putInt(KEY_REPAIR_COST, repair);
+        return snapshot;
+    }
+
+    public static boolean sameSpecial(CompoundTag expected, ItemStack stack) {
+        return java.util.Objects.equals(expected, specialSnapshot(stack));
+    }
+
+    /**
+     * 在副本上写特殊标签，调用者完成校验后再一次性替换手持物品。
+     *
+     * @param unbreakable     null = 不改
+     * @param hideTooltip     null = 不改
+     * @param hideAdditional  null = 不改
+     * @param customModelData null = 不改；负数 = 移除
+     * @param dyeColor        null = 不改；负数 = 移除
+     * @param potionColor     null = 不改；负数 = 移除自定义颜色
+     * @param repairCost      null = 不改；负数 = 移除
+     */
+    public static ItemStack applySpecial(ItemStack original, Boolean unbreakable,
+                                         Boolean hideTooltip, Boolean hideAdditional,
+                                         Integer customModelData, Integer dyeColor,
+                                         Integer potionColor, Integer repairCost) {
+        ItemStack result = original.copy();
+
+        if (unbreakable != null) {
+            if (unbreakable) result.set(DataComponents.UNBREAKABLE, new Unbreakable(true));
+            else result.remove(DataComponents.UNBREAKABLE);
+        }
+        if (hideTooltip != null) {
+            if (hideTooltip) result.set(DataComponents.HIDE_TOOLTIP, Unit.INSTANCE);
+            else result.remove(DataComponents.HIDE_TOOLTIP);
+        }
+        if (hideAdditional != null) {
+            if (hideAdditional) result.set(DataComponents.HIDE_ADDITIONAL_TOOLTIP, Unit.INSTANCE);
+            else result.remove(DataComponents.HIDE_ADDITIONAL_TOOLTIP);
+        }
+        if (customModelData != null) {
+            if (customModelData < 0) result.remove(DataComponents.CUSTOM_MODEL_DATA);
+            else result.set(DataComponents.CUSTOM_MODEL_DATA, new CustomModelData(customModelData));
+        }
+        if (dyeColor != null) {
+            if (dyeColor < 0) result.remove(DataComponents.DYED_COLOR);
+            else result.set(DataComponents.DYED_COLOR, new DyedItemColor(dyeColor & 0xFFFFFF, true));
+        }
+        if (potionColor != null) {
+            PotionContents contents = result.get(DataComponents.POTION_CONTENTS);
+            if (contents != null) {
+                java.util.Optional<Integer> color = potionColor < 0
+                        ? java.util.Optional.empty()
+                        : java.util.Optional.of(potionColor & 0xFFFFFF);
+                result.set(DataComponents.POTION_CONTENTS,
+                        new PotionContents(contents.potion(), color, contents.customEffects()));
+            }
+        }
+        if (repairCost != null) {
+            if (repairCost < 0) result.remove(DataComponents.REPAIR_COST);
+            else result.set(DataComponents.REPAIR_COST, Math.max(0, repairCost));
+        }
+        return result;
     }
 
     /** 原始值用于并发检查，避免旧界面覆盖已变化的附魔或属性。 */

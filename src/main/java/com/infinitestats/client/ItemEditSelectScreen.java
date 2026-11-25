@@ -69,6 +69,8 @@ public class ItemEditSelectScreen extends PanelScreen {
     private String searchText = "";
     private int scroll, maxScroll;
     private Candidate selected;
+    /** Ctrl 攒下的多条：确认时按同一个数值一次性全部加入。 */
+    private final java.util.Set<String> multiSelected = new java.util.LinkedHashSet<>();
     private Candidate hovered;
 
     private EditBox searchBox;
@@ -280,11 +282,13 @@ public class ItemEditSelectScreen extends PanelScreen {
             if (hover) hovered = c;
 
             boolean isSelected = c == selected;
+            boolean picked = multiSelected.contains(c.rl.toString());
             int bg = isSelected ? EditorUi.BG_ROW_DRAG
                     : hover ? EditorUi.BG_ROW_HOVER : EditorUi.BG_ROW;
             g.fill(listX, y, listX + listW, y + EditorUi.ROW_H - 2, bg);
-            if (isSelected) {
-                g.fill(listX, y, listX + 2, y + EditorUi.ROW_H - 2, EditorUi.ACCENT);
+            if (isSelected || picked) {
+                g.fill(listX, y, listX + 2, y + EditorUi.ROW_H - 2,
+                        picked ? EditorUi.GOLD : EditorUi.ACCENT);
             }
 
             String idStr = c.rl.toString();
@@ -309,7 +313,11 @@ public class ItemEditSelectScreen extends PanelScreen {
         EditorUi.dividerH(g, leftPos + 4, ly + LIST_H - 2, GUI_W - 8);
 
         // 底部：选中项提示 + 输入区标签
-        if (selected != null) {
+        if (!multiSelected.isEmpty()) {
+            String label = Component.translatable("screen.infinitestats.item_editor.multi_selected",
+                    multiSelected.size()).getString();
+            g.drawString(font, label, leftPos + EditorUi.GAP, topPos + INPUT_Y - 13, EditorUi.GOLD);
+        } else if (selected != null) {
             g.drawString(font, EditorUi.ellipsize(font, selected.display, GUI_W - 120),
                     leftPos + EditorUi.GAP, topPos + INPUT_Y - 13, EditorUi.GOLD);
         } else {
@@ -325,6 +333,10 @@ public class ItemEditSelectScreen extends PanelScreen {
     protected void renderPanelOverlay(GuiGraphics g, int mx, int my, float pt) {
         if (!isAttr && hovered != null) {
             ItemEditorScreen.renderEnchantDescription(g, mx, my, hovered.rl);
+        } else if (hovered != null) {
+            // 属性页：行内名称是截断显示的，悬停给完整名称 + 注册名
+            queueTooltip(g, mx, my, java.util.List.of(
+                    "§f" + hovered.display, "§7" + hovered.rl), EditorUi.INFO);
         }
 
         if (System.currentTimeMillis() < statusUntil) {
@@ -337,12 +349,26 @@ public class ItemEditSelectScreen extends PanelScreen {
     @Override
     protected boolean onPanelClick(int mx, int my, int button) {
         if (button == 0) {
+            if (beginScrollbarDrag(mx, my, leftPos + GUI_W - EditorUi.GAP - EditorUi.SCROLL_W,
+                    topPos + LIST_Y, LIST_H - 2, scroll, maxScroll, VISIBLE_ROWS,
+                    v -> scroll = clamp(v, 0, maxScroll))) {
+                return true;
+            }
             for (int[] r : rowRects) {
                 int listX = leftPos + EditorUi.GAP;
                 int listW = GUI_W - EditorUi.GAP * 2 - EditorUi.SCROLL_W - 2;
                 if (mx >= listX && mx < listX + listW
                         && my >= r[1] && my < r[1] + EditorUi.ROW_H - 2) {
-                    selected = filtered.get(r[2]);
+                    Candidate candidate = filtered.get(r[2]);
+                    // Ctrl+点击 = 攒进多选，确认时一次性按同一数值全部加入
+                    if (net.minecraft.client.gui.screens.Screen.hasControlDown()) {
+                        String id = candidate.rl.toString();
+                        if (!multiSelected.remove(id)) multiSelected.add(id);
+                        selected = candidate;
+                    } else {
+                        selected = candidate;
+                        multiSelected.clear();
+                    }
                     playClick();
                     return true;
                 }
@@ -358,6 +384,16 @@ public class ItemEditSelectScreen extends PanelScreen {
             return true;
         }
         return false;
+    }
+
+    @Override
+    protected boolean onPanelDrag(int mx, int my, int button, int dragX, int dragY) {
+        return button == 0 && updateScrollbarDrag(my);
+    }
+
+    @Override
+    protected boolean onPanelRelease(int mx, int my, int button) {
+        return button == 0 && endScrollbarDrag();
     }
 
     @Override
@@ -390,6 +426,27 @@ public class ItemEditSelectScreen extends PanelScreen {
         }
         if (!Double.isFinite(val)) {
             setStatus(Component.translatable("screen.infinitestats.item_editor.invalid_value").getString());
+            return;
+        }
+
+        // Ctrl 攒下的多条：按同一个数值一次性全部加入（正在「编辑已有条目」时不适用）
+        if (!multiSelected.isEmpty() && editingAttr == null && editingEnchant == null) {
+            if (isAttr) {
+                int op = clampOp(ItemEditorScreen.indexOf(ItemEditorScreen.OP_LABELS, opCycle.getValue()));
+                int si = Math.max(0, ItemEditorScreen.indexOf(ItemEditorScreen.SLOT_LABELS, slotCycle.getValue()));
+                String slot = ItemEditorScreen.SLOT_IDS[Math.min(si, ItemEditorScreen.SLOT_IDS.length - 1)];
+                for (String multiId : multiSelected) parent.addAttr(multiId, op, val, slot);
+            } else {
+                int lvl = (int) Math.max(1, val);
+                CompoundTag extra = parseExtraNbt();
+                if (extra == null) {
+                    setStatus(Component.translatable("screen.infinitestats.item_editor.invalid_extra_nbt").getString());
+                    return;
+                }
+                for (String multiId : multiSelected) parent.addEnchant(multiId, lvl, extra);
+            }
+            parent.refreshScroll();
+            minecraft.setScreen(parent);
             return;
         }
 

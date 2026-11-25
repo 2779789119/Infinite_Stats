@@ -33,6 +33,8 @@ public class OreVisionSettingsScreen extends PanelScreen {
 
     private final Screen parent;
     private final OreVisionConfig cfg;
+    /** 「恢复默认」需要二次点击确认（与主版本一致）。 */
+    private final ConfirmAction confirm = new ConfirmAction();
 
     public OreVisionSettingsScreen(Screen parent) {
         super(Component.translatable("screen.infinitestats.ore_vision"));
@@ -87,8 +89,18 @@ public class OreVisionSettingsScreen extends PanelScreen {
 
         g.drawString(font, Component.translatable("screen.infinitestats.ore_vision.cached",
                 OreVisionOverlay.cachedCount()), 12, y, MUTED, false);
-        g.drawString(font, Component.translatable("screen.infinitestats.ore_vision.hint"),
+
+        // 底栏：恢复默认 / 完成（恢复默认需要再点一次确认）
+        int btnY = PANEL_H - 22;
+        String hint = Component.translatable("screen.infinitestats.ore_vision.hint").getString();
+        g.drawString(font, EditorUi.ellipsize(font, hint, PANEL_W - 120),
                 12, PANEL_H - 18, MUTED, false);
+        drawButton(g, mouseX, mouseY, PANEL_W - 108, btnY, 48, 16,
+                Component.translatable(confirm.isConfirming("reset")
+                        ? "screen.infinitestats.ui.confirm"
+                        : "screen.infinitestats.ore_settings.reset").getString());
+        drawButton(g, mouseX, mouseY, PANEL_W - 54, btnY, 44, 16,
+                Component.translatable("screen.infinitestats.deposit_filter.done").getString());
     }
 
     /** 一行「标题 + 数值 + [−][+]」；{@code mouseY} 用于悬停高亮。 */
@@ -115,6 +127,17 @@ public class OreVisionSettingsScreen extends PanelScreen {
 
     @Override
     protected boolean onPanelClick(int mouseX, int mouseY, int button) {
+        int btnY = PANEL_H - 22;
+        if (inside(mouseX, mouseY, PANEL_W - 108, btnY, 48, 16)) {
+            if (!confirm.confirm("reset")) return true;
+            cfg.copyFrom(new OreVisionConfig());
+            save();
+            return true;
+        }
+        if (inside(mouseX, mouseY, PANEL_W - 54, btnY, 44, 16)) {
+            onClose();
+            return true;
+        }
         // 半径
         if (inside(mouseX, mouseY, PANEL_W - 66, 39, 22, 16)) {
             cfg.setRange(cfg.getRange() - 4);
