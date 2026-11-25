@@ -30,7 +30,6 @@ import net.minecraftforge.fml.common.Mod;
 import org.joml.Matrix4f;
 
 import java.util.List;
-import java.util.Objects;
 
 /**
  * 「矿透」—— 把周围已加载区块里的矿石描出边框，并且<b>穿透方块</b>显示。
@@ -103,6 +102,9 @@ public final class OreVisionOverlay {
     private static final Matrix4f worldPose = new Matrix4f();
     /** 相机世界坐标。 */
     private static Vec3 worldCamPos = Vec3.ZERO;
+
+    /** HUD 阶段绘制前备份的全局着色器颜色（复用，避免每帧分配 float[4]）。 */
+    private static final float[] shaderColorBackup = new float[4];
     /** 快照取自哪一帧；HUD 阶段靠它判断「这一帧世界到底画过没有」。 */
     private static long worldSnapshotNs = Long.MIN_VALUE;
     /**
@@ -126,9 +128,9 @@ public final class OreVisionOverlay {
         if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_LEVEL) return;
 
         shadersActive = ShaderCompat.areShadersActive();
-        // 每帧都抄一份世界变换：即便这一帧不画（潜行要求没满足 / 光影接管了绘制），
-        // HUD 阶段也要用同一帧的矩阵，抄的时机必须早于任何提前返回
-        snapshotWorldTransform(event);
+        // 只有光影环境下 HUD 阶段才需要这份世界变换（不开光影时世界阶段直接画，没人读它）。
+        // 原来每个非 AFTER_LEVEL 的档位都抄一遍，一帧要拷好几次 4×4 矩阵。
+        if (shadersActive) snapshotWorldTransform(event);
 
         // 绘制仍然固定在 AFTER_TRANSLUCENT_BLOCKS：
         // 更晚的 AFTER_LEVEL 已经没有相机变换，那时再 translate(-相机位置) 坐标会整体错位。
@@ -245,8 +247,13 @@ public final class OreVisionOverlay {
         Minecraft.getInstance().renderBuffers().bufferSource().endBatch();
 
         PoseStack modelView = RenderSystem.getModelViewStack();
-        // setShaderColor 是全局状态，HUD 阶段可能挂着别的颜色，用完要还
-        float[] shaderColor = RenderSystem.getShaderColor().clone();
+        // setShaderColor 是全局状态，HUD 阶段可能挂着别的颜色，用完要还。
+        // 用复用的静态数组而不是每帧 clone 一份（这里是每帧都会跑到的路径）。
+        float[] current = RenderSystem.getShaderColor();
+        shaderColorBackup[0] = current[0];
+        shaderColorBackup[1] = current[1];
+        shaderColorBackup[2] = current[2];
+        shaderColorBackup[3] = current[3];
 
         modelView.pushPose();
         modelView.setIdentity();
@@ -269,7 +276,8 @@ public final class OreVisionOverlay {
         } finally {
             // 投影 / modelview / 着色器颜色都是全局状态：漏还原会让整个 GUI 错位或变色，
             // 所以哪怕画到一半出问题也要收尾
-            RenderSystem.setShaderColor(shaderColor[0], shaderColor[1], shaderColor[2], shaderColor[3]);
+            RenderSystem.setShaderColor(shaderColorBackup[0], shaderColorBackup[1],
+                    shaderColorBackup[2], shaderColorBackup[3]);
             RenderSystem.restoreProjectionMatrix();
             modelView.popPose();
             RenderSystem.applyModelViewMatrix();
@@ -328,8 +336,13 @@ public final class OreVisionOverlay {
         lastScanAt = Long.MIN_VALUE;
     }
 
-    /** 只把「影响扫描结果」的项算进缓存键。 */
+    /**
+     * 只把「影响扫描结果」的项算进缓存键。
+     * <p>
+     * 配置自己维护版本号，不再每帧对隐藏分组集合做一次 {@code Objects.hash}。
+     * 乘对象身份是为了换了一份配置对象时必然重算。
+     */
     private static int configHash(OreVisionConfig cfg) {
-        return Objects.hash(cfg.getRange(), cfg.getMaxBlocks(), cfg.getHiddenGroups());
+        return System.identityHashCode(cfg) * 31 + cfg.revision();
     }
 }

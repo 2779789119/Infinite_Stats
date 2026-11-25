@@ -89,7 +89,8 @@ public final class NetworkHandler {
     // 31：生物面板加强：新增 EntityPanelCommandPacket（动作）/ EntityPanelEffectPacket（移除单个效果）
     //     / EntityPanelRequestPacket（附近生物列表点选后请求开面板）
     // 32：生物面板属性锁定：新增 EntityPanelLockPacket / EntityPanelLockSyncPacket
-    private static final String PROTOCOL_VERSION = "32";
+    // 33：物品编辑器新增特殊标签界面：新增 EditItemTagsPacket
+    private static final String PROTOCOL_VERSION = "33";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -140,7 +141,7 @@ public final class NetworkHandler {
      * 服务端在打开面板时就会把锁表发过来，但客户端可能还没建好界面（比如从附近生物列表点进来），
      * 所以先按实体 id 暂存一份，面板初始化时取走。
      */
-    public static final Map<Integer, CompoundTag> pendingEntityLocks = new HashMap<>();
+    public static final Map<Integer, CompoundTag> pendingEntityLocks = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * 注册所有数据包
@@ -266,6 +267,12 @@ public final class NetworkHandler {
                 EditItemMetaPacket::encode,
                 EditItemMetaPacket::decode,
                 EditItemMetaPacket::handle);
+
+        // 物品特殊标签编辑数据包（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, EditItemTagsPacket.class,
+                EditItemTagsPacket::encode,
+                EditItemTagsPacket::decode,
+                EditItemTagsPacket::handle);
 
         // ========== EMC 数据包 ==========
 
@@ -814,7 +821,44 @@ public final class NetworkHandler {
     // ========== 同步方法 ==========
 
     /**
-     * 同步玩家数据到客户端
+     * 待同步属性数据的玩家。同一个玩家在一个 tick 内被请求多少次，都只发一包。
+     * <p>
+     * 加经验（被动经验每秒一次）、零血兜底这类路径原本每次都 {@link #syncToClient}，
+     * 而它是「全量快照 + 连锁配置 + 矿透配置」三个包 —— 一个人每秒 3 包、
+     * 10 人在线就是每秒 30 个含传送点 / 白黑名单的全量包。改成打标记、tick 末合并。
+     */
+    private static final Set<UUID> PENDING_STATS_SYNC = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** 请求在本次服务端 tick 结束时同步属性数据（合并发送）。 */
+    public static void requestStatsSync(ServerPlayer player) {
+        if (player != null) PENDING_STATS_SYNC.add(player.getUUID());
+    }
+
+    /** 服务端 tick 结束时统一发出合并后的同步包。 */
+    public static void flushStatsSync(MinecraftServer server) {
+        if (server == null || PENDING_STATS_SYNC.isEmpty()) return;
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (PENDING_STATS_SYNC.remove(player.getUUID())) {
+                sendStatsSnapshot(player);
+            }
+        }
+        if (!PENDING_STATS_SYNC.isEmpty()) {
+            // 断线 / 换维度时没能发出去的标记直接丢掉，避免集合长期堆积
+            PENDING_STATS_SYNC.removeIf(id -> server.getPlayerList().getPlayer(id) == null);
+        }
+    }
+
+    /** 只发属性快照（不含连锁 / 矿透两个配置包）。 */
+    public static void sendStatsSnapshot(ServerPlayer player) {
+        player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats ->
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                        new SyncStatsPacket(stats.createSnapshot())));
+    }
+
+    /**
+     * 同步玩家数据到客户端（全量：属性快照 + 连锁配置 + 矿透配置）。
+     * <p>
+     * 只用在登录 / 重生 / 改设置这类低频时机；高频路径请用 {@link #requestStatsSync}。
      */
     public static void syncToClient(ServerPlayer player) {
         player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {

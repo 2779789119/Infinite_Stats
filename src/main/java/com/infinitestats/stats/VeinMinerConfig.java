@@ -68,6 +68,9 @@ public class VeinMinerConfig {
 
     // ======================== 字段 ========================
 
+    /** 「会连锁到哪些方块」的版本号，见 {@link #matchingRevision()}。 */
+    private int matchingRevision;
+
     private MatchMode matchMode = MatchMode.AUTO;
 
     /** true = 右键整片：斧剥皮 / 铲平路 / 锄耕地 / 锄收作物（对同类方块批量执行） */
@@ -139,6 +142,18 @@ public class VeinMinerConfig {
 
     public void setMatchMode(MatchMode matchMode) {
         this.matchMode = matchMode == null ? MatchMode.AUTO : matchMode;
+        matchingRevision++;
+    }
+
+    /**
+     * 影响「会连锁到哪些方块」的配置版本号。
+     * <p>
+     * 连锁预览要判断「配置有没有变」。原先是在渲染线程每帧 {@code Objects.hash(...)} 一遍
+     * 名单集合（对每个字符串取 hash），名单长、帧率高时是纯浪费。改成任何相关 setter
+     * 自增一个计数，判断退化为一次 int 比较。
+     */
+    public int matchingRevision() {
+        return matchingRevision;
     }
 
     public boolean isRightClickVein() {
@@ -155,6 +170,7 @@ public class VeinMinerConfig {
 
     public void setUseWhitelist(boolean useWhitelist) {
         this.useWhitelist = useWhitelist;
+        matchingRevision++;
     }
 
     /** 当前模式对应的名单（白名单模式取白名单，黑名单模式取黑名单）。 */
@@ -171,6 +187,7 @@ public class VeinMinerConfig {
                 if (id != null && !id.isBlank()) target.add(id.trim());
             }
         }
+        matchingRevision++;
     }
 
     /** 当前模式生效的名单（内部可变引用，仅本类使用）。 */
@@ -184,6 +201,7 @@ public class VeinMinerConfig {
 
     public void setMaxBlocks(int maxBlocks) {
         this.maxBlocks = clampInt(maxBlocks, USE_SERVER_LIMIT, MAX_BLOCKS_LIMIT);
+        matchingRevision++;
     }
 
     public int getMaxRadius() {
@@ -192,6 +210,7 @@ public class VeinMinerConfig {
 
     public void setMaxRadius(int maxRadius) {
         this.maxRadius = clampInt(maxRadius, USE_SERVER_LIMIT, MAX_RADIUS_LIMIT);
+        matchingRevision++;
     }
 
     public boolean isDiagonal() {
@@ -200,6 +219,7 @@ public class VeinMinerConfig {
 
     public void setDiagonal(boolean diagonal) {
         this.diagonal = diagonal;
+        matchingRevision++;
     }
 
     public boolean isRequireCorrectTool() {
@@ -208,6 +228,7 @@ public class VeinMinerConfig {
 
     public void setRequireCorrectTool(boolean requireCorrectTool) {
         this.requireCorrectTool = requireCorrectTool;
+        matchingRevision++;
     }
 
     public boolean isRequireSneak() {
@@ -277,6 +298,7 @@ public class VeinMinerConfig {
         showPreview = true;
         exhaustionPerBlock = 0.005D;
         xpPerBlock = 0.0D;
+        matchingRevision++;
     }
 
     public VeinMinerConfig copy() {
@@ -309,6 +331,7 @@ public class VeinMinerConfig {
         // 名单最多保留 256 条，避免客户端塞爆存档（黑白名单各自计）
         trimTo256(whitelist);
         trimTo256(blacklist);
+        matchingRevision++;
     }
 
     private static void trimTo256(Set<String> list) {
@@ -370,6 +393,7 @@ public class VeinMinerConfig {
             readInto(tag, "filterList", cfg.activeList());
         }
         cfg.sanitize();
+        cfg.matchingRevision++;
         return cfg;
     }
 

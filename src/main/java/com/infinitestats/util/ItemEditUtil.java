@@ -242,6 +242,140 @@ public final class ItemEditUtil {
         else entry.putString("Slot", slot);
     }
 
+    // ======================== 特殊标签（无法破坏 / 隐藏提示 / 模型数据 / 颜色 / 铁砧惩罚） ========================
+
+    /** 无法破坏：{@code byte 1}，物品耐久不再下降、耐久条不显示。 */
+    public static final String KEY_UNBREAKABLE = "Unbreakable";
+    /** 隐藏提示位掩码：{@code int}，与 {@code ItemStack.TooltipPart} 的位一一对应。 */
+    public static final String KEY_HIDE_FLAGS = "HideFlags";
+    /** 自定义模型数据：{@code int}，资源包按该值切换模型。 */
+    public static final String KEY_CUSTOM_MODEL_DATA = "CustomModelData";
+    /** 自定义药水颜色：{@code int} RGB，只对带药水色层的物品有效。 */
+    public static final String KEY_POTION_COLOR = "CustomPotionColor";
+    /** 铁砧累计惩罚：{@code int}，原版每次在铁砧里改一次就涨，越高越贵。 */
+    public static final String KEY_REPAIR_COST = "RepairCost";
+    /** {@code display.color}：皮革 / 染色物品的颜色（RGB）。 */
+    public static final String KEY_DYE_COLOR = "color";
+    /** 快照里的染料颜色键（实际写在 {@code display.color}）。 */
+    public static final String SNAP_DYE_COLOR = "display.color";
+
+    public static final int HIDE_ENCHANTMENTS = 1;
+    public static final int HIDE_ATTRIBUTES = 2;
+    public static final int HIDE_UNBREAKABLE = 4;
+    public static final int HIDE_CAN_DESTROY = 8;
+    public static final int HIDE_CAN_PLACE_ON = 16;
+    /** 药水效果 / 地图内容 / 书本信息等杂项。 */
+    public static final int HIDE_OTHER = 32;
+    public static final int HIDE_DYE = 64;
+    public static final int HIDE_UPGRADES = 128;
+    /** 原版「全部隐藏」用的掩码是 63，这里把染料 / 升级也一起盖住。 */
+    public static final int HIDE_ALL = 255;
+
+    public static boolean isUnbreakable(ItemStack stack) {
+        CompoundTag tag = stack.getTag();
+        return tag != null && tag.getBoolean(KEY_UNBREAKABLE);
+    }
+
+    public static int hideFlags(ItemStack stack) {
+        CompoundTag tag = stack.getTag();
+        return tag == null ? 0 : tag.getInt(KEY_HIDE_FLAGS);
+    }
+
+    /** 没有该标签时返回 null（界面用它区分「没设置」与「设置为 0」）。 */
+    public static Integer intTagOrNull(ItemStack stack, String key) {
+        CompoundTag tag = stack.getTag();
+        return tag != null && tag.contains(key, Tag.TAG_ANY_NUMERIC) ? tag.getInt(key) : null;
+    }
+
+    /** {@code display.color}（染料颜色，RGB）；没有时返回 null。 */
+    public static Integer dyeColor(ItemStack stack) {
+        CompoundTag tag = stack.getTag();
+        if (tag == null || !tag.contains("display", Tag.TAG_COMPOUND)) return null;
+        CompoundTag display = tag.getCompound("display");
+        return display.contains(KEY_DYE_COLOR, Tag.TAG_ANY_NUMERIC) ? display.getInt(KEY_DYE_COLOR) : null;
+    }
+
+    /**
+     * 特殊标签的原值快照：用于服务端并发检查。
+     * <p>
+     * 只记「编辑器会写的那几项」，其中染料颜色统一压成 {@link #SNAP_DYE_COLOR} 平铺键，
+     * 省得为一个 int 建两层 compound。
+     */
+    public static CompoundTag specialSnapshot(ItemStack stack) {
+        CompoundTag snapshot = new CompoundTag();
+        CompoundTag tag = stack.getTag();
+        if (tag != null) {
+            if (tag.contains(KEY_UNBREAKABLE, Tag.TAG_ANY_NUMERIC)) {
+                snapshot.putBoolean(KEY_UNBREAKABLE, tag.getBoolean(KEY_UNBREAKABLE));
+            }
+            if (tag.contains(KEY_HIDE_FLAGS, Tag.TAG_ANY_NUMERIC)) {
+                snapshot.putInt(KEY_HIDE_FLAGS, tag.getInt(KEY_HIDE_FLAGS));
+            }
+            if (tag.contains(KEY_CUSTOM_MODEL_DATA, Tag.TAG_ANY_NUMERIC)) {
+                snapshot.putInt(KEY_CUSTOM_MODEL_DATA, tag.getInt(KEY_CUSTOM_MODEL_DATA));
+            }
+            if (tag.contains(KEY_POTION_COLOR, Tag.TAG_ANY_NUMERIC)) {
+                snapshot.putInt(KEY_POTION_COLOR, tag.getInt(KEY_POTION_COLOR));
+            }
+            if (tag.contains(KEY_REPAIR_COST, Tag.TAG_ANY_NUMERIC)) {
+                snapshot.putInt(KEY_REPAIR_COST, tag.getInt(KEY_REPAIR_COST));
+            }
+        }
+        Integer color = dyeColor(stack);
+        if (color != null) snapshot.putInt(SNAP_DYE_COLOR, color);
+        return snapshot;
+    }
+
+    public static boolean sameSpecial(CompoundTag expected, ItemStack stack) {
+        return java.util.Objects.equals(expected, specialSnapshot(stack));
+    }
+
+    /**
+     * 在副本上写特殊标签，调用者完成校验后再一次性替换手持物品。
+     *
+     * @param unbreakable     null = 不改
+     * @param hideFlags       null = 不改；0 = 移除
+     * @param customModelData null = 不改；负数 = 移除
+     * @param dyeColor        null = 不改；负数 = 移除（display 空了就整段删掉）
+     * @param potionColor     null = 不改；负数 = 移除
+     * @param repairCost      null = 不改；负数 = 移除
+     */
+    public static ItemStack applySpecial(ItemStack original, Boolean unbreakable, Integer hideFlags,
+                                         Integer customModelData, Integer dyeColor, Integer potionColor,
+                                         Integer repairCost) {
+        ItemStack result = original.copy();
+        if (unbreakable != null) {
+            if (unbreakable) result.getOrCreateTag().putBoolean(KEY_UNBREAKABLE, true);
+            else result.removeTagKey(KEY_UNBREAKABLE);
+        }
+        if (hideFlags != null) {
+            if (hideFlags <= 0) result.removeTagKey(KEY_HIDE_FLAGS);
+            else result.getOrCreateTag().putInt(KEY_HIDE_FLAGS, hideFlags);
+        }
+        if (customModelData != null) {
+            if (customModelData < 0) result.removeTagKey(KEY_CUSTOM_MODEL_DATA);
+            else result.getOrCreateTag().putInt(KEY_CUSTOM_MODEL_DATA, customModelData);
+        }
+        if (dyeColor != null) {
+            CompoundTag display = result.getOrCreateTagElement("display");
+            if (dyeColor < 0) {
+                display.remove(KEY_DYE_COLOR);
+                if (display.isEmpty()) result.removeTagKey("display");
+            } else {
+                display.putInt(KEY_DYE_COLOR, dyeColor);
+            }
+        }
+        if (potionColor != null) {
+            if (potionColor < 0) result.removeTagKey(KEY_POTION_COLOR);
+            else result.getOrCreateTag().putInt(KEY_POTION_COLOR, potionColor);
+        }
+        if (repairCost != null) {
+            if (repairCost < 0) result.removeTagKey(KEY_REPAIR_COST);
+            else result.getOrCreateTag().putInt(KEY_REPAIR_COST, repairCost);
+        }
+        return result;
+    }
+
     /** 原始值用于并发检查，避免旧界面覆盖已变化的附魔或属性。 */
     public static CompoundTag editableSnapshot(ItemStack stack) {
         CompoundTag snapshot = new CompoundTag();

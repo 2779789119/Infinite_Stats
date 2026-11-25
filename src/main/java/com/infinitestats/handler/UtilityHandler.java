@@ -271,9 +271,13 @@ public class UtilityHandler implements StatEffectHandler {
         if (nightVision) {
             // 使用 forceAddEffect 直接写入效果，不触发 MobEffectEvent.Applicable，
             // 从而绕过其他模组（如免疫类/夜视管理类）对该事件的 DENY 拦截。
-            // 每 tick 调用一次，保证效果被中途清除时立即补回、无闪烁。
-            player.forceAddEffect(new MobEffectInstance(MobEffects.NIGHT_VISION,
-                    MobEffectInstance.INFINITE_DURATION, 0, false, false, true), player);
+            // 仍然每 tick 检查一次（保证被中途清除时立即补回、无闪烁），
+            // 但只有「当前那条不是我们放的无限夜视」时才真正写入 ——
+            // 稳态下每 tick 只多一次效果表查询，不再每次新建 MobEffectInstance。
+            if (!isOurInfiniteEffect(player.getEffect(MobEffects.NIGHT_VISION))) {
+                player.forceAddEffect(new MobEffectInstance(MobEffects.NIGHT_VISION,
+                        MobEffectInstance.INFINITE_DURATION, 0, false, false, true), player);
+            }
             stats.setProviding("night_vision", true);
         } else if (weProvided) {
             // 白名单保护中：连本模组自己的收尾清理也要让位（保护项只能由玩家取消保护或自然结束）
@@ -282,6 +286,21 @@ public class UtilityHandler implements StatEffectHandler {
             }
             stats.setProviding("night_vision", false);
         }
+    }
+
+    /**
+     * 判断这条效果是不是「本模组放的那一条无限、0 级、隐藏粒子」的效果。
+     * <p>
+     * 稳态下 {@code forceAddEffect} 本来就因为「数值没变」不会发同步包，
+     * 但每 tick 新建一个 {@link MobEffectInstance} 依然是纯浪费 —— 这里先比对一次就跳过写入。
+     */
+    public static boolean isOurInfiniteEffect(MobEffectInstance effect) {
+        return effect != null
+                && effect.getDuration() == MobEffectInstance.INFINITE_DURATION
+                && effect.getAmplifier() == 0
+                && !effect.isAmbient()
+                && !effect.isVisible()
+                && effect.showIcon();
     }
 
     /**

@@ -1542,10 +1542,13 @@ public final class StatEventHandler {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             player.getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(stats -> {
                 if (DefenseHandler.preventZeroHealth(player, stats)) {
-                    NetworkHandler.syncToClient(player);
+                    // 打标记而不是立刻发全量包：本 tick 里可能还有被动经验、属性改动等多次请求，
+                    // 统一在下面 flush 一次（一个玩家最多一包）。
+                    NetworkHandler.requestStatsSync(player);
                 }
             });
         }
+        NetworkHandler.flushStatsSync(server);
     }
 
     @SubscribeEvent
@@ -1583,7 +1586,7 @@ public final class StatEventHandler {
                 // setCanceled(false) 撤销我们的拦截 —— 事件层没有剩余手段，只能在每 tick 结束时
                 // 用血量快照拉回来（详见 DefenseHandler#preventZeroHealth）。
                 if (DefenseHandler.preventZeroHealth(player, stats)) {
-                    NetworkHandler.syncToClient(player);
+                    NetworkHandler.requestStatsSync(player);
                 }
             } catch (Throwable t) {
                 t.printStackTrace();
@@ -1938,7 +1941,9 @@ public final class StatEventHandler {
 
     private static void addXpAndSync(ServerPlayer player, PlayerStats stats, long xp) {
         boolean leveledUp = stats.addExperience(xp);
-        NetworkHandler.syncToClient(player);
+        // 被动经验默认 20 tick 一次，原本每次都是「全量快照 + 两个配置包」；
+        // 这里改成 tick 末合并，经验条最多晚一个 tick（50ms）刷新，肉眼无感。
+        NetworkHandler.requestStatsSync(player);
         if (leveledUp) {
             player.displayClientMessage(
                     net.minecraft.network.chat.Component.translatable("message.infinitestats.level_up",

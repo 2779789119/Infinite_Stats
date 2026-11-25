@@ -179,8 +179,11 @@ public class DefenseHandler implements StatEffectHandler {
 
         var effects = player.getActiveEffects();
         if (effects.isEmpty()) return;
-        // 遍历副本，安全移除
-        for (MobEffectInstance inst : new java.util.ArrayList<>(effects)) {
+
+        // 先收集要删的，再统一删：不复制整张效果表（这个方法每 tick 被调用两次，
+        // 名单命中是少数情况，绝大多数 tick 下这里零分配）
+        java.util.List<MobEffect> toRemove = null;
+        for (MobEffectInstance inst : effects) {
             if (inst.getEffect() == null) continue;
 
             String effectId = effectId(inst.getEffect());
@@ -189,8 +192,13 @@ public class DefenseHandler implements StatEffectHandler {
             // 否则名单里写 minecraft:* 或 * 会把自己刚加上的效果每 2 秒清一次（闪烁）
             if (StatEventHandler.isOwnUtilityEffect(stats, effectId)) continue;
             if (stats.shouldBlockEffect(effectId)) {
-                hardRemoveEffect(player, inst.getEffect());
+                if (toRemove == null) toRemove = new java.util.ArrayList<>(4);
+                toRemove.add(inst.getEffect());
             }
+        }
+        if (toRemove == null) return;
+        for (MobEffect effect : toRemove) {
+            hardRemoveEffect(player, effect);
         }
     }
 

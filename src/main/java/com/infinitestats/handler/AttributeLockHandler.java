@@ -74,6 +74,15 @@ public final class AttributeLockHandler {
     /** UUID → (属性注册名 → 锁)。只放真正有锁的实体。 */
     private static final Map<UUID, Map<String, Lock>> CACHE = new ConcurrentHashMap<>();
 
+    /**
+     * 属性注册名 → Attribute（含「查不到」的负缓存）。
+     * <p>
+     * {@link #applyLocks} 每 tick 会对每条锁做一次 {@code ResourceLocation.tryParse} +
+     * {@code ForgeRegistries.ATTRIBUTES.getValue}，锁得多、实体多的时候是纯重复的字符串解析
+     * 与注册表查找。属性注册表在游戏运行期是固定的，可以长期缓存。
+     */
+    private static final Map<String, java.util.Optional<Attribute>> ATTRIBUTE_CACHE = new ConcurrentHashMap<>();
+
     /** 一条锁。 */
     public record Lock(int mode, double value) {}
 
@@ -168,12 +177,15 @@ public final class AttributeLockHandler {
         LivingEntity entity = event.getEntity();
         if (entity.level().isClientSide()) return;
 
-        // 缓存里没有：可能是刚加载 / 刚复制出来的实体，从它自己的 NBT 里补一次
-        // （每 20 tick 才碰一次 NBT，避免几千实体时每 tick 都读）
-        if (entity.tickCount % 20 == 0) hydrate(entity);
-
         Map<String, Lock> locks = CACHE.get(entity.getUUID());
-        if (locks == null || locks.isEmpty()) return;
+        if (locks == null) {
+            // 缓存里没有：可能是刚加载 / 刚复制出来的实体，从它自己的 NBT 里补一次
+            // （每 20 tick 才碰一次 NBT，避免几千实体时每 tick 都读）。
+            // 已经命中缓存的实体不必再走这一步 —— 锁只会由 set() / commit() 维护。
+            if (entity.tickCount % 20 == 0) hydrate(entity);
+            return;
+        }
+        if (locks.isEmpty()) return;
         applyLocks(entity, locks);
     }
 
@@ -261,9 +273,12 @@ public final class AttributeLockHandler {
 
     private static AttributeInstance instanceOf(Entity entity, String attributeId) {
         if (!(entity instanceof LivingEntity living)) return null;
-        ResourceLocation id = ResourceLocation.tryParse(attributeId);
-        if (id == null) return null;
-        Attribute attribute = ForgeRegistries.ATTRIBUTES.getValue(id);
+        Attribute attribute = ATTRIBUTE_CACHE.computeIfAbsent(attributeId, key -> {
+            ResourceLocation id = ResourceLocation.tryParse(key);
+            return id == null
+                    ? java.util.Optional.empty()
+                    : java.util.Optional.ofNullable(ForgeRegistries.ATTRIBUTES.getValue(id));
+        }).orElse(null);
         return attribute == null ? null : living.getAttribute(attribute);
     }
 

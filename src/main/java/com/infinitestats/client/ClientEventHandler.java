@@ -13,6 +13,7 @@ import com.infinitestats.client.PortableFurnaceScreen;
 import com.infinitestats.client.FurnaceOrePriorityScreen;
 import com.infinitestats.handler.CooldownHandler;
 import com.infinitestats.handler.MobilityHandler;
+import com.infinitestats.handler.UtilityHandler;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.PlayerStatsProvider;
@@ -262,9 +263,12 @@ public final class ClientEventHandler {
             applyClientProtectedEffects(player, stats);
 
             if (stats.isToggleActive("night_vision")) {
-                map.put(MobEffects.NIGHT_VISION, new MobEffectInstance(
-                        MobEffects.NIGHT_VISION,
-                        MobEffectInstance.INFINITE_DURATION, 0, false, false, true));
+                // 只有「当前那条不是我们放的无限夜视」时才写：稳态下每 tick 不再新建实例
+                if (!UtilityHandler.isOurInfiniteEffect(map.get(MobEffects.NIGHT_VISION))) {
+                    map.put(MobEffects.NIGHT_VISION, new MobEffectInstance(
+                            MobEffects.NIGHT_VISION,
+                            MobEffectInstance.INFINITE_DURATION, 0, false, false, true));
+                }
                 // 移除黑暗效果，防止其压制夜视视觉。
                 // 例外：玩家在「效果过滤」里把黑暗列为保护时让位 —— 保护的意义就是不被外力清除，
                 // 否则服务端每 tick 补回、这里每 tick 删掉，界面显示「保护中」却毫无效果。

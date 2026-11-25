@@ -12,8 +12,10 @@ import net.minecraftforge.common.Tags;
 import net.minecraftforge.registries.ForgeRegistries;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * 「矿透」的本地扫描器 —— 在客户端<b>已加载</b>的区块里找出玩家周围的矿石。
@@ -117,12 +119,35 @@ final class OreVisionScanner {
     }
 
     /**
+     * 「方块状态 → 是不是矿石」的结果缓存。
+     * <p>
+     * 一次扫描里每个 section 要逐格判 4096 个方块，而 {@link #isOre} 的判断包含
+     * {@code toLowerCase} —— 那是<b>每格分配一个新字符串</b>。地下绝大多数格子是石头，
+     * 同一个 {@code BlockState} 会被问上几万次。BlockState 是单例，判定结果可以长期缓存。
+     */
+    private static final Map<BlockState, Boolean> ORE_LOOKUP = new HashMap<>();
+    /** 「方块状态 → 矿物分组」，同上。 */
+    private static final Map<BlockState, OreVisionConfig.OreGroup> GROUP_LOOKUP = new HashMap<>();
+    /** 缓存上限：跨界探索遇到极多种方块时整体清一次，避免无界增长。 */
+    private static final int LOOKUP_LIMIT = 8192;
+
+    /**
      * 是不是矿石。
      * <p>
      * 先认 Forge 的 {@code forge:ores} 标签（模组矿石基本都会把它打上），
      * 再用命名兜底：远古残骸没有 {@code _ore} 后缀，而不少模组矿石又没有打标签。
      */
     static boolean isOre(BlockState state) {
+        Boolean cached = ORE_LOOKUP.get(state);
+        if (cached != null) return cached;
+
+        if (ORE_LOOKUP.size() >= LOOKUP_LIMIT) ORE_LOOKUP.clear();
+        boolean result = computeIsOre(state);
+        ORE_LOOKUP.put(state, result);
+        return result;
+    }
+
+    private static boolean computeIsOre(BlockState state) {
         if (state.isAir()) return false;
         if (state.is(Tags.Blocks.ORES)) return true;
 
@@ -134,6 +159,16 @@ final class OreVisionScanner {
 
     /** 按方块注册名归类（决定颜色，也决定玩家能不能在面板里把它关掉）。 */
     static OreVisionConfig.OreGroup groupOf(BlockState state) {
+        OreVisionConfig.OreGroup cached = GROUP_LOOKUP.get(state);
+        if (cached != null) return cached;
+
+        if (GROUP_LOOKUP.size() >= LOOKUP_LIMIT) GROUP_LOOKUP.clear();
+        OreVisionConfig.OreGroup group = computeGroupOf(state);
+        GROUP_LOOKUP.put(state, group);
+        return group;
+    }
+
+    private static OreVisionConfig.OreGroup computeGroupOf(BlockState state) {
         ResourceLocation id = ForgeRegistries.BLOCKS.getKey(state.getBlock());
         String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
 

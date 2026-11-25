@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Curios 饰品栏桥接（纯反射，无需编译期依赖；Curios 未加载时所有方法都是空操作）。
@@ -232,33 +233,66 @@ public final class CuriosBridge {
                     if (!stack.isEmpty()) consumer.accept(stack);
                 }
             }
-        } catch (Throwable ignored) {
-            // 版本对不上：这次跳过
+        } catch (Throwable t) {
+            // 版本对不上：这次跳过，但至少留一条日志（只打一次），
+            // 否则 Curios 换个版本之后「无限能源 / 冷却缩减」静默失效，玩家和日志都看不出来
+            warn("遍历 Curios 饰品栏失败，饰品相关功能可能整体失效", t);
         }
+    }
+
+    /**
+     * 无参方法查找缓存：{@code 运行时类 → 方法名 → Method}。
+     * <p>
+     * {@link #forEachStack} 被「冷却缩减 / 无限能源 / 自动修理」这类每 tick 或每 N tick 的功能调用，
+     * 每次还要对每个槽位的运行时类做 {@code Class.forName} + {@code getMethod} ——
+     * 那是带安全检查的元数据查询，比 {@code invoke} 本身贵得多。类一旦确定，Method 就不会变。
+     */
+    private static final Map<Class<?>, Map<String, Method>> NO_ARG_METHODS = new ConcurrentHashMap<>();
+
+    private static Method noArg(Class<?> owner, String name) throws NoSuchMethodException {
+        Map<String, Method> methods = NO_ARG_METHODS.get(owner);
+        if (methods == null) {
+            methods = new ConcurrentHashMap<>();
+            NO_ARG_METHODS.put(owner, methods);
+        }
+        Method method = methods.get(name);
+        if (method == null) {
+            method = owner.getMethod(name);
+            methods.put(name, method);
+        }
+        return method;
+    }
+
+    /** CuriosApi#getCuriosInventory 的 Method 缓存（Curios 5.x 与旧版签名不同，首次解析后复用）。 */
+    private static volatile Method getCuriosInventoryMethod;
+
+    private static Method getCuriosInventoryMethod() throws Exception {
+        Method method = getCuriosInventoryMethod;
+        if (method != null) return method;
+        Class<?> api = Class.forName(API_CLASS);
+        try {
+            method = api.getMethod("getCuriosInventory", Player.class);
+        } catch (NoSuchMethodException e) {
+            method = api.getMethod("getCuriosInventory", Class.forName(LIVING_ENTITY_CLASS));
+        }
+        getCuriosInventoryMethod = method;
+        return method;
     }
 
     /** 取玩家的「槽位 ID → ICuriosStackHandler」映射；取不到返回 null。 */
     private static Map<?, ?> curiosMap(Player player) throws Exception {
-        Class<?> api = Class.forName(API_CLASS);
-        // Curios 5.x 的签名是 getCuriosInventory(LivingEntity)，旧版是 Player，两种都要兼容
-        Method getInventory;
-        try {
-            getInventory = api.getMethod("getCuriosInventory", Player.class);
-        } catch (NoSuchMethodException e) {
-            getInventory = api.getMethod("getCuriosInventory", Class.forName(LIVING_ENTITY_CLASS));
-        }
-        Object raw = getInventory.invoke(null, player);
+        Object raw = getCuriosInventoryMethod().invoke(null, player);
         if (raw == null) return null;
 
         // 兼容 LazyOptional（Forge）与 Optional 两种返回类型
         Object optional = raw.getClass().getName().contains("LazyOptional")
-                ? raw.getClass().getMethod("resolve").invoke(raw) : raw;
-        if (optional == null || !(boolean) optional.getClass().getMethod("isPresent").invoke(optional)) {
+                ? noArg(raw.getClass(), "resolve").invoke(raw) : raw;
+        if (optional == null || !(boolean) noArg(optional.getClass(), "isPresent").invoke(optional)) {
             return null;
         }
-        Object handler = optional.getClass().getMethod("get").invoke(optional);
+        Object handler = noArg(optional.getClass(), "get").invoke(optional);
         if (handler == null) return null;
-        Object map = handler.getClass().getMethod("getCurios").invoke(handler);
+        Object map = noArg(handler.getClass(), "getCurios").invoke(handler);
         return map instanceof Map ? (Map<?, ?>) map : null;
     }
 
@@ -266,7 +300,7 @@ public final class CuriosBridge {
     private static IItemHandler stacksOf(Object slotHandler) {
         if (slotHandler == null) return null;
         try {
-            Object stacks = slotHandler.getClass().getMethod("getStacks").invoke(slotHandler);
+            Object stacks = noArg(slotHandler.getClass(), "getStacks").invoke(slotHandler);
             return stacks instanceof IItemHandler handler ? handler : null;
         } catch (Throwable t) {
             return null;

@@ -219,9 +219,9 @@ public class ItemEditorScreen extends PanelScreen {
         addColumnWidgets(0, colX(0));
         addColumnWidgets(1, colX(1));
 
-        // 底部按钮区：4 键等宽居中（更多属性 / 拔刀剑 / 取消 / 应用）
-        int bw = 88, gap = 8;
-        int total = 4 * bw + 3 * gap;
+        // 底部按钮区：5 键等宽居中（更多属性 / 特殊标签 / 拔刀剑 / 取消 / 应用）
+        int bw = 76, gap = 6;
+        int total = 5 * bw + 4 * gap;
         int bx = leftPos + (GUI_W - total) / 2;
         int by = topPos + FOOTER_Y;
 
@@ -229,17 +229,21 @@ public class ItemEditorScreen extends PanelScreen {
                 "screen.infinitestats.item_editor.more",
                 b -> minecraft.setScreen(new EditItemMetaScreen(this))));
 
+        addRenderableWidget(button(bx + (bw + gap), by, bw, FOOTER_H,
+                "screen.infinitestats.item_editor.tags",
+                b -> minecraft.setScreen(new ItemSpecialTagScreen(this))));
+
         // 「拔刀剑」：仅主手是拔刀剑时可点（拔刀剑模组未安装 / 手持别物时置灰）
-        Button bladeBtn = button(bx + (bw + gap), by, bw, FOOTER_H,
+        Button bladeBtn = button(bx + 2 * (bw + gap), by, bw, FOOTER_H,
                 "screen.infinitestats.item_editor.blade",
                 b -> minecraft.setScreen(new SlashBladeEditScreen(this)));
         ItemStack held = minecraft.player == null ? ItemStack.EMPTY : minecraft.player.getMainHandItem();
         bladeBtn.active = SlashBladeCompat.isBlade(held);
         addRenderableWidget(bladeBtn);
 
-        addRenderableWidget(button(bx + 2 * (bw + gap), by, bw, FOOTER_H,
-                "screen.infinitestats.item_editor.cancel", b -> onClose()));
         addRenderableWidget(button(bx + 3 * (bw + gap), by, bw, FOOTER_H,
+                "screen.infinitestats.item_editor.cancel", b -> onClose()));
+        addRenderableWidget(button(bx + 4 * (bw + gap), by, bw, FOOTER_H,
                 "screen.infinitestats.item_editor.apply", b -> apply()));
     }
 

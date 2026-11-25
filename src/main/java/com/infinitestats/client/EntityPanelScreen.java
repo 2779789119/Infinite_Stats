@@ -203,10 +203,14 @@ public class EntityPanelScreen extends PanelScreen {
      * <p>
      * 面板是暂停界面 —— 单人游戏打开它世界就停了：服务端不 tick，我们发过去的
      * 「改属性 / 切开关 / 执行动作」的包就一直躺在队列里，表现就是「改完必须关掉面板重开才生效」。
-     * 所以每次发包后临时放行一百多毫秒，让服务端把包处理掉、属性同步回来，再自动暂停。
-     * 用时间而不是帧数：不受帧率影响，服务器 20 tick/s 下至少能跑两三个 tick。
+     * 所以每次发包后临时放行 80ms，让服务端把包处理掉、属性同步回来，再自动暂停。
+     * 用时间而不是帧数：不受帧率影响，服务器 20 tick/s 下至少能跑到一两个 tick。
+     * 时间刻意压得比一个 tick 稍长而不是更长 —— 放行期间世界是真在跑的，怪物会动、会打人。
      */
     private long pauseFreeUntil;
+
+    /** 发包后放行世界的时长（毫秒）。一个服务端 tick 是 50ms，80ms 保证至少跑一次。 */
+    private static final long PAUSE_FREE_MS = 80L;
 
     /** 一行属性。 */
     private record Row(String name, String id, double value, double base,
@@ -1434,7 +1438,7 @@ public class EntityPanelScreen extends PanelScreen {
 
     /**
      * 平时暂停（面板里翻属性、输数值时世界不会偷袭你）；
-     * 刚发过包的那一百多毫秒放行，让服务端真的处理这次改动（见 {@link #pauseFreeUntil}）。
+     * 刚发过包的那几十毫秒放行，让服务端真的处理这次改动（见 {@link #pauseFreeUntil}）。
      */
     @Override
     public boolean isPauseScreen() {
@@ -1449,7 +1453,7 @@ public class EntityPanelScreen extends PanelScreen {
      */
     private void send(Object packet) {
         NetworkHandler.CHANNEL.sendToServer(packet);
-        pauseFreeUntil = System.currentTimeMillis() + 150L;
+        pauseFreeUntil = System.currentTimeMillis() + PAUSE_FREE_MS;
         rebuildCountdown = 1;
     }
 }

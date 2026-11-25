@@ -16,6 +16,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -30,6 +31,23 @@ import java.util.Map;
  * 避免绕过任何内部逻辑。
  */
 public class TimeAccelHandler implements StatEffectHandler {
+
+    /**
+     * 单个游戏刻最多执行的额外刻数。
+     * <p>
+     * 属性没有上限（轮椅模组不砍强度），但「额外刻」是乘在<b>整个半径体积</b>上的：
+     * 额外刻数 × 随机刻数 × 方块实体数，点高了就是单 tick 内几十万次方块查询，
+     * 结果是服务器直接卡住而不是变快。这里只给「单 tick 的工作量」设天花板，
+     * 多点出来的部分直接丢弃（不累加到下一 tick，否则会一直爆）。
+     * 64 已经相当于 64 倍速，远超过实际可感知的范围。
+     */
+    private static final int MAX_EXTRA_TICKS = 64;
+
+    /** 加速半径上限（格）。原配置 + 属性点数相加后可能到几十格，体积是立方的。 */
+    private static final int MAX_RADIUS = 16;
+
+    /** 单次额外刻最多做的随机刻次数（默认 randomTickSpeed=3、半径 16 时约 1600 次）。 */
+    private static final int MAX_RANDOM_TICKS = 8192;
 
     @Override
     public String getId() {
@@ -53,29 +71,27 @@ public class TimeAccelHandler implements StatEffectHandler {
         if (player.level().isClientSide()) return;
         ServerLevel level = (ServerLevel) player.level();
 
-        // 累加小数部分，整数部分作为本 tick 的额外加速刻数（不再设上限）
-        double accum = stats.getTimeAccelAccum() + accel;
+        // 累加小数部分，整数部分作为本 tick 的额外加速刻数。
+        // 累加器直接钳在 MAX_EXTRA_TICKS：超出部分丢弃，不留给下一 tick（否则永远在爆）。
+        double accum = Math.min(stats.getTimeAccelAccum() + accel, MAX_EXTRA_TICKS);
         int extraTicks = (int) accum;
         stats.setTimeAccelAccum(accum - extraTicks);
         if (extraTicks <= 0) return;
 
         // 影响半径 = 配置基础半径 + 玩家「加速半径」属性点数
         int radius = Config.TIME_ACCEL_RADIUS.get() + (int) stats.getStatValue("time_accel_radius");
-        if (radius < 1) radius = 1;
+        radius = Math.max(1, Math.min(MAX_RADIUS, radius));
 
-        for (int i = 0; i < extraTicks; i++) {
-            accelerateOnce(player, level, radius);
-        }
-    }
-
-    /**
-     * 对玩家周围区域执行一次"额外游戏刻"的时间加速。
-     */
-    private void accelerateOnce(ServerPlayer player, ServerLevel level, int radius) {
         BlockPos center = player.blockPosition();
 
-        accelerateRandomTicks(player, level, center, radius);
-        accelerateBlockEntities(player, level, center, radius);
+        // 方块实体的快照每 tick 只取一次，多个额外刻复用同一份：
+        // 原来每个额外刻都把半径内所有区块的方块实体表整份复制一遍（额外刻 64 时就是 64 倍复制）。
+        List<BlockEntity> blockEntities = snapshotBlockEntities(level, center, radius);
+
+        for (int i = 0; i < extraTicks; i++) {
+            accelerateRandomTicks(level, center, radius);
+            tickBlockEntities(level, blockEntities, center, radius);
+        }
     }
 
     /**
@@ -83,12 +99,14 @@ public class TimeAccelHandler implements StatEffectHandler {
      * 模拟原版在相同体积下每游戏刻应执行的随机刻数量：
      * 每个 16x16x16 区块每游戏刻的随机刻数 = randomTickSpeed（游戏规则，默认 3）。
      */
-    private void accelerateRandomTicks(ServerPlayer player, ServerLevel level, BlockPos center, int radius) {
+    private void accelerateRandomTicks(ServerLevel level, BlockPos center, int radius) {
         int randomTickSpeed = level.getGameRules().getInt(GameRules.RULE_RANDOMTICKING);
         if (randomTickSpeed <= 0) return;
 
         double volume = Math.pow(2 * radius + 1, 3);
         int randomTickCount = (int) Math.round(volume / 4096.0 * randomTickSpeed);
+        // 单次额外刻的随机刻数量也要封顶：半径 16 时体积已是 35³，randomTickSpeed 调高就是几万次方块查询
+        if (randomTickCount > MAX_RANDOM_TICKS) randomTickCount = MAX_RANDOM_TICKS;
 
         int minY = level.getMinBuildHeight();
         int maxY = level.getMaxBuildHeight() - 1;
@@ -113,36 +131,57 @@ public class TimeAccelHandler implements StatEffectHandler {
      * 额外方块实体刻。
      * 遍历玩家周围已加载区块中的方块实体，使用原版的 TickingBlockEntity 路径再 tick 一次。
      */
-    private void accelerateBlockEntities(ServerPlayer player, ServerLevel level, BlockPos center, int radius) {
+    private static List<BlockEntity> snapshotBlockEntities(ServerLevel level, BlockPos center, int radius) {
         int cxMin = (center.getX() - radius) >> 4;
         int cxMax = (center.getX() + radius) >> 4;
         int czMin = (center.getZ() - radius) >> 4;
         int czMax = (center.getZ() + radius) >> 4;
-        int yMin = center.getY() - radius;
-        int yMax = center.getY() + radius;
 
+        List<BlockEntity> out = new ArrayList<>();
         for (int cx = cxMin; cx <= cxMax; cx++) {
             for (int cz = czMin; cz <= czMax; cz++) {
                 // 只使用已加载的区块，避免强制生成新区块
                 LevelChunk chunk = level.getChunkSource().getChunkNow(cx, cz);
                 if (chunk == null) continue;
+                // 复制一份快照：tick 过程中方块实体可能被增删（刷怪笼、漏斗等），
+                // 直接遍历原 HashMap 会触发 ConcurrentModificationException。
+                // 这份快照在本 tick 的所有额外刻里复用，只复制一次。
+                out.addAll(chunk.getBlockEntities().values());
+            }
+        }
+        return out;
+    }
 
-                // 遍历副本快照：tick 过程中区块方块实体可能被增删（刷怪笼、漏斗等），
-                // 直接遍历原 HashMap 会触发 ConcurrentModificationException
-                for (BlockEntity be : new ArrayList<>(chunk.getBlockEntities().values())) {
-                    BlockPos bep = be.getBlockPos();
-                    if (bep.getY() < yMin || bep.getY() > yMax) continue;
-                    if (Math.abs(bep.getX() - center.getX()) > radius) continue;
-                    if (Math.abs(bep.getZ() - center.getZ()) > radius) continue;
+    /**
+     * 对快照里的方块实体各 tick 一次。
+     * <p>
+     * 快照是复用的，所以必须跳过已被移除的方块实体 —— 前一个额外刻里
+     * 漏斗 / 刷怪笼之类的逻辑可能已经把某个方块实体删掉了。
+     */
+    private void tickBlockEntities(ServerLevel level, List<BlockEntity> blockEntities,
+                                   BlockPos center, int radius) {
+        if (blockEntities.isEmpty()) return;
 
-                    Block block = be.getBlockState().getBlock();
-                    if (block instanceof EntityBlock entityBlock) {
-                        @SuppressWarnings("unchecked")
-                        BlockEntityTicker ticker = entityBlock.getTicker(level, be.getBlockState(), be.getType());
-                        if (ticker != null) {
-                            ticker.tick(level, bep, be.getBlockState(), be);
-                        }
-                    }
+        int yMin = center.getY() - radius;
+        int yMax = center.getY() + radius;
+        int centerX = center.getX();
+        int centerZ = center.getZ();
+
+        for (int i = 0; i < blockEntities.size(); i++) {
+            BlockEntity be = blockEntities.get(i);
+            if (be.isRemoved()) continue;
+
+            BlockPos bep = be.getBlockPos();
+            if (bep.getY() < yMin || bep.getY() > yMax) continue;
+            if (Math.abs(bep.getX() - centerX) > radius) continue;
+            if (Math.abs(bep.getZ() - centerZ) > radius) continue;
+
+            BlockState state = be.getBlockState();
+            if (state.getBlock() instanceof EntityBlock entityBlock) {
+                @SuppressWarnings("unchecked")
+                BlockEntityTicker ticker = entityBlock.getTicker(level, state, be.getType());
+                if (ticker != null) {
+                    ticker.tick(level, bep, state, be);
                 }
             }
         }
