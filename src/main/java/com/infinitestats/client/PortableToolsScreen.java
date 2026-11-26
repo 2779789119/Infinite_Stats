@@ -55,6 +55,7 @@ public final class PortableToolsScreen extends PanelScreen {
      * 前五个沿用各自既有的打开数据包，其余统一走 {@link NetworkHandler.PortableToolOpenPacket}。
      */
     private static final List<String> TOOL_IDS = List.of(
+            "item_bag",
             "portable_crafting",
             "portable_furnace",
             "portable_anvil",
@@ -274,6 +275,10 @@ public final class PortableToolsScreen extends PanelScreen {
     /** 点击某个已解锁的工具：按 id 发送对应的打开数据包。 */
     private void openTool(String id) {
         switch (id) {
+            case "item_bag" -> {
+                // 背包内容本来就只从服务端同步，界面纯客户端；打开时自己会请求一次全量
+                if (minecraft != null) minecraft.setScreen(new ItemBagScreen(this));
+            }
             case "portable_crafting" ->
                     NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.CraftingOpenPacket());
             case "portable_furnace" ->

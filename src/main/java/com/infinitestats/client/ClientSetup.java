@@ -77,6 +77,15 @@ public final class ClientSetup {
             "key.categories.infinitestats"
     );
 
+    /**
+     * 打开「无尽背包」按键（默认 B）
+     */
+    public static final KeyMapping OPEN_BAG_KEY = new KeyMapping(
+            "key.infinitestats.bag",
+            GLFW.GLFW_KEY_B,
+            "key.categories.infinitestats"
+    );
+
     @SubscribeEvent
     public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(OPEN_STATS_KEY);
@@ -86,6 +95,7 @@ public final class ClientSetup {
         event.register(OPEN_ACHIEVEMENTS_KEY);
         event.register(OPEN_WAYPOINT_KEY);
         event.register(OPEN_TOOLS_KEY);
+        event.register(OPEN_BAG_KEY);
     }
 
     /**

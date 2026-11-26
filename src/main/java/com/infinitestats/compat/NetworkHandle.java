@@ -5,7 +5,7 @@ package com.infinitestats.compat;
  * 仅由 {@link NetworkIO} 构造与解释，UI/菜单侧无需关心底层是哪种存储。
  */
 public final class NetworkHandle {
-    /** 0 = Refined Storage；1 = Beyond Dimensions；2 = Applied Energistics 2（{MEStorage, IActionSource}）；3 = Sophisticated Backpacks（聚合的所有背包 IItemHandler）；4 = Tom's Storage（存储终端合并 IItemHandler）。 */
+    /** 0 = Refined Storage；1 = Beyond Dimensions；2 = Applied Energistics 2（{MEStorage, IActionSource}）；3 = Sophisticated Backpacks（聚合的所有背包 IItemHandler）；4 = Tom's Storage（存储终端合并 IItemHandler）；5 = 本模组「无尽背包」（{@code ItemBag}）。 */
     public final int kind;
     public final Object net;
 

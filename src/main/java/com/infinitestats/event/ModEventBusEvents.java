@@ -22,6 +22,7 @@ public final class ModEventBusEvents {
         @SubscribeEvent
         public static void onRegisterCapabilities(RegisterCapabilitiesEvent event) {
             event.register(PlayerStats.class);
+            event.register(com.infinitestats.bag.ItemBag.class);
         }
     }
 
@@ -34,6 +35,12 @@ public final class ModEventBusEvents {
                 event.addCapability(
                         new ResourceLocation(InfiniteStats.MODID, "player_stats"),
                         new PlayerStatsProvider()
+                );
+                // 「无尽背包」独立成一份数据：它是可变长的物品账，不适合塞进属性数据里
+                // 跟着每次属性同步一起来回传。
+                event.addCapability(
+                        new ResourceLocation(InfiniteStats.MODID, "item_bag"),
+                        new com.infinitestats.bag.ItemBagProvider()
                 );
             }
         }

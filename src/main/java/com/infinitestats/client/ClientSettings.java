@@ -53,6 +53,17 @@ public final class ClientSettings {
     public static int hudY = 4;
     public static boolean hudVisible = true;
 
+    // ========== 原版物品栏里的「背包」按钮 ==========
+
+    /**
+     * 按钮相对物品栏窗口左上角的偏移（右键按住拖动调整）。
+     * <p>
+     * 存相对偏移而不是屏幕绝对坐标：换个分辨率 / 改 GUI 缩放后，按钮仍然贴着物品栏，
+     * 不会飘到屏幕角落去。
+     */
+    public static int bagButtonX = 150;
+    public static int bagButtonY = 58;
+
     // ========== 文件路径 ==========
 
     private static Path getConfigPath() {
@@ -78,6 +89,8 @@ public final class ClientSettings {
             hudX = data.hudX;
             hudY = data.hudY;
             hudVisible = data.hudVisible;
+            bagButtonX = data.bagButtonX;
+            bagButtonY = data.bagButtonY;
         } catch (Exception e) {
             // 忽略读取错误，使用默认值
         }
@@ -94,6 +107,8 @@ public final class ClientSettings {
         data.hudX = hudX;
         data.hudY = hudY;
         data.hudVisible = hudVisible;
+        data.bagButtonX = bagButtonX;
+        data.bagButtonY = bagButtonY;
 
         try {
             path.getParent().toFile().mkdirs();
@@ -116,5 +131,7 @@ public final class ClientSettings {
         int hudX = 4;
         int hudY = 4;
         boolean hudVisible = true;
+        int bagButtonX = 150;
+        int bagButtonY = 58;
     }
 }

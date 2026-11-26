@@ -38,7 +38,7 @@ import java.util.Locale;
 public class NetworkPriorityScreen extends PanelScreen {
 
     /** 支持的全部存储键（与 NetworkIO / NetworkHandler#normalizeNetworkOrder 口径一致） */
-    private static final List<String> ALL_KEYS = List.of("RS", "AE2", "TOMS", "BACKPACK", "BD");
+    private static final List<String> ALL_KEYS = List.of("BAG", "RS", "AE2", "TOMS", "BACKPACK", "BD");
 
     // ======================== 布局 ========================
 
@@ -274,9 +274,10 @@ public class NetworkPriorityScreen extends PanelScreen {
         return Component.translatable("gui.infinitestats.storage." + key).getString();
     }
 
-    /** 对应模组是否已安装（纯客户端 `ModList` 查询，查不到就是未安装）。 */
+    /** 对应存储是否可用（外部模组查 `ModList`，本模组自带的背包恒为可用）。 */
     private static boolean isLoaded(String key) {
         return switch (key) {
+            case "BAG" -> true;
             case "RS" -> RSNetworkBridge.isRSLoaded();
             case "AE2" -> AE2NetworkBridge.isAE2Loaded();
             case "TOMS" -> TomsStorageNetworkBridge.isTSLoaded();

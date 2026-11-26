@@ -186,6 +186,17 @@ public final class Config {
     /** 自动入库黑名单（物品 ID），列表中的物品永不自动存入存储。 */
     public static ForgeConfigSpec.ConfigValue<List<? extends String>> AUTO_DEPOSIT_BLACKLIST;
 
+    // ========== 无尽背包设置 ==========
+
+    /** true = 捡起的物品直接收进「无尽背包」，而不是塞进原版 36 格。 */
+    public static ForgeConfigSpec.BooleanValue ITEM_BAG_AUTO_PICKUP;
+
+    /** true = 「全部存入」时保留快捷栏，避免把随身工具 / 武器一起收走。 */
+    public static ForgeConfigSpec.BooleanValue ITEM_BAG_DEPOSIT_KEEP_HOTBAR;
+
+    /** 拾取黑名单：命中的物品仍按原版进背包（物品 ID，前缀 {@code #} 表示标签）。 */
+    public static ForgeConfigSpec.ConfigValue<List<? extends String>> ITEM_BAG_PICKUP_BLACKLIST;
+
     // ========== 自动钓鱼设置 ==========
 
     /** 自动钓鱼：收杆后重新抛竿的最短延迟（tick）。 */
@@ -594,11 +605,12 @@ public final class Config {
         builder.push("NetworkPriority");
         NETWORK_PRIORITY = builder
                 .comment("自动选择存储网络的优先级（靠前的优先）。",
-                         "可选值：RS（Refined Storage）、BD（Beyond Dimensions）、AE2（Applied Energistics 2）、BACKPACK（Sophisticated Backpacks）、TOMS（Tom's Storage）。",
+                         "可选值：BAG（本模组『无尽背包』）、RS（Refined Storage）、BD（Beyond Dimensions）、AE2（Applied Energistics 2）、BACKPACK（Sophisticated Backpacks）、TOMS（Tom's Storage）。",
                          "列表中未出现的桥接不会被自动选中；未知项会被忽略。",
                          "修改此列表后重启游戏生效。",
-                         "默认顺序把 BD 放在最后作为兜底，使其在手持其他无线终端时不再抢占。")
-                .define("networkPriority", List.of("RS", "AE2", "TOMS", "BACKPACK", "BD"));
+                         "默认把 BAG 放在最前：随身工作台 / 熔炉 / 铁砧优先从背包取料，取不到再回落到其它存储；",
+                         "把 BD 放在最后作为兜底，使其在手持其他无线终端时不再抢占。")
+                .define("networkPriority", List.of("BAG", "RS", "AE2", "TOMS", "BACKPACK", "BD"));
         builder.pop();
 
         // 随身工作台倍率设置
@@ -626,6 +638,25 @@ public final class Config {
                          "列表中的物品永远不会被自动存入存储网络。",
                          "注：存储终端（RS / AE2 / 汤姆存储的无线终端等）与背包会被自动保护，无需在此重复配置。")
                 .defineList("autoDepositBlacklist", List.<String>of(), o -> o instanceof String);
+        builder.pop();
+
+        // 无尽背包设置
+        builder.push("ItemBag");
+        ITEM_BAG_AUTO_PICKUP = builder
+                .comment("是否让捡到的物品直接进入「无尽背包」（属性 item_bag 解锁后生效）。",
+                         "true（默认）= 玩家走过去碰到的掉落物、磁铁吸过来的掉落物都直接收进背包，不占原版 36 格；",
+                         "false = 掉落物仍按原版进物品栏，想收进背包请打开界面点「全部存入」。",
+                         "合成产物、/give、容器移动这类不经过拾取事件的获得方式永远按原版走。")
+                .define("itemBagAutoPickup", true);
+        ITEM_BAG_DEPOSIT_KEEP_HOTBAR = builder
+                .comment("「全部存入」时是否保留快捷栏（0-8 号槽）。",
+                         "true（默认）= 只收主背包 27 格，随身工具 / 武器不会被吸走；",
+                         "false = 连快捷栏一起收（当前手持的那一格无论如何都会保留）。")
+                .define("itemBagDepositKeepHotbar", true);
+        ITEM_BAG_PICKUP_BLACKLIST = builder
+                .comment("拾取黑名单：这些物品即使解锁了背包也仍然按原版进物品栏。",
+                         "物品 ID 用 minecraft:diamond 这种写法；以 # 开头表示物品标签，如 #minecraft:coals。")
+                .defineList("itemBagPickupBlacklist", List.<String>of(), o -> o instanceof String);
         builder.pop();
 
         // 自动钓鱼设置

@@ -64,9 +64,18 @@ public final class NetworkIO {
     public static List<NetworkHandle> getNetworks(Player player, List<? extends String> order) {
         List<NetworkHandle> result = new ArrayList<>();
         if (order == null) order = Config.NETWORK_PRIORITY.get();
+        boolean bagListed = false;
         for (String raw : order) {
+            if (raw == null) continue;
+            if ("BAG".equalsIgnoreCase(raw.trim())) bagListed = true;
             NetworkHandle h = tryBridge(raw, player);
             if (h != null) result.add(h);
+        }
+        // 老存档的配置文件里没有 BAG（Forge 不会改已有文件的值）：仍然让已解锁的背包
+        // 作为兜底参与取料 / 存料，否则升级后「随身工具直接读背包」在旧配置下静默不生效。
+        if (!bagListed) {
+            NetworkHandle bag = tryBridge("BAG", player);
+            if (bag != null) result.add(bag);
         }
         return result;
     }
@@ -93,6 +102,19 @@ public final class NetworkIO {
             case "TOMS": {
                 List<?> ts = TomsStorageNetworkBridge.getHandlers(player);
                 return (ts != null && !ts.isEmpty()) ? new NetworkHandle(4, ts) : null;
+            }
+            case "BAG": {
+                // 本模组自带的无尽背包：属性解锁后才可用（未解锁时不作为一个存储节点出现，
+                // 否则随身工具会以为有地方可取料，实际一个物品都取不到；自动入库还会
+                // 把东西塞进一个玩家打不开的背包里）。
+                boolean unlocked = player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                        .map(stats -> stats.isToggleActive("item_bag"))
+                        .orElse(false);
+                if (!unlocked) return null;
+                Object bag = player.getCapability(com.infinitestats.bag.ItemBagProvider.ITEM_BAG)
+                        .orElse(null);
+                if (bag == null) return null;
+                return new NetworkHandle(5, bag);
             }
             default:
                 return null;
@@ -152,6 +174,7 @@ public final class NetworkIO {
             case 1: return BDNetworkBridge.extract(h.net, template, count);
             case 2: return AE2NetworkBridge.extract(h.net, template, count);
             case 3: return BackpackNetworkBridge.extract(h.net, template, count);
+            case 5: return ItemBagBridge.extract(h.net, template, count);
             default: return BackpackNetworkBridge.extract(h.net, template, count);
         }
     }
@@ -162,6 +185,7 @@ public final class NetworkIO {
             case 1: return BDNetworkBridge.insert(h.net, stack);
             case 2: return AE2NetworkBridge.insert(h.net, stack);
             case 3: return BackpackNetworkBridge.insert(h.net, stack);
+            case 5: return ItemBagBridge.insert(h.net, stack);
             default: return BackpackNetworkBridge.insert(h.net, stack);
         }
     }
@@ -172,6 +196,7 @@ public final class NetworkIO {
             case 1: return BDNetworkBridge.listItems(h.net);
             case 2: return AE2NetworkBridge.listItems(h.net);
             case 3: return BackpackNetworkBridge.listItems(h.net);
+            case 5: return ItemBagBridge.listItems(h.net);
             default: return BackpackNetworkBridge.listItems(h.net);
         }
     }
@@ -195,7 +220,7 @@ public final class NetworkIO {
     }
 
     public static String noNetworkMessage() {
-        return "§c未检测到 RS 无线终端、refinedstorageaddons 无线合成网格、Beyond Dimensions 维度网络、AE2 无线终端、Sophisticated Backpacks 背包，或附近/绑定的 Tom's Storage 存储终端";
+        return "§c未检测到 RS 无线终端、refinedstorageaddons 无线合成网格、Beyond Dimensions 维度网络、AE2 无线终端、Sophisticated Backpacks 背包、附近/绑定的 Tom's Storage 存储终端，或已解锁的『无尽背包』";
     }
 
     /**

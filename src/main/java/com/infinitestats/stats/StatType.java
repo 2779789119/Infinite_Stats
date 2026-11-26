@@ -1117,6 +1117,13 @@ public final class StatType {
                 .description("开启后可使用 /infstats wp 保存与传送到固定坐标点")
                 .build(),
 
+            create("item_bag").category(StatCategory.UTILITY)
+                .toggle()
+                .maxLevel(1)
+                .description("开启后获得『无尽背包』：捡到的物品直接收进背包（不占原版 36 格），"
+                        + "按 B 键或在原版物品栏右上角打开；随身工作台 / 熔炉 / 铁砧等会直接从这里取料")
+                .build(),
+
             create("portable_crafting").category(StatCategory.UTILITY)
                 .toggle()
                 .maxLevel(1)
@@ -1468,6 +1475,9 @@ public final class StatType {
      * 随身工具属性：解锁 / 关闭都在「随身工具」面板里用左键 / 右键完成，
      * 属性面板不再单独列出它们（见 {@code StatsScreen#buildCategoryMap}）；
      * 「重置分类」也不会连带清掉它们 —— 面板里看不到的东西不该被面板的整体操作动到。
+     * <p>
+     * 注意：`item_bag`（无尽背包）<b>不在</b>这个集合里 —— 它虽然也出现在随身工具面板，
+     * 但更常从属性面板 / 原版物品栏进入，需要在属性列表里正常可见、可加点。
      */
     private static final Set<String> PORTABLE_TOOL_IDS = Set.of(
             "portable_crafting", "portable_furnace", "portable_anvil", "portable_ender_chest",

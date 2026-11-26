@@ -852,6 +852,10 @@ public class StatsScreen extends PanelScreen {
         addNav(labels, actions, "tools", null,
                 Component.translatable("gui.infinitestats.nav.tools"),
                 () -> { if (minecraft != null) minecraft.setScreen(new PortableToolsScreen()); });
+        // 无尽背包：独立入口，打开后就是随身物品账（未解锁时不显示）
+        addNav(labels, actions, "bag", "item_bag",
+                Component.translatable("gui.infinitestats.nav.bag"),
+                () -> { if (minecraft != null) minecraft.setScreen(new ItemBagScreen(this)); });
         // 天气：打开独立面板逐档选择（原先是在这里点一次切一档）
         addNav(labels, actions, "weather", "weather_control",
                 Component.translatable("gui.infinitestats.nav.weather"),

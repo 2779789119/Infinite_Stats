@@ -188,6 +188,139 @@ public final class ClientEventHandler {
             if (!panelAvailable(mc, "tools")) break;
             mc.setScreen(new PortableToolsScreen());
         }
+
+        // 打开「无尽背包」
+        while (ClientSetup.OPEN_BAG_KEY.consumeClick()) {
+            if (mc.screen != null) break;
+            if (!bagUnlocked(mc)) {
+                mc.player.displayClientMessage(
+                        Component.translatable("message.infinitestats.bag.locked"), true);
+                break;
+            }
+            mc.setScreen(new ItemBagScreen());
+        }
+    }
+
+    /**
+     * 退出世界时清掉背包缓存：否则换存档 / 换服务器后，打开界面的头几帧会先闪出
+     * 上一个存档的物品，看起来像数据串了。
+     */
+    @SubscribeEvent
+    public static void onLoggingOut(net.minecraftforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
+        ClientItemBag.reset();
+    }
+
+    /** 玩家是否已解锁「无尽背包」（受「功能开关」影响）。 */
+    static boolean bagUnlocked(Minecraft mc) {
+        return mc.player != null && mc.player.getCapability(PlayerStatsProvider.PLAYER_STATS)
+                .map(stats -> stats.isToggleActive("item_bag"))
+                .orElse(false);
+    }
+
+    // ========== 原版物品栏里的「背包」按钮 ==========
+
+    /** 当前物品栏界的背包按钮（拖动时改它的坐标）。 */
+    private static net.minecraft.client.gui.components.Button inventoryBagButton;
+    /** 右键按住拖动中。 */
+    private static boolean draggingBagButton;
+    private static double bagDragGrabX;
+    private static double bagDragGrabY;
+
+    private static final int BAG_BTN_W = 22;
+    private static final int BAG_BTN_H = 18;
+
+    /**
+     * 在原版物品栏界面里挂一个「背包」入口 —— 玩家最自然的动作是打开 E 键物品栏，
+     * 而不是记一个快捷键。
+     *
+     * <h2>位置</h2>
+     * 位置是「相对物品栏窗口左上角的偏移」，存在 {@link ClientSettings#bagButtonX/Y}：
+     * 换分辨率 / 改 GUI 缩放 / 拉开配方书时窗口整体移动，按钮跟着走而不是飘到屏幕角落。
+     * 默认落在窗口内部右上方（2×2 结果格下方、配方书按钮同一排偏右），
+     * 玩家可以<b>右键按住拖动</b>到任意位置（见 {@link #onBagButtonPress}）。
+     *
+     * <p>为什么不用 {@code Screen.mouseDragged} 转发：原版 {@code Screen} 只在
+     * {@code button == 0} 时才把拖动事件交给 focused 控件，右键拖动根本到不了控件里，
+     * 只能走 Forge 的 {@code ScreenEvent} 自己接管。
+     */
+    @SubscribeEvent
+    public static void onInventoryScreenInit(net.minecraftforge.client.event.ScreenEvent.Init.Post event) {
+        if (!(event.getScreen() instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen screen)) {
+            return;
+        }
+        Minecraft mc = Minecraft.getInstance();
+        inventoryBagButton = null;
+        draggingBagButton = false;
+        if (!bagUnlocked(mc)) return;
+
+        int x = net.minecraft.util.Mth.clamp(
+                screen.getGuiLeft() + ClientSettings.bagButtonX, 0, screen.width - BAG_BTN_W);
+        int y = net.minecraft.util.Mth.clamp(
+                screen.getGuiTop() + ClientSettings.bagButtonY, 0, screen.height - BAG_BTN_H);
+
+        net.minecraft.client.gui.components.Button button =
+                net.minecraft.client.gui.components.Button.builder(
+                                Component.translatable("gui.infinitestats.bag.button_short"),
+                                b -> mc.setScreen(new ItemBagScreen(screen)))
+                        .bounds(x, y, BAG_BTN_W, BAG_BTN_H)
+                        .tooltip(net.minecraft.client.gui.components.Tooltip.create(
+                                Component.translatable("gui.infinitestats.bag.button_tip")))
+                        .build();
+        inventoryBagButton = button;
+        event.addListener(button);
+    }
+
+    /** 左键打开背包；右键按住进入拖动。 */
+    @SubscribeEvent
+    public static void onBagButtonPress(net.minecraftforge.client.event.ScreenEvent.MouseButtonPressed.Pre event) {
+        if (!(event.getScreen() instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen)) return;
+        if (inventoryBagButton == null) return;
+        if (!insideBagButton(event.getMouseX(), event.getMouseY())) return;
+
+        if (event.getButton() == 0) {
+            Minecraft.getInstance().setScreen(new ItemBagScreen(event.getScreen()));
+            event.setCanceled(true);
+        } else if (event.getButton() == 1) {
+            draggingBagButton = true;
+            bagDragGrabX = event.getMouseX() - inventoryBagButton.getX();
+            bagDragGrabY = event.getMouseY() - inventoryBagButton.getY();
+            // 吞掉这次右键，否则物品栏会把它当成「分堆 / 丢弃」的开始
+            event.setCanceled(true);
+        }
+    }
+
+    @SubscribeEvent
+    public static void onBagButtonDrag(net.minecraftforge.client.event.ScreenEvent.MouseDragged.Pre event) {
+        if (!draggingBagButton || inventoryBagButton == null) return;
+        if (!(event.getScreen() instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen screen)) {
+            return;
+        }
+        int x = (int) Math.round(event.getMouseX() - bagDragGrabX);
+        int y = (int) Math.round(event.getMouseY() - bagDragGrabY);
+        inventoryBagButton.setX(net.minecraft.util.Mth.clamp(x, 0, screen.width - BAG_BTN_W));
+        inventoryBagButton.setY(net.minecraft.util.Mth.clamp(y, 0, screen.height - BAG_BTN_H));
+        event.setCanceled(true);
+    }
+
+    /** 松开右键：把按钮位置按「相对窗口」的偏移存下来。 */
+    @SubscribeEvent
+    public static void onBagButtonRelease(net.minecraftforge.client.event.ScreenEvent.MouseButtonReleased.Pre event) {
+        if (!draggingBagButton || inventoryBagButton == null) return;
+        if (!(event.getScreen() instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen screen)) {
+            return;
+        }
+        draggingBagButton = false;
+        ClientSettings.bagButtonX = inventoryBagButton.getX() - screen.getGuiLeft();
+        ClientSettings.bagButtonY = inventoryBagButton.getY() - screen.getGuiTop();
+        ClientSettings.save();
+        event.setCanceled(true);
+    }
+
+    private static boolean insideBagButton(double mouseX, double mouseY) {
+        if (inventoryBagButton == null) return false;
+        int x = inventoryBagButton.getX();
+        int y = inventoryBagButton.getY();
+        return mouseX >= x && mouseX < x + BAG_BTN_W && mouseY >= y && mouseY < y + BAG_BTN_H;
     }
 
     /**

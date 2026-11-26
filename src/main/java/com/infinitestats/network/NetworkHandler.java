@@ -86,7 +86,10 @@ public final class NetworkHandler {
     // 32：生物面板属性锁定：新增 EntityPanelLockPacket / EntityPanelLockSyncPacket
     // 33：物品编辑器新增特殊标签界面：新增 EditItemTagsPacket
     // 34：移除内置 EMC 系统：删除 Emc* 全部数据包（旧客户端连不上，双端需一起更新）
-    private static final String PROTOCOL_VERSION = "34";
+    // 35：新增「无尽背包」两个包（ItemBagActionPacket / SyncItemBagPacket）
+    // 36：背包界面加「存储网络」标签页：SyncItemBagPacket 增加来源与总数，动作包增加两个 action
+    // 37：网络标签页的搜索 / 排序改由服务端做（动作包增加 query / sortMode）
+    private static final String PROTOCOL_VERSION = "37";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -96,8 +99,8 @@ public final class NetworkHandler {
 
     private static int packetId = 0;
 
-    /** 「自动入库」支持的存储键（与 NetworkIO 的桥接名一致）。 */
-    private static final List<String> STORAGE_KEYS = List.of("RS", "AE2", "TOMS", "BACKPACK", "BD");
+    /** 支持的存储键（与 NetworkIO 的桥接名一致；BAG = 本模组自带的无尽背包）。 */
+    private static final List<String> STORAGE_KEYS = List.of("BAG", "RS", "AE2", "TOMS", "BACKPACK", "BD");
 
     /** 待处理的成就同步数据（由 SyncAdvancementsPacket 写入，AchievementManagerScreen 读取） */
     public static volatile List<AchievementInfo> pendingAdvancements = null;
@@ -497,6 +500,18 @@ public final class NetworkHandler {
                 EntityPanelLockSyncPacket::encode,
                 EntityPanelLockSyncPacket::decode,
                 EntityPanelLockSyncPacket::handle);
+
+        // 无尽背包：请求内容 / 取出 / 全部存入（客户端 → 服务器）
+        CHANNEL.registerMessage(packetId++, ItemBagActionPacket.class,
+                ItemBagActionPacket::encode,
+                ItemBagActionPacket::decode,
+                ItemBagActionPacket::handle);
+
+        // 无尽背包：内容同步（服务器 → 客户端，按批发送）
+        CHANNEL.registerMessage(packetId++, SyncItemBagPacket.class,
+                SyncItemBagPacket::encode,
+                SyncItemBagPacket::decode,
+                SyncItemBagPacket::handle);
 
     }
 
@@ -3098,5 +3113,154 @@ public final class NetworkHandler {
                     + " 上限=" + reach);
         }
         return allowed;
+    }
+
+    // ========== 无尽背包 ==========
+
+    /**
+     * 客户端 → 服务器：请求背包内容 / 取出某件物品 / 把身上物品全部收进背包。
+     * <p>
+     * 取出时传的是「模板」：只比对物品与 NBT，数量由 {@link #amount} 决定 ——
+     * 否则客户端手里的计数与服务端一有偏差就会取错东西。
+     */
+    public static final class ItemBagActionPacket {
+        public static final int REQUEST = 0;
+        public static final int WITHDRAW = 1;
+        public static final int DEPOSIT_ALL = 2;
+        /** 请求「存储网络」标签页的内容（RS / AE2 / BD / 汤姆 / 背包模组）。 */
+        public static final int REQUEST_NETWORK = 3;
+        /** 从「存储网络」里取出物品。 */
+        public static final int WITHDRAW_NETWORK = 4;
+
+        private final int action;
+        private final ItemStack template;
+        private final int amount;
+        /** 网络标签页的搜索词（过滤在服务端做，见 ItemBagActions#syncNetwork）。 */
+        private final String query;
+        /** 网络标签页的排序模式。 */
+        private final int sortMode;
+
+        public ItemBagActionPacket(int action, ItemStack template, int amount) {
+            this(action, template, amount, "", com.infinitestats.bag.ItemBagActions.SORT_NAME_ASC);
+        }
+
+        public ItemBagActionPacket(int action, ItemStack template, int amount,
+                                   String query, int sortMode) {
+            this.action = action;
+            this.template = template == null ? ItemStack.EMPTY : template;
+            this.amount = amount;
+            this.query = query == null ? "" : query;
+            this.sortMode = sortMode;
+        }
+
+        /** 打开界面时请求一次全量内容。 */
+        public static ItemBagActionPacket request() {
+            return new ItemBagActionPacket(REQUEST, ItemStack.EMPTY, 0);
+        }
+
+        /** 切到「存储网络」标签页 / 改变搜索词与排序时请求一次网络内容。 */
+        public static ItemBagActionPacket requestNetwork(String query, int sortMode) {
+            return new ItemBagActionPacket(REQUEST_NETWORK, ItemStack.EMPTY, 0, query, sortMode);
+        }
+
+        public static void encode(ItemBagActionPacket msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.action);
+            buf.writeItem(msg.template);
+            buf.writeVarInt(msg.amount);
+            buf.writeUtf(msg.query);
+            buf.writeVarInt(msg.sortMode);
+        }
+
+        public static ItemBagActionPacket decode(FriendlyByteBuf buf) {
+            return new ItemBagActionPacket(buf.readVarInt(), buf.readItem(), buf.readVarInt(),
+                    buf.readUtf(), buf.readVarInt());
+        }
+
+        public static void handle(ItemBagActionPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> {
+                ServerPlayer player = ctx.get().getSender();
+                if (player == null) return;
+                if (!com.infinitestats.bag.ItemBagActions.unlocked(player)) {
+                    player.displayClientMessage(
+                            Component.translatable("message.infinitestats.bag.locked"), true);
+                    CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                            new SyncItemBagPacket(
+                                    com.infinitestats.bag.ItemBagProvider.SOURCE_BAG,
+                                    List.of(), true, true, 0));
+                    return;
+                }
+                switch (msg.action) {
+                    case WITHDRAW ->
+                            com.infinitestats.bag.ItemBagActions.withdraw(player, msg.template, msg.amount);
+                    case REQUEST_NETWORK -> com.infinitestats.bag.ItemBagActions.syncNetwork(
+                            player, msg.query, msg.sortMode);
+                    case WITHDRAW_NETWORK ->
+                            com.infinitestats.bag.ItemBagActions.withdrawNetwork(
+                                    player, msg.template, msg.amount);
+                    case DEPOSIT_ALL -> {
+                        int moved = com.infinitestats.bag.ItemBagActions.depositAll(player);
+                        player.displayClientMessage(moved > 0
+                                ? Component.translatable("message.infinitestats.bag.deposited", moved)
+                                : Component.translatable("message.infinitestats.bag.nothing_to_deposit"),
+                                true);
+                    }
+                    default -> com.infinitestats.bag.ItemBagActions.sync(player);
+                }
+            });
+            ctx.get().setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 服务器 → 客户端：背包内容，按批发送。
+     * <p>
+     * 条目可能上千，单包会撞上 Forge 的包大小上限，因此 {@code first}/{@code last}
+     * 标出一次全量同步的边界，客户端在 {@code first} 时先清空。
+     */
+    public static final class SyncItemBagPacket {
+        private final byte source;
+        private final List<ItemStack> items;
+        private final boolean first;
+        private final boolean last;
+        /** 该类数据的真实种类数（网络标签页可能只发了前 N 种，界面据此提示「仅显示前 N 种」）。 */
+        private final int totalKinds;
+
+        public SyncItemBagPacket(byte source, List<ItemStack> items,
+                                 boolean first, boolean last, int totalKinds) {
+            this.source = source;
+            this.items = items == null ? List.of() : items;
+            this.first = first;
+            this.last = last;
+            this.totalKinds = totalKinds;
+        }
+
+        public static void encode(SyncItemBagPacket msg, FriendlyByteBuf buf) {
+            buf.writeByte(msg.source);
+            buf.writeVarInt(msg.items.size());
+            for (ItemStack stack : msg.items) {
+                buf.writeItem(stack);
+            }
+            buf.writeBoolean(msg.first);
+            buf.writeBoolean(msg.last);
+            buf.writeVarInt(msg.totalKinds);
+        }
+
+        public static SyncItemBagPacket decode(FriendlyByteBuf buf) {
+            byte source = buf.readByte();
+            int count = buf.readVarInt();
+            List<ItemStack> items = new java.util.ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                ItemStack stack = buf.readItem();
+                if (!stack.isEmpty()) items.add(stack);
+            }
+            return new SyncItemBagPacket(source, items,
+                    buf.readBoolean(), buf.readBoolean(), buf.readVarInt());
+        }
+
+        public static void handle(SyncItemBagPacket msg, Supplier<NetworkEvent.Context> ctx) {
+            ctx.get().enqueueWork(() -> com.infinitestats.client.ClientItemBag.apply(
+                    msg.source, msg.items, msg.first, msg.totalKinds));
+            ctx.get().setPacketHandled(true);
+        }
     }
 }

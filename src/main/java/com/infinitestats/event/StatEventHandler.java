@@ -1774,6 +1774,8 @@ public final class StatEventHandler {
         AutoFish.forget(event.getEntity().getUUID());
         // 自动入库的「背包已变更」标记与节流时间戳
         com.infinitestats.compat.AutoDeposit.forget(event.getEntity());
+        // 无尽背包的「外部存储全量列表」缓存
+        com.infinitestats.bag.ItemBagActions.forget(event.getEntity());
     }
 
     // ========== 玩家重生 ==========
@@ -1803,6 +1805,9 @@ public final class StatEventHandler {
     @SubscribeEvent
     public static void onPlayerClone(PlayerEvent.Clone event) {
         event.getOriginal().reviveCaps();
+        // 「无尽背包」整份搬过去：死亡重生、末地返回、换维度都走 Clone，
+        // 不放这里的话玩家一死背包就空了（数据仍在旧实体上，随旧实体一起被回收）。
+        com.infinitestats.bag.ItemBagProvider.copy(event.getOriginal(), event.getEntity());
         event.getOriginal().getCapability(PlayerStatsProvider.PLAYER_STATS).ifPresent(oldStats -> {
             // 死亡不掉经验：老实体上的经验条没有被清过（只有经验球被拦下了），这里整份搬过来
             if (event.isWasDeath() && oldStats.isToggleActive("keep_xp")) {
