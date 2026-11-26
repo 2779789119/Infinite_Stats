@@ -7,11 +7,6 @@ import com.infinitestats.crafting.PortableGuis;
 import com.infinitestats.crafting.PortableInfuser;
 import com.infinitestats.crafting.PortableInfuserMenu;
 import com.infinitestats.crafting.PortableStationMenus;
-import com.infinitestats.emc.EmcDatabase;
-import com.infinitestats.emc.EmcMenu;
-import com.infinitestats.emc.EmcPricing;
-import com.infinitestats.emc.EmcPlayerData;
-import com.infinitestats.emc.EmcPlayerDataProvider;
 import com.infinitestats.furnace.FurnaceFuelBufferMenu;
 import com.infinitestats.furnace.FurnaceOrePriorityMenu;
 import com.infinitestats.furnace.FurnaceProductBufferMenu;
@@ -90,7 +85,8 @@ public final class NetworkHandler {
     //     / EntityPanelRequestPacket（附近生物列表点选后请求开面板）
     // 32：生物面板属性锁定：新增 EntityPanelLockPacket / EntityPanelLockSyncPacket
     // 33：物品编辑器新增特殊标签界面：新增 EditItemTagsPacket
-    private static final String PROTOCOL_VERSION = "33";
+    // 34：移除内置 EMC 系统：删除 Emc* 全部数据包（旧客户端连不上，双端需一起更新）
+    private static final String PROTOCOL_VERSION = "34";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(InfiniteStats.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -99,14 +95,9 @@ public final class NetworkHandler {
     );
 
     private static int packetId = 0;
-    private static final Map<ResourceLocation, Long> CLIENT_EMC_PRICES = new HashMap<>();
 
     /** 「自动入库」支持的存储键（与 NetworkIO 的桥接名一致）。 */
     private static final List<String> STORAGE_KEYS = List.of("RS", "AE2", "TOMS", "BACKPACK", "BD");
-
-    public static long getClientEmc(ResourceLocation id) {
-        return CLIENT_EMC_PRICES.getOrDefault(id, 0L);
-    }
 
     /** 待处理的成就同步数据（由 SyncAdvancementsPacket 写入，AchievementManagerScreen 读取） */
     public static volatile List<AchievementInfo> pendingAdvancements = null;
@@ -274,61 +265,11 @@ public final class NetworkHandler {
                 EditItemTagsPacket::decode,
                 EditItemTagsPacket::handle);
 
-        // ========== EMC 数据包 ==========
-
-        // EMC 同步数据包（服务器 → 客户端）
-        CHANNEL.registerMessage(packetId++, EmcSyncPacket.class,
-                EmcSyncPacket::encode,
-                EmcSyncPacket::decode,
-                EmcSyncPacket::handle);
-
-        // 物品学习数据包（客户端 → 服务器）
-        CHANNEL.registerMessage(packetId++, EmcLearnPacket.class,
-                EmcLearnPacket::encode,
-                EmcLearnPacket::decode,
-                EmcLearnPacket::handle);
-
-        // 物品提取数据包（客户端 → 服务器）
-        CHANNEL.registerMessage(packetId++, EmcExtractPacket.class,
-                EmcExtractPacket::encode,
-                EmcExtractPacket::decode,
-                EmcExtractPacket::handle);
-
-        // 遗忘数据包（客户端 → 服务器）：把某个物品移出已学列表（不返还 EMC）
-        CHANNEL.registerMessage(packetId++, EmcForgetPacket.class,
-                EmcForgetPacket::encode,
-                EmcForgetPacket::decode,
-                EmcForgetPacket::handle);
-
-        // 一键卖出数据包（客户端 → 服务器）：把背包内所有可转化物品倾销成 EMC
-        CHANNEL.registerMessage(packetId++, EmcSellAllPacket.class,
-                EmcSellAllPacket::encode,
-                EmcSellAllPacket::decode,
-                EmcSellAllPacket::handle);
-
-        // 单个槽位卖出数据包（客户端 → 服务器）：Shift+左键卖出指定槽位物品
-        CHANNEL.registerMessage(packetId++, EmcSellSlotPacket.class,
-                EmcSellSlotPacket::encode,
-                EmcSellSlotPacket::decode,
-                EmcSellSlotPacket::handle);
-
-        // 自定义定价数据包（客户端 → 服务器）：设置物品的 EMC 值
-        CHANNEL.registerMessage(packetId++, EmcSetPricePacket.class,
-                EmcSetPricePacket::encode,
-                EmcSetPricePacket::decode,
-                EmcSetPricePacket::handle);
-
         // 收藏切换数据包（客户端 → 服务器）
         CHANNEL.registerMessage(packetId++, ToggleFavoritePacket.class,
                 ToggleFavoritePacket::encode,
                 ToggleFavoritePacket::decode,
                 ToggleFavoritePacket::handle);
-
-        // EMC 菜单打开数据包（客户端 → 服务器）
-        CHANNEL.registerMessage(packetId++, EmcOpenPacket.class,
-                EmcOpenPacket::encode,
-                EmcOpenPacket::decode,
-                EmcOpenPacket::handle);
 
         // 便携式熔炉菜单打开数据包（客户端 → 服务器）
         CHANNEL.registerMessage(packetId++, FurnaceOpenPacket.class,
@@ -923,300 +864,6 @@ public final class NetworkHandler {
     public static void broadcastToAll(PlayerStats stats) {
         // 通常只在调试时使用
         // CHANNEL.send(PacketDistributor.ALL.noArg(), new SyncStatsPacket(stats.createSnapshot()));
-    }
-
-    // ========== EMC 数据包类 ==========
-
-    /**
-     * EMC 同步数据包（服务器 → 客户端）
-     */
-    public static final class EmcSyncPacket {
-        private final EmcPlayerData.EmcSnapshot snapshot;
-        private final Map<ResourceLocation, Long> prices;
-
-        public EmcSyncPacket(EmcPlayerData.EmcSnapshot snapshot) {
-            this.snapshot = snapshot;
-            this.prices = new HashMap<>();
-            for (ResourceLocation id : snapshot.learnedItems) {
-                ItemStack template = new ItemStack(BuiltInRegistries.ITEM.get(id));
-                CompoundTag tag = snapshot.itemNbt.get(id);
-                if (tag != null) template.setTag(tag.copy());
-                prices.put(id, EmcDatabase.getEmc(template));
-            }
-        }
-
-        private EmcSyncPacket(EmcPlayerData.EmcSnapshot snapshot, Map<ResourceLocation, Long> prices) {
-            this.snapshot = snapshot;
-            this.prices = prices;
-        }
-
-        public static void encode(EmcSyncPacket msg, FriendlyByteBuf buf) {
-            buf.writeVarLong(msg.snapshot.emcBalance);
-            buf.writeVarInt(msg.snapshot.learnedItems.size());
-            for (ResourceLocation id : msg.snapshot.learnedItems) {
-                buf.writeUtf(id.toString());
-                CompoundTag nbt = msg.snapshot.itemNbt.get(id);
-                buf.writeBoolean(nbt != null && !nbt.isEmpty());
-                if (nbt != null && !nbt.isEmpty()) {
-                    buf.writeNbt(nbt);
-                }
-                buf.writeVarLong(msg.prices.getOrDefault(id, 0L));
-            }
-        }
-
-        public static EmcSyncPacket decode(FriendlyByteBuf buf) {
-            long balance = buf.readVarLong();
-            int count = buf.readVarInt();
-            List<ResourceLocation> items = new ArrayList<>();
-            Map<ResourceLocation, CompoundTag> nbtMap = new HashMap<>();
-            Map<ResourceLocation, Long> prices = new HashMap<>();
-            for (int i = 0; i < count; i++) {
-                ResourceLocation rl = ResourceLocation.tryParse(buf.readUtf());
-                CompoundTag nbt = buf.readBoolean() ? buf.readNbt() : null;
-                long price = buf.readVarLong();
-                if (rl != null) {
-                    items.add(rl);
-                    if (nbt != null) nbtMap.put(rl, nbt);
-                    prices.put(rl, price);
-                }
-            }
-            return new EmcSyncPacket(new EmcPlayerData.EmcSnapshot(balance, items, nbtMap), prices);
-        }
-
-        public static void handle(EmcSyncPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                CLIENT_EMC_PRICES.clear();
-                CLIENT_EMC_PRICES.putAll(msg.prices);
-                var player = net.minecraft.client.Minecraft.getInstance().player;
-                if (player != null) {
-                    player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
-                        data.restoreFromSnapshot(msg.snapshot);
-                    });
-                }
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
-
-    /**
-     * 物品学习数据包（客户端 → 服务器）
-     */
-    public static final class EmcLearnPacket {
-        private final String itemId;
-
-        public EmcLearnPacket(String itemId) {
-            this.itemId = itemId;
-        }
-
-        public static void encode(EmcLearnPacket msg, FriendlyByteBuf buf) {
-            buf.writeUtf(msg.itemId);
-        }
-
-        public static EmcLearnPacket decode(FriendlyByteBuf buf) {
-            return new EmcLearnPacket(buf.readUtf());
-        }
-
-        public static void handle(EmcLearnPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-
-                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
-                if (itemId == null) return;
-
-                Item item = BuiltInRegistries.ITEM.get(itemId);
-
-                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
-                    // 只卖出光标上实际持有的那一份（避免误删背包中其它同类物品且不同步其槽位）
-                    int count = 0;
-                    CompoundTag itemNbt = null;
-                    // 手持（光标）中已经拖入学习槽的同类物品（光标在打开的菜单上，而非玩家背包）
-                    var openMenu = player.containerMenu;
-                    ItemStack carried = openMenu.getCarried();
-                    // 仅比较物品类型（不比较 NBT），因为手册等物品有额外标签
-                    if (!carried.isEmpty() && carried.getItem() == item) {
-                        count += carried.getCount();
-                        itemNbt = carried.getTag();
-                        // 用实际手持（含 NBT）计算 EMC，避免附魔书等带 NBT 物品单价误判为 0
-                        if (EmcDatabase.getEmc(carried) <= 0) return;
-                        long sale = EmcPricing.sellValue(player, carried, count);
-                        openMenu.setCarried(ItemStack.EMPTY);
-                        openMenu.broadcastChanges();
-                        // 学习物品并返还 数量×EMC，保留 NBT
-                        data.learnAndConvert(itemId, sale, itemNbt);
-                        syncEmcToClient(player);
-                    }
-                });
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
-
-    /**
-     * 物品提取数据包（客户端 → 服务器）
-     */
-    public static final class EmcExtractPacket {
-        private final String itemId;
-        private final int count;
-
-        public EmcExtractPacket(String itemId, int count) {
-            this.itemId = itemId;
-            this.count = count;
-        }
-
-        public static void encode(EmcExtractPacket msg, FriendlyByteBuf buf) {
-            buf.writeUtf(msg.itemId);
-            buf.writeVarInt(msg.count);
-        }
-
-        public static EmcExtractPacket decode(FriendlyByteBuf buf) {
-            return new EmcExtractPacket(buf.readUtf(), buf.readVarInt());
-        }
-
-        public static void handle(EmcExtractPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-
-                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
-                if (itemId == null) return;
-
-                Item item = BuiltInRegistries.ITEM.get(itemId);
-                if (item == null) return;
-
-                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
-                    com.infinitestats.emc.EmcTransactions.extract(player, data, itemId, msg.count);
-
-                    syncEmcToClient(player);
-                    // 提取后刷新当前容器菜单（含背包槽位）使客户端立即显示
-                    if (player.containerMenu != null) {
-                        player.containerMenu.broadcastChanges();
-                    }
-                });
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
-
-    /**
-     * 遗忘数据包（客户端 → 服务器）
-     * 把指定物品移出玩家的已学列表（连同其 NBT），不返还 EMC；之后可重新学习。
-     */
-    public static final class EmcForgetPacket {
-        private final String itemId;
-
-        public EmcForgetPacket(String itemId) {
-            this.itemId = itemId;
-        }
-
-        public static void encode(EmcForgetPacket msg, FriendlyByteBuf buf) {
-            buf.writeUtf(msg.itemId);
-        }
-
-        public static EmcForgetPacket decode(FriendlyByteBuf buf) {
-            return new EmcForgetPacket(buf.readUtf());
-        }
-
-        public static void handle(EmcForgetPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-
-                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
-                if (itemId == null) return;
-
-                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
-                    if (!data.forgetItem(itemId)) return;
-                    syncEmcToClient(player);
-                    Component name = new ItemStack(BuiltInRegistries.ITEM.get(itemId)).getHoverName();
-                    player.displayClientMessage(
-                            Component.translatable("message.infinitestats.emc.forgotten", name), false);
-                });
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
-
-    /**
-     * 一键卖出数据包（客户端 → 服务器）
-     * 把玩家背包（主背包 + 快捷栏）中所有「已学且有 EMC 值」的物品倾销成 EMC。
-     */
-    public static final class EmcSellAllPacket {
-        public EmcSellAllPacket() {}
-
-        public static void encode(EmcSellAllPacket msg, FriendlyByteBuf buf) {
-            // 无数据
-        }
-
-        public static EmcSellAllPacket decode(FriendlyByteBuf buf) {
-            return new EmcSellAllPacket();
-        }
-
-        public static void handle(EmcSellAllPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-
-                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
-                    long total = 0;
-                    var inv = player.getInventory();
-                    // 仅遍历主背包 + 快捷栏（0~35），不碰盔甲 / 副手，避免误卖穿戴装备
-                    for (int i = 0; i < 36; i++) {
-                        ItemStack s = inv.getItem(i);
-                        if (s.isEmpty()) continue;
-                        if (i == inv.selected) continue;        // 不卖当前手持的那一格
-                        ResourceLocation id = BuiltInRegistries.ITEM.getKey(s.getItem());
-                        if (!data.hasLearned(id)) continue;     // 只卖已学物品
-                        long emc = EmcDatabase.getEmc(s);
-                        if (emc <= 0) continue;
-                        long sale = EmcPricing.sellValue(player, s, s.getCount());
-                        total += Math.min(sale, Long.MAX_VALUE - total);
-                        inv.setItem(i, ItemStack.EMPTY);
-                    }
-                    if (total > 0) {
-                        data.addEmc(total);
-                        syncEmcToClient(player);
-                        player.displayClientMessage(
-                                Component.literal("§a已将背包内可转化物品卖出，获得 §f" + total + " EMC"), false);
-                    } else {
-                        player.displayClientMessage(
-                                Component.literal("§e背包中没有可卖出的已学物品"), false);
-                    }
-                });
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
-
-    /**
-     * EMC 菜单打开数据包（客户端 → 服务器）
-     */
-    public static final class EmcOpenPacket {
-        public EmcOpenPacket() {}
-
-        public static void encode(EmcOpenPacket msg, FriendlyByteBuf buf) {
-            // 无数据
-        }
-
-        public static EmcOpenPacket decode(FriendlyByteBuf buf) {
-            return new EmcOpenPacket();
-        }
-
-        public static void handle(EmcOpenPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-                // 作者把 EMC 面板隐藏后，服务端也不再受理开桌请求（客户端另有入口拦截）
-                if (Config.isPanelHidden("emc")) return;
-                NetworkHooks.openScreen(player,
-                        new SimpleMenuProvider(
-                                (id, inv, p) -> new EmcMenu(id, inv),
-                                Component.translatable("screen.infinitestats.emc")));
-                // 打开界面时同步一次 EMC/已学数据，保证已学习列表立即有内容
-                syncEmcToClient(player);
-            });
-            ctx.get().setPacketHandled(true);
-        }
     }
 
     /** 客户端请求打开便携式熔炉（需已开启 portable_furnace 开关）。 */
@@ -2235,18 +1882,6 @@ public final class NetworkHandler {
         }
     }
 
-    // ========== EMC 同步方法 ==========
-
-    /**
-     * 同步 EMC 数据到客户端
-     */
-    public static void syncEmcToClient(ServerPlayer player) {
-        player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
-            CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
-                    new EmcSyncPacket(data.createSnapshot()));
-        });
-    }
-
     // ========== 成就管理同步方法 ==========
 
     /**
@@ -2540,129 +2175,6 @@ public final class NetworkHandler {
         }
 
         public java.util.List<String> getItemIds() { return itemIds; }
-    }
-
-    /**
-     * 单个槽位卖出数据包（客户端 → 服务器）
-     * Shift+左键点击背包槽位 → 卖出该槽位物品换取 EMC
-     */
-    public static final class EmcSellSlotPacket {
-        private final int slotIndex;
-
-        public EmcSellSlotPacket(int slotIndex) {
-            this.slotIndex = slotIndex;
-        }
-
-        public static void encode(EmcSellSlotPacket msg, FriendlyByteBuf buf) {
-            buf.writeVarInt(msg.slotIndex);
-        }
-
-        public static EmcSellSlotPacket decode(FriendlyByteBuf buf) {
-            return new EmcSellSlotPacket(buf.readVarInt());
-        }
-
-        public static void handle(EmcSellSlotPacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-
-                var menu = player.containerMenu;
-                if (!(menu instanceof EmcMenu)) return;
-
-                int slot = msg.slotIndex;
-                if (slot < 0 || slot >= menu.slots.size()) return;
-
-                ItemStack stack = menu.slots.get(slot).getItem();
-                if (stack.isEmpty()) return;
-
-                long emcValue = EmcDatabase.getEmc(stack);
-                if (emcValue <= 0) return;
-
-                ResourceLocation itemId = BuiltInRegistries.ITEM.getKey(stack.getItem());
-                int count = stack.getCount();
-                long totalEmc = EmcPricing.sellValue(player, stack, count);
-
-                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
-                    if (!data.hasLearned(itemId)) {
-                        data.learnAndConvert(itemId, totalEmc, stack.getTag());
-                    } else {
-                        // 更新 NBT（可能放入了不同版本的手册）
-                        CompoundTag nbt = stack.getTag();
-                        if (nbt != null && !nbt.isEmpty()) {
-                            data.learnItem(itemId, nbt);
-                        }
-                        data.addEmc(totalEmc);
-                    }
-                    syncEmcToClient(player);
-                    player.displayClientMessage(
-                            Component.translatable("message.infinitestats.emc.converted",
-                                    stack.getHoverName(), totalEmc), false);
-                });
-
-                menu.slots.get(slot).set(ItemStack.EMPTY);
-                menu.broadcastChanges();
-            });
-            ctx.get().setPacketHandled(true);
-        }
-    }
-
-    /**
-     * 自定义定价数据包（客户端 → 服务器）
-     * 给指定物品设置自定义 EMC 值（0 表示删除自定义值，恢复自动计算）
-     */
-    public static final class EmcSetPricePacket {
-        private final String itemId;
-        private final long emc;
-
-        public EmcSetPricePacket(String itemId, long emc) {
-            this.itemId = itemId;
-            this.emc = emc;
-        }
-
-        public static void encode(EmcSetPricePacket msg, FriendlyByteBuf buf) {
-            buf.writeUtf(msg.itemId);
-            buf.writeVarLong(msg.emc);
-        }
-
-        public static EmcSetPricePacket decode(FriendlyByteBuf buf) {
-            return new EmcSetPricePacket(buf.readUtf(), buf.readVarLong());
-        }
-
-        public static void handle(EmcSetPricePacket msg, Supplier<NetworkEvent.Context> ctx) {
-            ctx.get().enqueueWork(() -> {
-                ServerPlayer player = ctx.get().getSender();
-                if (player == null || !Config.EMC_ENABLED.get()) return;
-
-                ResourceLocation itemId = ResourceLocation.tryParse(msg.itemId);
-                if (itemId == null) return;
-
-                Item item = BuiltInRegistries.ITEM.get(itemId);
-                if (item == null) return;
-
-                if (!BuiltInRegistries.ITEM.containsKey(itemId) || item == net.minecraft.world.item.Items.AIR) return;
-                if (!EmcDatabase.setCustomEmc(itemId, msg.emc)) {
-                    player.sendSystemMessage(Component.literal("§cEMC 定价保存失败，请查看服务端日志"));
-                    return;
-                }
-                player.getCapability(EmcPlayerDataProvider.EMC_PLAYER_DATA).ifPresent(data -> {
-                    if (msg.emc > 0) {
-                        data.learnItem(itemId);
-                        syncEmcToClient(player);
-                    }
-                });
-                player.server.getPlayerList().getPlayers().forEach(NetworkHandler::syncEmcToClient);
-                if (msg.emc > 0) {
-                    player.displayClientMessage(
-                            Component.translatable("message.infinitestats.emc.priced",
-                                    new ItemStack(item).getHoverName(), msg.emc), false);
-                } else {
-                    player.displayClientMessage(
-                            Component.translatable("message.infinitestats.emc.price_removed",
-                                    new ItemStack(item).getHoverName()), false);
-                }
-            });
-            ctx.get().setPacketHandled(true);
-        }
     }
 
     // ========== 随身工具枢纽 / 天气控制 / 区块强加载 ==========

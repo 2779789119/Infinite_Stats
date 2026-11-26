@@ -1,7 +1,6 @@
 package com.infinitestats;
 
 import com.infinitestats.crafting.PortableCraftingMenu;
-import com.infinitestats.emc.*;
 import com.infinitestats.furnace.*;
 import com.infinitestats.handler.*;
 import com.infinitestats.network.NetworkHandler;
@@ -419,62 +418,6 @@ public final class RegressionTests {
             trackBulkAmounts(new long[bulk]);
         }
         public boolean stillValid(Player player) { return true; }
-    }
-
-    @GameTest(template = "empty")
-    public static void emcPartialRefundAndPersistence(GameTestHelper helper) {
-        ServerPlayer player = player(helper);
-        ResourceLocation id = new ResourceLocation("minecraft", "diamond");
-        EmcPlayerData data = new EmcPlayerData();
-        data.learnItem(id);
-        data.setEmcBalance(10000);
-        long oldPrice = EmcDatabase.getCustomEmc(id);
-        double loss = Config.EMC_LOSS_RATE.get();
-        boolean enabled = Config.EMC_ENABLED.get();
-        try {
-            Config.EMC_ENABLED.set(true);
-            helper.assertTrue(EmcDatabase.setCustomEmc(id, 32), "Custom price save failed");
-            for (int i = 0; i < 36; i++) player.getInventory().setItem(i, new ItemStack(Items.STONE, 64));
-            player.getInventory().setItem(0, new ItemStack(Items.DIAMOND, 63));
-            EmcTransactions.extract(player, data, id, -1);
-            equal(64, player.getInventory().countItem(Items.DIAMOND), "Partially filled purchase");
-            equal(9968, data.getEmcBalance(), "Partial purchase must charge delivered item");
-            EmcTransactions.extract(player, data, id, -1);
-            equal(9968, data.getEmcBalance(), "Full inventory must refund everything");
-            Config.EMC_LOSS_RATE.set(0.25);
-            equal(72, EmcDatabase.getSellValue(new ItemStack(Items.DIAMOND), 3), "Configured EMC loss");
-            EmcDatabase.reload(helper.getLevel().getServer());
-            equal(32, EmcDatabase.getEmc(new ItemStack(Items.DIAMOND)), "Reload discarded custom price");
-            FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer());
-            try {
-                NetworkHandler.EmcSyncPacket.encode(new NetworkHandler.EmcSyncPacket(data.createSnapshot()), buf);
-                equal(9968, buf.readVarLong(), "EMC balance wire");
-                equal(1, buf.readVarInt(), "EMC learned item wire");
-                helper.assertTrue(id.toString().equals(buf.readUtf()), "EMC item ID wire");
-                if (buf.readBoolean()) buf.readNbt();
-                equal(32, buf.readVarLong(), "Server price wire");
-            } finally { buf.release(); }
-            Config.EMC_ENABLED.set(false);
-            player.getInventory().clearContent();
-            EmcTransactions.extract(player, data, id, -1);
-            equal(0, player.getInventory().countItem(Items.DIAMOND), "Disabled EMC delivered item");
-            equal(0, EmcDatabase.getSellValue(new ItemStack(Items.DIAMOND), 3), "Disabled EMC credited sale");
-            Config.EMC_ENABLED.set(true);
-            helper.assertTrue(EmcDatabase.setCustomEmc(id, Long.MAX_VALUE), "Large price save failed");
-            data.setEmcBalance(Long.MAX_VALUE);
-            EmcTransactions.extract(player, data, id, 64);
-            equal(1, player.getInventory().countItem(Items.DIAMOND), "Price multiplication overflow");
-            equal(0, data.getEmcBalance(), "Large price settlement");
-            helper.assertTrue(data.forgetItem(id), "Forgetting a learned item");
-            equal(0, data.getLearnedCount(), "Forgotten item removed from learned list");
-            helper.assertTrue(!data.hasLearned(id), "Forgotten item is no longer learned");
-            helper.assertTrue(!data.forgetItem(id), "Forgetting an unknown item is a no-op");
-        } finally {
-            Config.EMC_LOSS_RATE.set(loss);
-            Config.EMC_ENABLED.set(enabled);
-            EmcDatabase.setCustomEmc(id, oldPrice);
-        }
-        helper.succeed();
     }
 
     @GameTest(template = "empty")

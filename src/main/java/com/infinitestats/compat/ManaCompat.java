@@ -22,9 +22,9 @@ import java.util.List;
  *       属性 {@code AttributeRegistry.MAX_MANA} 的上限 —— 施法不再受法力限制；</li>
  *   <li><b>Ars Nouveau</b>（{@code ars_nouveau}）：玩家魔源（{@code IManaCap}）补到 {@code getMaxMana()}；</li>
  *   <li><b>Botania 植物魔法</b>（{@code botania}）：背包 / 饰品栏里所有魔力物品（魔力石板、魔力戒指等
- *       实现 {@code ManaItem} 的）补满，外加<b>该玩家自己放下的魔力池</b>（实现 {@code ManaPool} 的
- *       方块实体）补满 —— 判定只看放置归属（{@code BlockOwnershipStore}），<b>不限距离</b>，
- *       区块加载着就补。</li>
+ *       能被 {@code XplatAbstractions#findManaItem} 认出来的）补满，外加<b>该玩家自己放下的魔力池</b>
+ *       （实现 {@code ManaPool} 的方块实体）补满 —— 判定只看放置归属（{@code BlockOwnershipStore}），
+ *       <b>不限距离</b>，区块加载着就补。</li>
  * </ol>
  * <p>
  * 三块都<b>反射</b>实现（与 {@code GoetyCompat} 同一套思路）；各自懒解析、取不到就永久短路，
@@ -39,8 +39,15 @@ import java.util.List;
  *   <li>{@code CapabilityRegistry#getMana(LivingEntity)}，{@code IManaCap#getCurrentMana/getMaxMana/setMana}；</li>
  *   <li>{@code ManaItemHandler#INSTANCE} / {@code #getManaItems(Player)} / {@code #getManaAccesories(Player)}，
  *       {@code ManaItem#getMana/getMaxMana/addMana(int)}，
+ *       {@code XplatAbstractions#INSTANCE.findManaItem(ItemStack)}，
  *       {@code ManaPool#getMaxMana()}，{@code ManaReceiver#getCurrentMana()/receiveMana(int)}。</li>
  * </ul>
+ * <p>
+ * <b>Botania 的坑</b>：魔力石板（{@code ManaTabletItem}）等物品的 {@code ManaItem} 不是 {@code Item}
+ * 自己实现的，而是 Botania 按 {@code ItemStack} 现造一个适配器（{@code ManaTabletItem$ManaItemImpl}），
+ * 因为魔力存在物品 NBT 里、必须绑定到具体那一个堆叠。所以判断「这个物品有没有魔力」只能走
+ * {@code XplatAbstractions.INSTANCE.findManaItem(stack)}，不能 {@code stack.getItem() instanceof ManaItem}
+ * —— 后者对石板一直是 false（1.95.0 的「无限魔力」就是因此对石板完全没反应）。
  */
 public final class ManaCompat {
 
@@ -199,6 +206,7 @@ public final class ManaCompat {
         private static final String MANA_ITEM = "vazkii.botania.api.mana.ManaItem";
         private static final String MANA_POOL = "vazkii.botania.api.mana.ManaPool";
         private static final String MANA_RECEIVER = "vazkii.botania.api.mana.ManaReceiver";
+        private static final String XPLAT = "vazkii.botania.xplat.XplatAbstractions";
 
         private static boolean resolved;
         private static boolean unavailable;
@@ -206,6 +214,10 @@ public final class ManaCompat {
         private static Object handlerInstance;
         private static Method getManaItems;
         private static Method getManaAccesories;
+
+        /** {@code XplatAbstractions.INSTANCE}；石板这类物品只能通过它拿到绑定到 ItemStack 的 ManaItem。 */
+        private static Object xplat;
+        private static Method findManaItem;
 
         private static Class<?> manaItemClass;
         private static Method itemGetMana;
@@ -230,21 +242,55 @@ public final class ManaCompat {
             }
         }
 
-        /** 把一组物品里实现 {@code ManaItem} 的那些补满（非魔力物品直接跳过）。 */
+        /** 把一组物品里带魔力的那些补满（非魔力物品直接跳过）。 */
         private static void fillStacks(ServerPlayer player, Method getter) throws Exception {
             Object list = getter.invoke(handlerInstance, player);
             if (!(list instanceof List<?> stacks)) return;
+
+            boolean changed = false;
             for (Object element : stacks) {
                 if (!(element instanceof ItemStack stack) || stack.isEmpty()) continue;
-                Object item = stack.getItem();
-                if (!manaItemClass.isInstance(item)) continue;
+                Object manaItem = resolveManaItem(stack);
+                if (manaItem == null) continue;
 
-                int max = (Integer) itemGetMaxMana.invoke(item);
+                int max = (Integer) itemGetMaxMana.invoke(manaItem);
                 if (max <= 0) continue;
-                int current = (Integer) itemGetMana.invoke(item);
-                if (current < max) {
-                    itemAddMana.invoke(item, max - current);
-                }
+                int current = (Integer) itemGetMana.invoke(manaItem);
+                if (current >= max) continue;
+
+                itemAddMana.invoke(manaItem, max - current);
+                changed = true;
+            }
+
+            // 魔力写在物品 NBT 里，不主动同步的话客户端条子一直停在旧值
+            if (changed) syncInventory(player);
+        }
+
+        /**
+         * 拿到某个堆叠的 {@code ManaItem}。
+         * <p>
+         * 优先走 {@code findManaItem(stack)}：Botania 的魔力其实存在物品 NBT 里，石板 / 魔力之镜 /
+         * 魔力指环这些都是在 {@code findManaItem} 里按堆叠现造一个适配器，{@code Item} 类本身并不实现
+         * {@code ManaItem}（{@code stack.getItem() instanceof ManaItem} 对它们永远是 false）。
+         * 只有极少数直接实现接口的物品才回退到「物品本身就是 ManaItem」。
+         */
+        private static Object resolveManaItem(ItemStack stack) throws Exception {
+            if (findManaItem != null) {
+                Object manaItem = findManaItem.invoke(xplat, stack);
+                if (manaItem != null) return manaItem;
+            }
+            Object item = stack.getItem();
+            return manaItemClass.isInstance(item) ? item : null;
+        }
+
+        /** 物品 NBT 变了要主动推一遍，否则客户端看到的还是旧魔力值。 */
+        private static void syncInventory(ServerPlayer player) {
+            try {
+                player.getInventory().setChanged();
+                player.inventoryMenu.broadcastChanges();
+                if (player.containerMenu != player.inventoryMenu) player.containerMenu.broadcastChanges();
+            } catch (Throwable ignored) {
+                // 同步失败不影响服务端数据
             }
         }
 
@@ -290,6 +336,21 @@ public final class ManaCompat {
                     itemGetMana = manaItemClass.getMethod("getMana");
                     itemGetMaxMana = manaItemClass.getMethod("getMaxMana");
                     itemAddMana = manaItemClass.getMethod("addMana", int.class);
+
+                    // 石板 / 魔力之镜 / 魔力指环的 ManaItem 是「按 ItemStack 现造的适配器」，
+                    // 只能通过 XplatAbstractions.INSTANCE.findManaItem(stack) 拿到。
+                    // 这条单独 try：取不到就退化成「物品本身实现 ManaItem」，不影响魔力池那半。
+                    try {
+                        Class<?> xplatClass = Class.forName(XPLAT);
+                        Object instance = xplatClass.getField("INSTANCE").get(null);
+                        if (instance != null) {
+                            xplat = instance;
+                            findManaItem = xplatClass.getMethod("findManaItem", ItemStack.class);
+                        }
+                    } catch (Throwable ignored) {
+                        xplat = null;
+                        findManaItem = null;
+                    }
 
                     manaPoolClass = Class.forName(MANA_POOL);
                     poolGetMaxMana = manaPoolClass.getMethod("getMaxMana");

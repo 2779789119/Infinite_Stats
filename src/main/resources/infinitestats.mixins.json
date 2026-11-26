@@ -16,6 +16,7 @@
     "PlayerDieMixin",
     "RespawnGuardMixin",
     "InventoryChangeMixin",
+    "ItemStackMixin",
     "EnchantmentMixin",
     "EnchantmentHelperMixin",
     "TaczGunScriptApiMixin",

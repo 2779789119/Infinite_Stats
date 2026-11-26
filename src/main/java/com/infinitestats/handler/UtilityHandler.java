@@ -1,6 +1,7 @@
 package com.infinitestats.handler;
 
 import com.infinitestats.Config;
+import com.infinitestats.compat.CuriosBridge;
 import com.infinitestats.mixin.MerchantMenuAccessor;
 import com.infinitestats.stats.PlayerStats;
 import com.infinitestats.stats.StatCategory;
@@ -89,7 +90,7 @@ public class UtilityHandler implements StatEffectHandler {
             applyNoHunger(player, stats);
         }
 
-        // 自动修理：按配置间隔执行（默认 1 秒）
+        // 无限耐久：兜底补满按配置间隔执行（默认 1 秒）；「不消耗」由 ItemStackMixin 实时拦下
         if (tickCount % Math.max(1, Config.AUTO_REPAIR_INTERVAL.get()) == 0) {
             applyAutoRepair(player, stats);
         }
@@ -521,28 +522,48 @@ public class UtilityHandler implements StatEffectHandler {
     }
 
     /**
-     * 自动修理装备（auto_repair 开关 + repair_amount 控制修理量）
-     * 每秒修理玩家背包和装备栏中所有可损坏物品
+     * 无限耐久（auto_repair 开关）：开启后所有携带物品耐久恒满、且不再消耗。
+     * <p>
+     * 「不再消耗」由 {@code ItemStackMixin} 在 {@code hurtAndBreak} 的 HEAD 取消，这里只做兜底：
+     * 把开启前就已经存在的损伤、以及绕过 {@code hurtAndBreak} 直接写 damage 的损耗补回满耐久。
+     * 覆盖主物品栏 + 盔甲 + 副手 + Curios 饰品栏。
      */
     private void applyAutoRepair(ServerPlayer player, PlayerStats stats) {
         if (!stats.isToggleActive("auto_repair")) return;
 
-        // 用「有效点数」：repair_amount 被「功能开关」关闭时按 0 计（退化为最小修理量 1）
-        long repairLevel = stats.getEffectiveStatLevel("repair_amount");
-        double perLevel = Config.AUTO_REPAIR_PER_LEVEL.get();
-        long repairAmount = (long) Math.max(1.0D, Math.round(repairLevel * perLevel));
+        boolean changed = repairToFull(player.getInventory().items)
+                | repairToFull(player.getInventory().armor)
+                | repairToFull(player.getInventory().offhand);
 
-        // 修理所有物品栏（主物品栏 + 盔甲 + 副手 + Curios饰品）
-        List<ItemStack> allItems = new ArrayList<>();
-        allItems.addAll(player.getInventory().items);
-        allItems.addAll(player.getInventory().armor);
-        allItems.addAll(player.getInventory().offhand);
+        if (CuriosBridge.isLoaded()) {
+            final boolean[] curioChanged = {false};
+            CuriosBridge.forEachStack(player, stack -> {
+                if (stack.isDamaged()) {
+                    stack.setDamageValue(0);
+                    curioChanged[0] = true;
+                }
+            });
+            changed |= curioChanged[0];
+        }
 
-        for (ItemStack stack : allItems) {
+        // 改的是容器里的 ItemStack，必须主动同步，否则客户端耐久条停在旧值
+        if (changed) {
+            player.getInventory().setChanged();
+            player.inventoryMenu.broadcastChanges();
+            if (player.containerMenu != player.inventoryMenu) player.containerMenu.broadcastChanges();
+        }
+    }
+
+    /** 把一组槽位里的可损坏物品全部修满，返回是否真的改动过。 */
+    private static boolean repairToFull(List<ItemStack> items) {
+        boolean changed = false;
+        for (ItemStack stack : items) {
             if (!stack.isEmpty() && stack.isDamaged()) {
-                stack.setDamageValue(Math.max(0, stack.getDamageValue() - (int) repairAmount));
+                stack.setDamageValue(0);
+                changed = true;
             }
         }
+        return changed;
     }
 
     // ========== 连锁挖掘 & 自动冶炼 ==========

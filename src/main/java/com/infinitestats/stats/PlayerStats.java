@@ -85,7 +85,9 @@ public class PlayerStats {
             // 「魔法」分类（1.9.x 移除）
             "max_mana", "mana_regen", "magic_damage", "mana_shield", "mana_steal", "mana_on_kill",
             // 弹射物暴击（1.21.0 移除：收益不明显，近战与弹射物回到同一条蓄力判定）
-            "crit_projectile");
+            "crit_projectile",
+            // 修理量（1.95.0 移除：自动修理改名为「无限耐久」，纯开关，耐久恒满且不再消耗）
+            "repair_amount");
 
     // 使用 Map 存储属性点数 - 支持动态属性发现
     // statId → points

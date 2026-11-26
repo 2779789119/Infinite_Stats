@@ -1,4 +1,4 @@
-package com.infinitestats.emc;
+package com.infinitestats.menu;
 
 import com.infinitestats.InfiniteStats;
 import com.infinitestats.crafting.PortableAnvilMenu;
@@ -14,14 +14,15 @@ import net.minecraftforge.registries.DeferredRegister;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.registries.RegistryObject;
 
+/**
+ * 本模组所有随身容器菜单的类型注册。
+ * <p>
+ * 原先放在 {@code emc} 包里（与 EMC 转化桌共处），EMC 移除后独立成 {@code menu} 包。
+ */
 public final class ModMenuTypes {
 
     public static final DeferredRegister<MenuType<?>> MENU_TYPES =
             DeferredRegister.create(ForgeRegistries.MENU_TYPES, InfiniteStats.MODID);
-
-    public static final RegistryObject<MenuType<EmcMenu>> EMC_MENU =
-            MENU_TYPES.register("emc_menu", () -> IForgeMenuType.create(
-                    (windowId, inv, data) -> new EmcMenu(windowId, inv)));
 
     public static final RegistryObject<MenuType<PortableFurnaceMenu>> PORTABLE_FURNACE_MENU =
             MENU_TYPES.register("portable_furnace_menu", () -> IForgeMenuType.create(

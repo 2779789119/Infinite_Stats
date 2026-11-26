@@ -1,8 +1,8 @@
 package com.infinitestats;
 
 import com.infinitestats.command.ModServerCommands;
-import com.infinitestats.emc.ModMenuTypes;
 import com.infinitestats.handler.HandlerRegistry;
+import com.infinitestats.menu.ModMenuTypes;
 import com.infinitestats.network.NetworkHandler;
 import com.infinitestats.stats.StatType;
 import net.minecraftforge.common.MinecraftForge;
@@ -57,7 +57,7 @@ public final class InfiniteStats {
         // 注册网络通道
         NetworkHandler.register();
 
-        // 注册 EMC 菜单类型
+        // 注册随身容器菜单类型
         ModMenuTypes.MENU_TYPES.register(modEventBus);
 
         // 模组信息日志

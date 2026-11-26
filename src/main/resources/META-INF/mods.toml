@@ -17,7 +17,7 @@ issueTrackerURL = "https://github.com/2779789119/Infinite_Stats/issues"
     points into any stat - there is no level cap, and points can always be
     refunded and re-spent.
 
-    - 108 built-in stats in 4 categories: Attack / Defense / Mobility / Utility
+    - 110 built-in stats in 4 categories: Attack / Defense / Mobility / Utility
     - Auto-discovery: attributes registered by other mods appear as an
       "External" category and can be leveled exactly like built-in ones
     - Ships with Chinese translations for 30+ mods external attributes,
@@ -28,14 +28,13 @@ issueTrackerURL = "https://github.com/2779789119/Infinite_Stats/issues"
       Superb Warfare guns, Infinite Energy (FE / RF / Mekanism / Thermal / EIO /
       Immersive Engineering) and Infinite Health for Superb Warfare vehicles,
       Keep Inventory, No Fall Damage and many more
-    - Panels: Stats (P), HUD (H), Item Editor (O), EMC Transmutation (V),
-      Achievements (U) and Waypoints (Y)
+    - Panels: Stats (P), HUD (H), Item Editor (O), Achievements (U) and Waypoints (Y)
     - Portable stations: crafting table, furnace, anvil, enchanting table,
       stonecutter, loom, cartography table, grindstone, ender chest
       (can pull materials from Refined Storage / AE2 / other storage networks)
     - Per-player feature switches (pack authors can gate content and unlock it
       later with /infstats feature)
-    - Full multiplayer support: stats, EMC and waypoints are stored per player
+    - Full multiplayer support: stats and waypoints are stored per player
       and synced to the server
     - No required dependencies
     - Optional: pinyin_search powers the pinyin search boxes; it is embedded in

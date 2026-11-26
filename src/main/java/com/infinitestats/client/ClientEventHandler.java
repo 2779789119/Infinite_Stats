@@ -2,8 +2,7 @@ package com.infinitestats.client;
 
 import com.infinitestats.InfiniteStats;
 import com.infinitestats.Config;
-import com.infinitestats.emc.EmcMenu;
-import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.menu.ModMenuTypes;
 import com.infinitestats.crafting.PortableCraftingMenu;
 import com.infinitestats.event.StatEventHandler;
 import com.infinitestats.furnace.PortableFurnaceMenu;
@@ -167,13 +166,6 @@ public final class ClientEventHandler {
             if (mc.screen != null) break;
             if (!panelAvailable(mc, "item_editor")) break;
             mc.setScreen(new ItemEditorScreen());
-        }
-
-        // 打开 EMC 转化桌
-        while (ClientSetup.OPEN_EMC_KEY.consumeClick()) {
-            if (mc.screen != null) break;
-            if (!panelAvailable(mc, "emc")) break;
-            NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket());
         }
 
         // 打开成就管理器
@@ -593,9 +585,8 @@ public final class ClientEventHandler {
             // 游戏启动时加载保存的 HUD 位置
             ClientSettings.load();
 
-            // 注册 EMC 转化桌屏幕（客户端侧 MenuType → Screen 映射）
+            // 注册随身容器屏幕（客户端侧 MenuType → Screen 映射）
             event.enqueueWork(() -> {
-                MenuScreens.register(ModMenuTypes.EMC_MENU.get(), EmcScreen::new);
                 MenuScreens.register(ModMenuTypes.PORTABLE_FURNACE_MENU.get(), PortableFurnaceScreen::new);
                 MenuScreens.register(ModMenuTypes.FURNACE_FUEL_BUFFER_MENU.get(), FurnaceFuelBufferScreen::new);
                 MenuScreens.register(ModMenuTypes.FURNACE_PRODUCT_BUFFER_MENU.get(), FurnaceProductBufferScreen::new);

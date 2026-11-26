@@ -236,7 +236,6 @@ public class StatsScreen extends PanelScreen {
         icon("bow_draw_speed", Items.CROSSBOW);
         icon("use_speed", Items.CLOCK);
         icon("auto_repair", Items.ANVIL);
-        icon("repair_amount", Items.IRON_INGOT);
         icon("time_accel", Items.CLOCK);
         icon("time_accel_radius", Items.COMPASS);
         icon("cooldown_reduction", Items.ENDER_EYE);
@@ -840,9 +839,6 @@ public class StatsScreen extends PanelScreen {
         addNav(labels, actions, "filter", null,
                 Component.translatable("gui.infinitestats.nav.filter"),
                 this::openDebuffFilter);
-        addNav(labels, actions, "emc", null,
-                Component.translatable("gui.infinitestats.nav.emc"),
-                () -> NetworkHandler.CHANNEL.sendToServer(new NetworkHandler.EmcOpenPacket()));
         addNav(labels, actions, "achievements", null,
                 Component.translatable("gui.infinitestats.nav.achievement"),
                 () -> { if (minecraft != null) minecraft.setScreen(new AchievementManagerScreen()); });

@@ -1,7 +1,7 @@
 package com.infinitestats.compat.jei;
 
 import com.infinitestats.crafting.PortableCraftingMenu;
-import com.infinitestats.emc.ModMenuTypes;
+import com.infinitestats.menu.ModMenuTypes;
 import com.infinitestats.network.NetworkHandler;
 import mezz.jei.api.constants.RecipeTypes;
 import mezz.jei.api.gui.ingredient.IRecipeSlotsView;

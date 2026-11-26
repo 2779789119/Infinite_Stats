@@ -243,7 +243,7 @@ public final class CuriosBridge {
     /**
      * 无参方法查找缓存：{@code 运行时类 → 方法名 → Method}。
      * <p>
-     * {@link #forEachStack} 被「冷却缩减 / 无限能源 / 自动修理」这类每 tick 或每 N tick 的功能调用，
+     * {@link #forEachStack} 被「冷却缩减 / 无限能源 / 无限耐久」这类每 tick 或每 N tick 的功能调用，
      * 每次还要对每个槽位的运行时类做 {@code Class.forName} + {@code getMethod} ——
      * 那是带安全检查的元数据查询，比 {@code invoke} 本身贵得多。类一旦确定，Method 就不会变。
      */

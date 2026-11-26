@@ -51,15 +51,6 @@ public final class ClientSetup {
     );
 
     /**
-     * 打开 EMC 转化桌按键（默认 V）
-     */
-    public static final KeyMapping OPEN_EMC_KEY = new KeyMapping(
-            "key.infinitestats.emc",
-            GLFW.GLFW_KEY_V,
-            "key.categories.infinitestats"
-    );
-
-    /**
      * 打开成就管理器按键（默认 U）
      */
     public static final KeyMapping OPEN_ACHIEVEMENTS_KEY = new KeyMapping(
@@ -92,7 +83,6 @@ public final class ClientSetup {
         event.register(QUICK_ADD_KEY);
         event.register(HUD_TOGGLE_KEY);
         event.register(OPEN_ITEM_EDITOR_KEY);
-        event.register(OPEN_EMC_KEY);
         event.register(OPEN_ACHIEVEMENTS_KEY);
         event.register(OPEN_WAYPOINT_KEY);
         event.register(OPEN_TOOLS_KEY);

@@ -160,16 +160,10 @@ public final class Config {
 
     public static ForgeConfigSpec.BooleanValue ENABLE_ATTRIBUTE_DISCOVERY;
 
-    // ========== EMC 等价交换设置 ==========
+    // ========== 等价交换（ProjectE）自动学习 ==========
 
-    public static ForgeConfigSpec.DoubleValue EMC_LOSS_RATE;
-    public static ForgeConfigSpec.BooleanValue EMC_ENABLED;
-
-    // 等价交换（ProjectE）联动：仅当检测到 projecte 模组时才有实际作用
+    // 仅当检测到 projecte 模组时才有实际作用
     public static ForgeConfigSpec.BooleanValue PE_AUTO_LEARN;
-
-    // 未知物品（无配方 / 锚点 / ProjectE 知识）的兜底 EMC 值；0 = 关闭（保持原行为）
-    public static ForgeConfigSpec.LongValue EMC_FALLBACK_VALUE;
 
     // ========== 时间加速设置（加速属性） ==========
 
@@ -334,8 +328,6 @@ public final class Config {
     public static ForgeConfigSpec.DoubleValue VILLAGER_DISCOUNT_CAP;
     /** 冷却缩减上限（比例，1.0 = 可把冷却压到 0）。 */
     public static ForgeConfigSpec.DoubleValue COOLDOWN_REDUCTION_CAP;
-    /** 「自动修复」每级每秒修复的耐久点（0 级按 1 点计算）。 */
-    public static ForgeConfigSpec.DoubleValue AUTO_REPAIR_PER_LEVEL;
     /** 弹射物追踪的视野锥余弦阈值（越小视野越窄；0.5 ≈ ±60°）。 */
     public static ForgeConfigSpec.DoubleValue PROJECTILE_TRACKING_CONE_COS;
     /** 经验加成属性的总倍率上限（0 = 不设上限）。 */
@@ -351,7 +343,7 @@ public final class Config {
     public static ForgeConfigSpec.IntValue PROJECTILE_TRACKING_INTERVAL;
     /** 「免饥饿」的饥饿值刷新间隔（tick）。 */
     public static ForgeConfigSpec.IntValue NO_HUNGER_REFRESH_INTERVAL;
-    /** 「自动修复」的执行间隔（tick）。 */
+    /** 「无限耐久」兜底补满的执行间隔（tick）。 */
     public static ForgeConfigSpec.IntValue AUTO_REPAIR_INTERVAL;
     /** 玩家属性（Attribute 修饰符）的全量写入间隔（tick）。 */
     public static ForgeConfigSpec.IntValue ATTRIBUTE_APPLY_INTERVAL;
@@ -540,10 +532,6 @@ public final class Config {
         registerHidePanel("filter",
                 builder.comment("隐藏「过滤」（负面效果过滤）面板入口（页脚按钮）。")
                         .define("hideFilterPanel", false));
-        registerHidePanel("emc",
-                builder.comment("隐藏「EMC」转化桌入口（页脚按钮与 V 键一起失效）。",
-                        "服务端也会拒绝开桌请求，装了这个配置的整合包连改包都打不开。")
-                        .define("hideEmcPanel", false));
         registerHidePanel("achievements",
                 builder.comment("隐藏「成就管理器」入口（页脚按钮、U 键与 /infstats achievements 一起失效）。")
                         .define("hideAchievementsPanel", false));
@@ -584,32 +572,6 @@ public final class Config {
                          "如果遇到兼容性问题，可以关闭此选项。",
                          "注意：此选项需要重启游戏才能生效。")
                 .define("enableAttributeDiscovery", true);
-        builder.pop();
-
-        // EMC 等价交换设置
-        builder.push("EMC");
-        EMC_ENABLED = builder
-                .comment("是否启用内置等价交换 (EMC) 系统。",
-                         "关闭后 EMC 转化桌 GUI 和命令将不可用。")
-                .define("emcEnabled", true);
-        EMC_LOSS_RATE = builder
-                .comment("EMC 转换损耗率 (0.0 = 无损耗，1.0 = 100%损耗)。",
-                         "学习物品时实际获得的 EMC = 物品EMC值 × (1 - lossRate)。",
-                         "例如 lossRate=0.2 时学习一个 100 EMC 的物品获得 80 EMC。")
-                .defineInRange("emcLossRate", 0.0, 0.0, 1.0);
-        PE_AUTO_LEARN = builder
-                .comment("等价交换「自动学习」【全局主开关】（常驻功能，不依赖是否安装 ProjectE）。",
-                         "开启后，玩家还需要在属性面板投入 5 点解锁「pe_auto_learn」属性，",
-                         "解锁后拾取 / 合成的物品会自动记入本模组的 EMC 知识库；",
-                         "若同时安装了 ProjectE，也会一并写入其转化知识库。",
-                         "关闭此开关则所有玩家（无论是否加点）的自动学习全部禁用。")
-                .define("autoLearnProjectE", true);
-        EMC_FALLBACK_VALUE = builder
-                .comment("未知物品（无任何配方 / 锚点 / ProjectE 知识）的兜底 EMC 值。",
-                         "设为 0（默认）表示保持原行为：无来源的物品不获得 EMC，无法被学习 / 转化。",
-                         "设为大于 0 的值（如 1）后，所有物品至少拥有该 EMC，从而可在 EMC 屏中统一被学习 / 转化。",
-                         "注意：此值会覆盖原矿等本应 0 EMC 的黑名单物品，可能改变平衡，请谨慎设置。")
-                .defineInRange("emcFallbackValue", 0L, 0L, 1_000_000_000_000L);
         builder.pop();
 
         // 时间加速设置
@@ -842,9 +804,6 @@ public final class Config {
         COOLDOWN_REDUCTION_CAP = builder
                 .comment("物品冷却缩减上限（比例）。默认 1.0 = 可以把冷却直接压到 0。")
                 .defineInRange("cooldownReductionCap", 1.0D, 0.0D, 1.0D);
-        AUTO_REPAIR_PER_LEVEL = builder
-                .comment("「自动修复」每一级每秒修复的耐久点（0 级也至少按 1 点计算）。")
-                .defineInRange("autoRepairPerLevel", 1.0D, 0.0D, 1000.0D);
         PROJECTILE_TRACKING_CONE_COS = builder
                 .comment("弹射物追踪的视野锥余弦阈值：1.0 = 只追正前方，0.0 = 180° 全追，默认 0.5（约 ±60°）。")
                 .defineInRange("projectileTrackingConeCos", 0.5D, -1.0D, 1.0D);
@@ -872,7 +831,8 @@ public final class Config {
                 .comment("「免饥饿」把饥饿值 / 饱和度刷满的间隔（tick）。默认 10。")
                 .defineInRange("noHungerRefreshInterval", 10, 1, 200);
         AUTO_REPAIR_INTERVAL = builder
-                .comment("「自动修复」执行间隔（tick）。默认 20 = 每秒一次。")
+                .comment("「无限耐久」兜底补满的扫描间隔（tick）。默认 20 = 每秒一次。",
+                        "开关开启时耐久本身已不再消耗（由 Mixin 实时拦下），这里只负责把已有的损伤补满。")
                 .defineInRange("autoRepairInterval", 20, 1, 1200);
         ATTRIBUTE_APPLY_INTERVAL = builder
                 .comment("玩家属性修饰符的全量重写间隔（tick）。默认 40；调小更跟手，调大更省性能。")
@@ -913,6 +873,12 @@ public final class Config {
         MANA_POOL_REFILL_INTERVAL = builder
                 .comment("自建魔力池的补魔间隔（tick）。默认 20 = 每秒一次。")
                 .defineInRange("manaPoolRefillInterval", 20, 1, 1200);
+        PE_AUTO_LEARN = builder
+                .comment("等价交换「自动学习」【全局主开关】（需安装 ProjectE，未装时该功能空转）。",
+                         "开启后，玩家还需要在属性面板投入 5 点解锁「pe_auto_learn」属性，",
+                         "解锁后拾取 / 合成的物品会自动写入 ProjectE 的转化知识库。",
+                         "关闭此开关则所有玩家（无论是否加点）的自动学习全部禁用。")
+                .define("autoLearnProjectE", true);
         PE_AUTO_LEARN_SCAN_INTERVAL = builder
                 .comment("等价交换「自动学习」兜底全量扫描背包的间隔（tick）。默认 40 = 每 2 秒一次。")
                 .defineInRange("peAutoLearnScanInterval", 40, 1, 1200);
